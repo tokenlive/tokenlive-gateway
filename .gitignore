@@ -1,0 +1,18 @@
+storage/logs
+storage/*.db
+.idea
+*.log
+deploy/docker-compose/conf
+deploy/docker-compose/data
+bin/server
+.claude/
+coverage.html
+coverage.out
+/server
+bin/
+scratch/
+
+# Environment and configuration files
+.env
+.env.local
+config/*.local.yml

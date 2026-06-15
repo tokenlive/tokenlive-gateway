@@ -1,0 +1,338 @@
+package invoker
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/core"
+	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
+
+	"go.uber.org/zap"
+)
+
+// RetryStrategy 重试策略（已实现 policy.ErrorPolicy 接口，与策略结构完全对齐）
+var ErrNoAvailableEndpoint = fmt.Errorf("no available endpoint")
+
+// DefaultRetryStrategy 默认全局重试策略
+var DefaultRetryStrategy = &policy.RetryPolicy{
+	Retry:       0,
+	BackoffType: "fixed",
+	BaseMs:      100,
+	ErrorCodes:  []string{},
+}
+
+// ClusterInvoker 编排器：Discovery + Router + LB + retry
+type ClusterInvoker struct {
+	discovery         core.Discovery
+	routerChain       []core.Router
+	loadBalancers     map[string]core.LoadBalancer
+	defaultLBStrategy string
+	retryStrategy     *policy.RetryPolicy
+	cbManager         *core.CircuitBreakerManager
+	stateStore        core.StateStore
+	logger            *zap.Logger
+	enableActive      bool
+}
+
+func NewClusterInvoker(
+	discovery core.Discovery,
+	routers []core.Router,
+	lbs map[string]core.LoadBalancer,
+	retry *policy.RetryPolicy,
+	cbManager *core.CircuitBreakerManager,
+	stateStore core.StateStore,
+	logger *zap.Logger,
+) *ClusterInvoker {
+	if retry == nil {
+		retry = DefaultRetryStrategy
+	}
+	return &ClusterInvoker{
+		discovery:         discovery,
+		routerChain:       routers,
+		loadBalancers:     lbs,
+		defaultLBStrategy: "round_robin", // 默认 round_robin
+		retryStrategy:     retry,
+		cbManager:         cbManager,
+		stateStore:        stateStore,
+		logger:            logger,
+	}
+}
+
+// SetDefaultLBStrategy 设置默认的负载均衡策略（用于覆盖默认 of round_robin）
+func (ci *ClusterInvoker) SetDefaultLBStrategy(strategy string) {
+	if strategy != "" {
+		ci.defaultLBStrategy = strategy
+	}
+}
+
+// SetEnableActive 设置是否开启主动健康检测状态判断
+func (ci *ClusterInvoker) SetEnableActive(enable bool) {
+	ci.enableActive = enable
+}
+
+// RouterChain 返回路由器链，用于测试断言
+func (ci *ClusterInvoker) RouterChain() []core.Router {
+	return ci.routerChain
+}
+
+// Invoke 执行集群调用（带重试）
+func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
+	excluded := make(map[string]bool)
+	var lastErr error
+
+	// 解析并应用 TotalTimeout (请求总超时，毫秒，默认非流式 60s，流式 10分钟)
+	totalTimeout := 60000
+	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy.TotalTimeout > 0 {
+		totalTimeout = gctx.Policy.InvocationPolicy.RetryPolicy.TotalTimeout
+	} else if gctx.IsStream {
+		totalTimeout = 600000
+	}
+	oldCtx := gctx.Ctx
+	totalCtx, totalCancel := context.WithTimeout(oldCtx, time.Duration(totalTimeout)*time.Millisecond)
+	defer func() {
+		totalCancel()
+		gctx.Ctx = oldCtx // 恢复旧的 Context，避免影响跨模型 fallback 降级链的后续请求
+	}()
+	gctx.Ctx = totalCtx
+
+	// 动态获取最大重试次数
+	maxRetries := ci.retryStrategy.Retry
+	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
+		maxRetries = gctx.Policy.InvocationPolicy.RetryPolicy.Retry
+	}
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			var backoff time.Duration
+			if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
+				backoff = gctx.Policy.InvocationPolicy.RetryPolicy.CalcBackoff(attempt - 1)
+			} else {
+				backoff = ci.retryStrategy.CalcBackoff(attempt - 1)
+			}
+			time.Sleep(backoff)
+		}
+
+		gctx.ResetAttempt()
+
+		// Discovery
+		endpoints, err := ci.discovery.List(gctx.Ctx, gctx.Model)
+		if err != nil {
+			gctx.Logger(ci.logger).Error("discovery failed", zap.Error(err))
+			lastErr = err
+			continue
+		}
+
+		if len(endpoints) == 0 {
+			if lastErr == nil {
+				lastErr = ErrNoAvailableEndpoint
+			}
+			continue
+		}
+
+		// Router chain
+		gctx.Logger(ci.logger).Info("router chain: starting",
+			zap.String("model", gctx.Model),
+			zap.Int("discovery_count", len(endpoints)),
+			zap.Strings("discovery_endpoints", endpointIDs(endpoints)),
+		)
+		for _, router := range ci.routerChain {
+			before := len(endpoints)
+			endpoints = router.Route(gctx, endpoints)
+			after := len(endpoints)
+			if before != after {
+				gctx.Logger(ci.logger).Info("router chain: router filtered endpoints",
+					zap.String("router", router.Name()),
+					zap.Int("before", before),
+					zap.Int("after", after),
+					zap.Strings("remaining", endpointIDs(endpoints)),
+				)
+			} else {
+				gctx.Logger(ci.logger).Debug("router chain: router passed through",
+					zap.String("router", router.Name()),
+					zap.Int("count", after),
+				)
+			}
+			if after == 0 {
+				gctx.Logger(ci.logger).Warn("router chain: all endpoints eliminated by router",
+					zap.String("router", router.Name()),
+					zap.Int("before", before),
+				)
+				break
+			}
+		}
+
+		if len(endpoints) == 0 {
+			if lastErr == nil {
+				lastErr = ErrNoAvailableEndpoint
+			}
+			continue
+		}
+
+		// 过滤已排除的
+		var filtered []*core.Endpoint
+		for _, ep := range endpoints {
+			if !excluded[ep.ID] {
+				filtered = append(filtered, ep)
+			}
+		}
+
+		if len(filtered) == 0 {
+			if lastErr == nil {
+				lastErr = ErrNoAvailableEndpoint
+			}
+			continue
+		}
+
+		// 动态选择 LoadBalancer
+		var lb core.LoadBalancer
+		if gctx.Policy != nil && gctx.Policy.LoadBalancePolicy != nil {
+			lb = ci.loadBalancers[gctx.Policy.LoadBalancePolicy.Type]
+		}
+		if lb == nil {
+			lb = ci.loadBalancers[ci.defaultLBStrategy]
+		}
+		if lb == nil {
+			lb = ci.loadBalancers["round_robin"]
+		}
+		if lb == nil {
+			// 防御性：若无 round_robin 则取 map 中任意一个
+			for _, v := range ci.loadBalancers {
+				lb = v
+				break
+			}
+		}
+		if lb == nil {
+			lastErr = fmt.Errorf("no load balancer strategy available")
+			return lastErr
+		}
+
+		// LoadBalancer 选择
+		invoker := lb.Select(gctx, filtered)
+		if invoker == nil {
+			if lastErr == nil {
+				lastErr = ErrNoAvailableEndpoint
+			}
+			continue
+		}
+
+		selectedEp := invoker.Endpoint()
+		if selectedEp != nil {
+			// 真正决定使用该 Endpoint 发送流量之前，先抢占可能需要的半开探路许可
+			serviceKey := selectedEp.Provider + ":" + selectedEp.Model
+			if !ci.cbManager.AcquireHalfOpenPermit(serviceKey, ci.enableActive) {
+				excluded[selectedEp.ID] = true
+				lastErr = fmt.Errorf("service breaker half-open permit acquisition failed")
+				continue
+			}
+			if !ci.cbManager.AcquireHalfOpenPermit(selectedEp.ID, ci.enableActive) {
+				ci.cbManager.ReleaseHalfOpenPermit(serviceKey)
+				excluded[selectedEp.ID] = true
+				lastErr = fmt.Errorf("instance breaker half-open permit acquisition failed")
+				continue
+			}
+		}
+
+		// 执行调用
+		err = invoker.Invoke(gctx)
+		gctx.RecordAttempt(err == nil)
+
+		if err == nil {
+			isSlowCall := false
+			if gctx.Policy != nil && len(gctx.Policy.CircuitBreakPolicies) > 0 {
+				p := gctx.Policy.CircuitBreakPolicies[0]
+				if p.SlowCallMetric == "TTFT" && gctx.TTFT > 0 {
+					limit := time.Duration(p.SlowCallDurationThreshold) * time.Millisecond
+					if gctx.TTFT > limit {
+						isSlowCall = true
+					}
+				}
+			}
+
+			if isSlowCall {
+				ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, fmt.Errorf("slow call TTFT exceeded"))
+			} else {
+				ci.cbManager.RecordSuccess(gctx, gctx.SelectedEndpoint)
+			}
+			ci.stateStore.RecordLatency(gctx.Ctx, gctx.SelectedEndpoint.ID, time.Since(gctx.UpstreamConnect))
+			return nil
+		}
+
+		lastErr = err
+
+		// 打印警告日志，包含尝试次数和错误详情
+		gctx.Logger(ci.logger).Warn("endpoint invocation failed",
+			zap.String("endpoint", gctx.SelectedEndpoint.ID),
+			zap.Int("attempt", attempt),
+			zap.Error(err),
+		)
+
+		// 记录熔断失败 (不论后续是否可以重试，该 attempt 的失败都应当记录到熔断器中)
+		ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, err)
+
+		// 流式已发首字节，不能重试
+		if gctx.TTFT > 0 {
+			return err
+		}
+
+		// 检查是否应该重试
+		shouldRetry := false
+		retryReason := ""
+		policyType := "static"
+		statusCode := getStatusCode(gctx.UpstreamResponse)
+		var rp *policy.RetryPolicy
+		if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
+			policyType = "dynamic"
+			rp = gctx.Policy.InvocationPolicy.RetryPolicy
+		} else {
+			rp = ci.retryStrategy
+		}
+
+		contentType := ""
+		if gctx.UpstreamResponse != nil {
+			contentType = gctx.UpstreamResponse.Header.Get("Content-Type")
+		}
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		shouldRetry, retryReason = rp.MatchErrorWithReason(statusCode, contentType, errMsg, gctx.UpstreamBody)
+
+		if !shouldRetry {
+			return err
+		}
+
+		// 触发重试前打印详细日志
+		gctx.Logger(ci.logger).Info("triggering retry strategy",
+			zap.String("policy_type", policyType),
+			zap.String("reason", retryReason),
+			zap.Int("next_attempt", attempt+1),
+		)
+
+		// 排除该 endpoint
+		excluded[gctx.SelectedEndpoint.ID] = true
+	}
+
+	return lastErr
+}
+
+func getStatusCode(resp *http.Response) int {
+	if resp != nil {
+		return resp.StatusCode
+	}
+	return 0
+}
+
+func (ci *ClusterInvoker) Endpoint() *core.Endpoint {
+	return nil
+}
+
+// endpointIDs 提取 endpoint ID 列表，用于日志输出
+func endpointIDs(endpoints []*core.Endpoint) []string {
+	ids := make([]string, len(endpoints))
+	for i, ep := range endpoints {
+		ids[i] = ep.ID
+	}
+	return ids
+}

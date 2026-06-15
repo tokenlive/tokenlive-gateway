@@ -1,0 +1,70 @@
+package config
+
+import (
+	"context"
+
+	"go.uber.org/zap"
+)
+
+type ConfigManager struct {
+	yamlEndpoints map[string][]ResolvedEndpoint
+	fallbacks     map[string][]string
+	redisSrc      *RedisConfigSource
+	logger        *zap.Logger
+}
+
+func NewConfigManager(yamlCfg *GatewayConfig, redisSrc *RedisConfigSource, logger *zap.Logger) *ConfigManager {
+	return &ConfigManager{
+		yamlEndpoints: Resolve(yamlCfg),
+		fallbacks:     yamlCfg.Fallbacks,
+		redisSrc:      redisSrc,
+		logger:        logger,
+	}
+}
+
+// GetEndpoints 返回指定 model 的所有 resolved endpoints。
+// 优先从 Redis 读取，miss 时回退到 YAML 配置。
+func (m *ConfigManager) GetEndpoints(ctx context.Context, modelCode string) []ResolvedEndpoint {
+	if m.redisSrc != nil {
+		if endpoints, ok := m.redisSrc.GetEndpoints(ctx, modelCode); ok && len(endpoints) > 0 {
+			return endpoints
+		}
+	}
+	return m.yamlEndpoints[modelCode]
+}
+
+func (m *ConfigManager) AllKnownModels() map[string]bool {
+	known := make(map[string]bool, len(m.yamlEndpoints))
+	for name := range m.yamlEndpoints {
+		known[name] = true
+	}
+
+	if m.redisSrc != nil {
+		for name := range m.redisSrc.KnownModels() {
+			known[name] = true
+		}
+	}
+
+	return known
+}
+
+// OwnerOf 返回某个 model 在配置中的归属 provider 名称，未命中返回空字符串。
+// 多 provider 时取首个（与 GetEndpoints 顺序一致）。
+func (m *ConfigManager) OwnerOf(ctx context.Context, model string) string {
+	eps := m.GetEndpoints(ctx, model)
+	if len(eps) == 0 {
+		return ""
+	}
+	return eps[0].ProviderName
+}
+
+func (m *ConfigManager) GetFallbacks() map[string][]string {
+	return m.fallbacks
+}
+
+func (m *ConfigManager) StartRedisPolling(ctx context.Context) {
+	if m.redisSrc == nil {
+		return
+	}
+	m.redisSrc.StartPolling(ctx)
+}

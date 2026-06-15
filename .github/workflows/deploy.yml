@@ -1,0 +1,47 @@
+name: Deploy Gateway to VPS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.go'
+      - '**/*.js'
+      - '**/*.vue'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Compile Go Binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ./bin/server_linux_amd64 ./cmd/server
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to VPS
+        run: |
+          # 提前删除正在运行的二进制，避免 text file busy
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "rm -f ~/tokenlive-gateway/tokenlive-gateway/server"
+          
+          # 上传最新二进制和生产环境配置文件
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${{ secrets.SSH_PORT }} ./bin/server_linux_amd64 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/tokenlive-gateway/tokenlive-gateway/server
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${{ secrets.SSH_PORT }} ./config/prod.yml ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/tokenlive-gateway/tokenlive-gateway/config/prod.yml
+
+      - name: Restart Gateway Service
+        run: |
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "chmod +x ~/tokenlive-gateway/tokenlive-gateway/server && systemctl restart tokenlive-gateway && systemctl status tokenlive-gateway --no-pager"

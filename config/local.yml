@@ -1,0 +1,222 @@
+env: local
+http:
+  #  host: 0.0.0.0
+  host: 127.0.0.1
+  port: 8000
+  tls:
+    enabled: false                    # 设为 true 启用 HTTPS
+    cert_file: "certs/server.crt"     # TLS 证书文件路径
+    key_file: "certs/server.key"      # TLS 私钥文件路径
+security:
+  api_sign:
+    app_key: ${APP_KEY:123456}
+    app_security: ${APP_SECURITY:123456}
+  jwt:
+    key: ${JWT_KEY}
+data:
+  db:
+    user:
+      driver: ${DB_DRIVER:sqlite}
+      dsn: ${DB_DSN:storage/gateway.db?_busy_timeout=5000}
+#     user:
+#       driver: mysql
+#       dsn: ${DB_USER:tpaas}:${DB_PASSWORD:aaa}@tcp(${DB_HOST:127.0.0.1}:${DB_PORT:32133})/${DB_NAME:jmsf}?charset=utf8mb4&parseTime=True&loc=Local # 381
+#      user:
+#        driver: postgres
+#        dsn: host=${DB_HOST:localhost} user=${DB_USER:gorm} password=${DB_PASSWORD:gorm} dbname=${DB_NAME:gorm} port=${DB_PORT:9920} sslmode=disable TimeZone=Asia/Shanghai
+  redis:
+    addr: ${REDIS_ADDR:localhost:6379}
+    password: ${REDIS_PASSWORD:}
+    db: ${REDIS_DB:0}
+    read_timeout: 2s
+    write_timeout: 2s
+  mongo:
+    uri: ${MONGO_URI:mongodb://root:123456@localhost:27017}
+log:
+  log_level: debug
+  mode: both               #  file or console or both
+  encoding: console           # json or console
+  log_file_name: "./storage/logs/server.log"
+  err_file_name: "./storage/logs/server.err.log"
+  max_backups: 30
+  max_age: 7
+  max_size: 1024
+  compress: true
+
+llm:
+  enable_auth: true
+  enable_metrics: true
+  enable_logging: true
+  enable_active_health_check: false
+
+otel:
+  metrics:
+    enabled: ${OTEL_ENABLED:true}
+    endpoint: "${OTEL_ENDPOINT:192.168.68.8:4317}"
+    insecure: true
+
+# LLM Gateway 配置（model-centric 格式）
+models:
+  gpt-4:
+    request_types: [ chat_completion ]
+    endpoints:
+      - provider: openai-official
+        url: http://free3.900406.xyz:8100/v1
+        real_model: gpt-4
+        priority: 1
+        weight: 100
+      - provider: openai-custom
+        url: http://free3.900406.xyz:8100/v1
+        real_model: gpt-4:free
+        priority: 1
+        weight: 100
+  gpt-3.5-turbo:
+    request_types: [ chat_completion ]
+    endpoints:
+      - provider: openai-official
+        url: http://free3.900406.xyz:8100/v1
+        real_model: gpt-3.5-turbo
+        priority: 1
+        weight: 100
+  text-embedding-3-small:
+    request_types: [ embedding ]
+    endpoints:
+      - provider: openai-official
+        url: http://free3.900406.xyz:8100/v1
+        real_model: text-embedding-3-small
+        priority: 1
+        weight: 100
+  claude-sonnet:
+    request_types: [ chat_completion ]
+    endpoints:
+      - provider: anthropic-official
+        url: https://api.anthropic.com
+        real_model: claude-3-opus-20240229
+        priority: 1
+        weight: 50
+      - provider: anthropic-proxy
+        url: http://free3.900406.xyz:8100
+        real_model: claude-3-opus-20240229
+        priority: 2
+        weight: 50
+
+providers:
+  openai-official:
+    protocol: openai
+    api_key: ${OPENAI_API_KEY}
+    timeout: 60s
+    max_retries: 3
+  openai-custom:
+    protocol: openai
+    api_key: ${OPENAI_API_KEY}
+    timeout: 60s
+    max_retries: 3
+  anthropic-official:
+    protocol: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    timeout: 60s
+  anthropic-proxy:
+    protocol: anthropic
+    api_key: ${ANTHROPIC_PROXY_KEY}
+    timeout: 60s
+
+fallbacks:
+  gpt-4:
+    - gpt-4:free
+    - gpt-3.5-turbo
+  claude-sonnet:
+    - gpt-4
+
+# 治理策略配置
+policy:
+  # 策略合并优先级链条（自底向上合并覆盖：数组靠后的维度优先级更高，能覆盖前面的 non-nil 字段）
+  priority_chain:
+    - "global"         # 全局兜底
+    - "tenant"         # 租户级通用限制
+    - "user"           # 用户级通用限制
+    - "model"          # 模型级通用限制
+    - "tenant_model"   # 租户专属模型限制
+    - "user_model"     # 用户专属模型限制
+
+# 直观声明标准的 RequestType Pipelines 配置，包含重试、路由和负载均衡策略
+pipelines:
+  chat_completion:
+    name: "chat_completion"
+    request_types: [ "chat_completion" ]
+    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log" ]
+    critical_outbound_filters: [ "token_settlement", "sticky_session" ]
+    invoker:
+      type: "cluster"
+      routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]
+      load_balancer: "round_robin"
+      retry:
+        retry: 0
+        backoff_type: "exponential"
+        base_ms: 100
+        error_codes: [ "500", "502", "503", "504", "429" ]
+
+  responses:
+    name: "responses"
+    request_types: [ "responses" ]
+    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log" ]
+    critical_outbound_filters: [ "token_settlement", "sticky_session" ]
+    invoker:
+      type: "cluster"
+      routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]
+      load_balancer: "round_robin"
+      retry:
+        retry: 0
+        backoff_type: "exponential"
+        base_ms: 100
+        error_codes: [ "500", "502", "503", "504", "429" ]
+
+  embedding:
+    name: "embedding"
+    request_types: [ "embedding" ]
+    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log" ]
+    critical_outbound_filters: [ "token_settlement", "sticky_session" ]
+    invoker:
+      type: "cluster"
+      routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]
+      load_balancer: "round_robin"
+      retry:
+        retry: 0
+        backoff_type: "exponential"
+        base_ms: 100
+        error_codes: [ "500", "502", "503", "504", "429" ]
+
+  # Messages 协议端点，支持原生与协议翻译路由，端点能否承接主要由 capability 路由决定
+  messages:
+    name: "messages"
+    request_types: [ "messages" ]
+    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log" ]
+    critical_outbound_filters: [ "token_settlement", "sticky_session" ]
+    invoker:
+      type: "cluster"
+      routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]
+      load_balancer: "round_robin"
+      retry:
+        retry: 0
+        backoff_type: "exponential"
+        base_ms: 100
+        error_codes: [ "500", "502", "503", "504", "429" ]
+
+# 静态兜底治理策略（当 Redis 中没有任何策略匹配时的冷启动防穿透/本地兜底规则）
+policies:
+  - invocation_policy:
+      type: "failover"
+      retry_policy:
+        retry: 0
+        backoff_type: "fixed"
+        base_ms: 0
+        connect_timeout: 15000
+        ttft_timeout: 60000
+        idle_timeout: 30000
+        total_timeout: 600000
+        error_codes:
+          - "500"
+          - "429"

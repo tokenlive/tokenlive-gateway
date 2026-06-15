@@ -1,0 +1,241 @@
+{
+    "taggingPolicies": [
+        {
+            "name": "cost-tier",
+            "order": 1,
+            "relation": "OR",
+            "conditions": [
+                {
+                    "type": "system",
+                    "opType": "IN",
+                    "key": "model",
+                    "values": [
+                        "gpt-4*",
+                        "claude-opus*",
+                        "deepseek-r1"
+                    ]
+                }
+            ],
+            "actions": [
+                {
+                    "key": "cost_tier",
+                    "value": "high"
+                }
+            ]
+        },
+        {
+            "name": "vip-dyeing",
+            "order": 2,
+            "relation": "AND",
+            "conditions": [
+                {
+                    "type": "header",
+                    "opType": "EQUAL",
+                    "key": "X-User-Tier",
+                    "values": [
+                        "VIP"
+                    ]
+                }
+            ],
+            "actions": [
+                {
+                    "key": "priority",
+                    "value": "high"
+                }
+            ]
+        },
+        {
+            "name": "stream-mode",
+            "order": 3,
+            "relation": "AND",
+            "conditions": [
+                {
+                    "type": "system",
+                    "opType": "EQUAL",
+                    "key": "stream",
+                    "values": [
+                        "true"
+                    ]
+                }
+            ],
+            "actions": [
+                {
+                    "key": "delivery_mode",
+                    "value": "stream"
+                }
+            ]
+        }
+    ],
+    "loadBalancePolicy": {
+        "type": "ROUND_ROBIN"
+    },
+    "invokePolicy": {
+        "type": "failover",
+        "retryPolicy": {
+            "retry": 3,
+            "interval": 200,
+            "errorCodes": [
+                429,
+                502,
+                503,
+                504
+            ],
+            "connectTimeout": 2000,
+            "ttftTimeout": 5000,
+            "totalTimeout": 60000
+        }
+    },
+    "limitPolicies": [
+        {
+            "name": "high-cost-rate-limit",
+            "version": 1704038400000,
+            "type": "request",
+            "slidingWindows": [
+                {
+                    "threshold": 50,
+                    "timeWindowInMs": 60000
+                }
+            ],
+            "maxWaitMs": 200,
+            "relationType": "AND",
+            "conditions": [
+                {
+                    "type": "tag",
+                    "opType": "EQUAL",
+                    "key": "cost_tier",
+                    "values": [
+                        "high"
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "vip-tpm-limit",
+            "version": 1704038400000,
+            "type": "token",
+            "estimator": {
+                "type": "length_ratio",
+                "ratio": 0.5
+            },
+            "slidingWindows": [
+                {
+                    "threshold": 100000,
+                    "timeWindowInMs": 60000
+                }
+            ],
+            "maxWaitMs": 100,
+            "relationType": "AND",
+            "conditions": [
+                {
+                    "type": "tag",
+                    "opType": "EQUAL",
+                    "key": "priority",
+                    "values": [
+                        "high"
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "daily-cost-limit",
+            "version": 1704038400000,
+            "type": "cost",
+            "slidingWindows": [
+                {
+                    "threshold": 5000,
+                    "timeWindowInMs": 86400000
+                }
+            ],
+            "maxWaitMs": 100,
+            "relationType": "AND",
+            "conditions": [
+                {
+                    "type": "query",
+                    "opType": "EQUAL",
+                    "key": "limiter",
+                    "values": [
+                        "true"
+                    ]
+                }
+            ]
+        }
+    ],
+    "routePolicies": [
+        {
+            "name": "priority-routing",
+            "order": 1,
+            "tagRules": [
+                {
+                    "order": 1,
+                    "relationType": "AND",
+                    "conditions": [
+                        {
+                            "type": "tag",
+                            "opType": "EQUAL",
+                            "key": "priority",
+                            "values": [
+                                "high"
+                            ]
+                        }
+                    ],
+                    "destinations": [
+                        {
+                            "weight": 90,
+                            "relationType": "AND",
+                            "conditions": [
+                                {
+                                    "opType": "EQUAL",
+                                    "key": "endpoint_tier",
+                                    "values": [
+                                        "premium"
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            "weight": 10,
+                            "relationType": "AND",
+                            "conditions": [
+                                {
+                                    "opType": "EQUAL",
+                                    "key": "endpoint_tier",
+                                    "values": [
+                                        "standard"
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "circuitBreakPolicies": [
+        {
+            "name": "cb-gpt-4",
+            "level": "SERVICE",
+            "slidingWindowType": "count",
+            "slidingWindowSize": 20,
+            "minCallsThreshold": 5,
+            "errorCodes": [
+                "429",
+                "502",
+                "503",
+                "504"
+            ],
+            "failureRateThreshold": 50,
+            "slowCallMetric": "TTFT",
+            "slowCallRateThreshold": 40,
+            "slowCallDurationThreshold": 3000,
+            "waitDurationInOpenState": 10000,
+            "allowedCallsInHalfOpenState": 3,
+            "forceOpen": false,
+            "degradeConfig": {
+                "responseCode": 503,
+                "type": "OPENAI_ERROR",
+                "errorMessage": "All upstream providers are currently unavailable due to circuit breaking."
+            },
+            "version": 1
+        }
+    ]
+}
