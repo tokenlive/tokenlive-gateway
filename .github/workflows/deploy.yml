@@ -8,6 +8,7 @@ on:
       - '**/*.go'
       - '**/*.js'
       - '**/*.vue'
+  workflow_dispatch:
 
 jobs:
   deploy:

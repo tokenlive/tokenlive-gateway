@@ -15,8 +15,8 @@ security:
 data:
   db:
     user:
-      driver: sqlite
-      dsn: storage/gateway.db?_busy_timeout=5000 # 数据库文件存放在子目录的 storage 中
+      driver: ${DB_DRIVER:sqlite}
+      dsn: ${DB_DSN:storage/gateway.db?_busy_timeout=5000}
   redis:
     addr: ${REDIS_ADDR:localhost:6379}
     password: ${REDIS_PASSWORD:}
@@ -37,8 +37,8 @@ llm:
 
 otel:
   metrics:
-    enabled: true
-    endpoint: "192.168.68.8:4317"
+    enabled: ${OTEL_ENABLED:true}
+    endpoint: "${OTEL_ENDPOINT:192.168.68.8:4317}"
     insecure: true
 
 # LLM Gateway 配置（model-centric 格式）
