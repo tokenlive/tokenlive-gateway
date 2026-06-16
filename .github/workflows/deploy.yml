@@ -37,12 +37,12 @@ jobs:
       - name: Deploy to VPS
         run: |
           # 提前删除正在运行的二进制，避免 text file busy
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "rm -f ~/tokenlive-gateway/tokenlive-gateway/server"
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "rm -f ~/tokenlive-gateway/server"
           
           # 上传最新二进制和生产环境配置文件
-          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${{ secrets.SSH_PORT }} ./bin/server_linux_amd64 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/tokenlive-gateway/tokenlive-gateway/server
-          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${{ secrets.SSH_PORT }} ./config/prod.yml ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/tokenlive-gateway/tokenlive-gateway/config/prod.yml
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${{ secrets.SSH_PORT }} ./bin/server_linux_amd64 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/tokenlive-gateway/server
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${{ secrets.SSH_PORT }} ./config/prod.yml ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/tokenlive-gateway/config/prod.yml
 
       - name: Restart Gateway Service
         run: |
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "chmod +x ~/tokenlive-gateway/tokenlive-gateway/server && systemctl restart tokenlive-gateway && systemctl status tokenlive-gateway --no-pager"
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "chmod +x ~/tokenlive-gateway/server && systemctl restart tokenlive-gateway && systemctl status tokenlive-gateway --no-pager"
