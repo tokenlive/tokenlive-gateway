@@ -216,6 +216,9 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 	gctx.TTFT = winnerGctx.TTFT
 	gctx.InputTokens = winnerGctx.InputTokens
 	gctx.OutputTokens = winnerGctx.OutputTokens
+	gctx.CachedTokens = winnerGctx.CachedTokens
+	gctx.CacheCreationTokens = winnerGctx.CacheCreationTokens
+	gctx.TransmittedChars = winnerGctx.TransmittedChars
 	gctx.Cost = winnerGctx.Cost
 	gctx.Response = winnerGctx.Response
 

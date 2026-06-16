@@ -33,14 +33,18 @@ func (e *CostLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayConte
 	}
 	limitKey := id + ":" + gctx.Model + ":" + policyKey
 
-	price := 0.002 // 默认兜底价格 (每 token 0.002厘)
+	inputPrice := 2.0 // 默认兜底价格 (元/百万 Tokens)
+	outputPrice := 2.0
 	if gctx.Policy != nil && gctx.Policy.Billing != nil {
-		price = gctx.Policy.Billing.InputPrice
+		inputPrice = gctx.Policy.Billing.InputPrice
+		outputPrice = gctx.Policy.Billing.OutputPrice
 	}
 
-	// 估算 Token -> 换算估算费用 (以厘为单位)
-	estimateTokens := EstimateInputTokens(gctx, lp) + EstimateOutputTokens(ctx, e.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
-	estimateCost := int64(float64(estimateTokens) * price * 1000)
+	// 分别估算 input/output token 数，使用各自单价换算预估费用 (以厘为单位)
+	estimateInputTokens := EstimateInputTokens(gctx, lp)
+	estimateOutputTokens := EstimateOutputTokens(ctx, e.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
+	estimateCost := int64((float64(estimateInputTokens)*inputPrice +
+		float64(estimateOutputTokens)*outputPrice) / 1000.0)
 
 	for i, sw := range lp.SlidingWindows {
 		window := time.Duration(sw.TimeWindowInMs) * time.Millisecond
@@ -133,13 +137,17 @@ func (e *CostLimitExecutor) Refund(ctx context.Context, gctx *core.GatewayContex
 	}
 	limitKey := id + ":" + gctx.Model + ":" + policyKey
 
-	price := 0.002 // 默认价格
+	inputPrice := 2.0 // 默认兜底价格 (元/百万 Tokens)
+	outputPrice := 2.0
 	if gctx.Policy != nil && gctx.Policy.Billing != nil {
-		price = gctx.Policy.Billing.InputPrice
+		inputPrice = gctx.Policy.Billing.InputPrice
+		outputPrice = gctx.Policy.Billing.OutputPrice
 	}
 
-	estimateTokens := EstimateInputTokens(gctx, lp) + EstimateOutputTokens(ctx, e.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
-	estimateCost := int64(float64(estimateTokens) * price * 1000)
+	estimateInputTokens := EstimateInputTokens(gctx, lp)
+	estimateOutputTokens := EstimateOutputTokens(ctx, e.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
+	estimateCost := int64((float64(estimateInputTokens)*inputPrice +
+		float64(estimateOutputTokens)*outputPrice) / 1000.0)
 
 	for _, sw := range lp.SlidingWindows {
 		window := time.Duration(sw.TimeWindowInMs) * time.Millisecond

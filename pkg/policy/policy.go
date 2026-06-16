@@ -18,12 +18,12 @@ type Policy struct {
 	EnableMetricsReporting bool                  `yaml:"enable_metrics_reporting" json:"enable_metrics_reporting"`
 }
 
-// BillingPolicy 计费策略配置（厘/1000 Tokens）
+// BillingPolicy 计费策略配置（元/百万 Tokens）
 type BillingPolicy struct {
-	InputPrice         float64 `yaml:"input_price" json:"input_price"`                   // 每 1000 Tokens 价格
-	OutputPrice        float64 `yaml:"output_price" json:"output_price"`                 // 每 1000 Tokens 价格
-	CachedPrice        float64 `yaml:"cached_price" json:"cached_price"`                 // 每 1000 缓存命中 Tokens 价格
-	CacheCreationPrice float64 `yaml:"cache_creation_price" json:"cache_creation_price"` // 每 1000 缓存创建 Tokens 价格
+	InputPrice         float64 `yaml:"input_price" json:"input_price"`                   // 每百万 Tokens 价格 (元)
+	OutputPrice        float64 `yaml:"output_price" json:"output_price"`                 // 每百万 Tokens 价格 (元)
+	CachedPrice        float64 `yaml:"cached_price" json:"cached_price"`                 // 每百万缓存命中 Tokens 价格 (元)
+	CacheCreationPrice float64 `yaml:"cache_creation_price" json:"cache_creation_price"` // 每百万缓存创建 Tokens 价格 (元)
 }
 
 // PolicyProvider 策略提供者接口（用以接口反转，隔离核心层与 I/O 业务层）

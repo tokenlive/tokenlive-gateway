@@ -111,10 +111,10 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 
 	// 统一定义并解析本请求的最终费率 (元/百万 Tokens)
 	var (
-		inputPrice         = 0.002 // 默认兜底价格
-		outputPrice        = 0.002
-		cachedPrice        = 0.002
-		cacheCreationPrice = 0.002
+		inputPrice         = 2.0 // 默认兜底价格 (元/百万 Tokens)
+		outputPrice        = 2.0
+		cachedPrice        = 2.0
+		cacheCreationPrice = 2.0
 	)
 
 	// 1. 回退继承模型级别策略
@@ -163,7 +163,7 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 		gctx.Cost = (float64(nonCachedPromptTokens)*inputPrice +
 			float64(cachedTokens)*cachedPrice +
 			float64(cacheCreationTokens)*cacheCreationPrice +
-			float64(gctx.OutputTokens)*outputPrice) / 1000.0
+			float64(gctx.OutputTokens)*outputPrice) / 1_000_000.0
 	}
 
 	policy := gctx.Policy
@@ -187,16 +187,13 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 			estimated := limiter.EstimateInputTokens(gctx, lp) + limiter.EstimateOutputTokens(context.Background(), f.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
 			diff = actual - estimated
 		} else if lp.Type == "cost" {
-			limitInputPrice := 0.002
-			if policy.Billing != nil {
-				limitInputPrice = policy.Billing.InputPrice
-			}
+			// 分别估算 input/output token 数，使用各自单价计算预估费用 (厘)
+			estimatedInputTokens := limiter.EstimateInputTokens(gctx, lp)
+			estimatedOutputTokens := limiter.EstimateOutputTokens(context.Background(), f.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
+			estimatedCost := int64((float64(estimatedInputTokens)*inputPrice +
+				float64(estimatedOutputTokens)*outputPrice) / 1000.0)
 
-			// 预估费用：基于估计的 prompt token + 估计 of completion token，都采用 inputPrice 扣减
-			estimatedTokens := limiter.EstimateInputTokens(gctx, lp) + limiter.EstimateOutputTokens(context.Background(), f.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
-			estimatedCost := int64(float64(estimatedTokens) * limitInputPrice * 1000)
-
-			// 实际费用：考虑缓存命中及创建的单价
+			// 实际费用：考虑缓存命中及创建的单价 (厘)
 			cachedTokens := gctx.CachedTokens
 			cacheCreationTokens := gctx.CacheCreationTokens
 			if cachedTokens+cacheCreationTokens > gctx.InputTokens {
@@ -208,7 +205,7 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 			actualCost := int64((float64(nonCachedPromptTokens)*inputPrice +
 				float64(cachedTokens)*cachedPrice +
 				float64(cacheCreationTokens)*cacheCreationPrice +
-				float64(gctx.OutputTokens)*outputPrice) * 1000)
+				float64(gctx.OutputTokens)*outputPrice) / 1000.0)
 
 			diff = actualCost - estimatedCost
 		}

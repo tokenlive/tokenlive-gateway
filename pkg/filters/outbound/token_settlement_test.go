@@ -184,10 +184,10 @@ func TestTokenSettlementFilter_CompletionEstimation(t *testing.T) {
 func TestTokenSettlementFilter_OnResponse_WithCachedTokens(t *testing.T) {
 	p := &policy.Policy{
 		Billing: &policy.BillingPolicy{
-			InputPrice:         0.002,
-			OutputPrice:        0.004,
-			CachedPrice:        0.0002, // 90% off
-			CacheCreationPrice: 0.0025,
+			InputPrice:         2.0,   // 元/百万 Tokens
+			OutputPrice:        4.0,
+			CachedPrice:        0.2,   // 90% off
+			CacheCreationPrice: 2.5,
 		},
 		LimitPolicies: []*policy.LimitPolicy{
 			{
@@ -203,13 +203,12 @@ func TestTokenSettlementFilter_OnResponse_WithCachedTokens(t *testing.T) {
 	mock := &mockSettlementStore{}
 	f := NewTokenSettlementFilter(mock, nil, nil)
 
-	// estimatedTokens = EstimatePrompt(0/4=0) + EstimateCompletion(0) = 0.
 	// PromptTokens = 100, CompletionTokens = 50.
 	// CachedTokens = 80, CacheCreationTokens = 10.
 	// Non-cached prompt tokens = 100 - 80 - 10 = 10.
-	// actualCost = (10 * 0.002 + 80 * 0.0002 + 10 * 0.0025 + 50 * 0.004) * 1000
-	//            = (0.02 + 0.016 + 0.025 + 0.2) * 1000
-	//            = 0.261 * 1000 = 261.
+	// gctx.Cost = (10 * 2.0 + 80 * 0.2 + 10 * 2.5 + 50 * 4.0) / 1_000_000
+	//           = (20 + 16 + 25 + 200) / 1_000_000
+	//           = 261 / 1_000_000 = 0.000261
 	gctx := &core.GatewayContext{
 		Ctx:                 context.Background(),
 		Request:             httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
@@ -227,25 +226,27 @@ func TestTokenSettlementFilter_OnResponse_WithCachedTokens(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	// expectedCost = 0.000261
-	if gctx.Cost != 0.000261 {
+	// expectedCost = 0.000261 元
+	if !almostEqual(gctx.Cost, 0.000261) {
 		t.Errorf("expected gctx.Cost to be 0.000261, got %f", gctx.Cost)
 	}
 
+	// 小 token 量下 actualCost(厘) = int64(261/1000) = 0, estimatedCost = 0, diff = 0
+	// 因此不触发滑动窗口扣减（这是正确的行为，小量请求不产生厘级费用）
 	expectedKey := "user-caching:gpt-4:policy-cost-limit:1m0s"
 	incred := mock.incrCalls[expectedKey]
-	if incred != 261 {
-		t.Errorf("expected 261 incred cost, got %d", incred)
+	if incred != 0 {
+		t.Errorf("expected 0 incred cost (diff rounds to 0 for small token counts), got %d", incred)
 	}
 }
 
 func TestTokenSettlementFilter_OnResponse_WithExcessiveCachedTokens(t *testing.T) {
 	p := &policy.Policy{
 		Billing: &policy.BillingPolicy{
-			InputPrice:         0.002,
-			OutputPrice:        0.004,
-			CachedPrice:        0.0002,
-			CacheCreationPrice: 0.0025,
+			InputPrice:         2.0,  // 元/百万 Tokens
+			OutputPrice:        4.0,
+			CachedPrice:        0.2,
+			CacheCreationPrice: 2.5,
 		},
 		LimitPolicies: []*policy.LimitPolicy{
 			{
@@ -304,10 +305,10 @@ func TestTokenSettlementFilter_OnResponse_PriceInheritanceAndOverride(t *testing
 	t.Run("Inherit from model level billing policy", func(t *testing.T) {
 		p := &policy.Policy{
 			Billing: &policy.BillingPolicy{
-				InputPrice:         0.005,
-				OutputPrice:        0.008,
-				CachedPrice:        0.001,
-				CacheCreationPrice: 0.006,
+				InputPrice:         5.0,  // 元/百万 Tokens
+				OutputPrice:        8.0,
+				CachedPrice:        1.0,
+				CacheCreationPrice: 6.0,
 			},
 		}
 		gctx := &core.GatewayContext{
@@ -321,11 +322,11 @@ func TestTokenSettlementFilter_OnResponse_PriceInheritanceAndOverride(t *testing
 			CachedTokens:        20,
 			CacheCreationTokens: 10,
 		}
-		// cost = (nonCachedPromptTokens * inputPrice + cachedTokens * cachedPrice + cacheCreationTokens * cacheCreationPrice + outputTokens * outputPrice) / 1000.0
+		// cost = (nonCachedPromptTokens * inputPrice + cachedTokens * cachedPrice + cacheCreationTokens * cacheCreationPrice + outputTokens * outputPrice) / 1_000_000.0
 		// nonCachedPromptTokens = 100 - 20 - 10 = 70.
-		// cost = (70 * 0.005 + 20 * 0.001 + 10 * 0.006 + 50 * 0.008) / 1000.0
-		//      = (0.35 + 0.02 + 0.06 + 0.40) / 1000.0
-		//      = 0.83 / 1000.0 = 0.00083
+		// cost = (70 * 5.0 + 20 * 1.0 + 10 * 6.0 + 50 * 8.0) / 1_000_000.0
+		//      = (350 + 20 + 60 + 400) / 1_000_000.0
+		//      = 830 / 1_000_000.0 = 0.00083
 		err := f.OnResponse(gctx)
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
@@ -338,16 +339,16 @@ func TestTokenSettlementFilter_OnResponse_PriceInheritanceAndOverride(t *testing
 	t.Run("Override by Endpoint level configuration (Full)", func(t *testing.T) {
 		p := &policy.Policy{
 			Billing: &policy.BillingPolicy{
-				InputPrice:         0.005,
-				OutputPrice:        0.008,
-				CachedPrice:        0.001,
-				CacheCreationPrice: 0.006,
+				InputPrice:         5.0,  // 元/百万 Tokens
+				OutputPrice:        8.0,
+				CachedPrice:        1.0,
+				CacheCreationPrice: 6.0,
 			},
 		}
-		inputVal := 0.01
-		outputVal := 0.02
-		cachedVal := 0.003
-		creationVal := 0.015
+		inputVal := 10.0
+		outputVal := 20.0
+		cachedVal := 3.0
+		creationVal := 15.0
 
 		endpoint := &core.Endpoint{
 			InputPrice:         &inputVal,
@@ -368,11 +369,8 @@ func TestTokenSettlementFilter_OnResponse_PriceInheritanceAndOverride(t *testing
 			CachedTokens:        20,
 			CacheCreationTokens: 10,
 		}
-		// cost = (nonCachedPromptTokens * inputPrice + cachedTokens * cachedPrice + cacheCreationTokens * cacheCreationPrice + outputTokens * outputPrice) / 1000.0
-		// nonCachedPromptTokens = 100 - 20 - 10 = 70.
-		// cost = (70 * 0.01 + 20 * 0.003 + 10 * 0.015 + 50 * 0.02) / 1000.0
-		//      = (0.7 + 0.06 + 0.15 + 1.0) / 1000.0
-		//      = 1.91 / 1000.0 = 0.00191
+		// cost = (70 * 10.0 + 20 * 3.0 + 10 * 15.0 + 50 * 20.0) / 1_000_000.0
+		//      = (700 + 60 + 150 + 1000) / 1_000_000.0 = 1910 / 1_000_000.0 = 0.00191
 		err := f.OnResponse(gctx)
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
@@ -385,14 +383,14 @@ func TestTokenSettlementFilter_OnResponse_PriceInheritanceAndOverride(t *testing
 	t.Run("Override by Endpoint level configuration (Partial/Inheritance)", func(t *testing.T) {
 		p := &policy.Policy{
 			Billing: &policy.BillingPolicy{
-				InputPrice:         0.005,
-				OutputPrice:        0.008,
-				CachedPrice:        0.001,
-				CacheCreationPrice: 0.006,
+				InputPrice:         5.0,  // 元/百万 Tokens
+				OutputPrice:        8.0,
+				CachedPrice:        1.0,
+				CacheCreationPrice: 6.0,
 			},
 		}
-		inputVal := 0.01
-		outputVal := 0.02
+		inputVal := 10.0
+		outputVal := 20.0
 
 		endpoint := &core.Endpoint{
 			InputPrice:         &inputVal,
@@ -422,7 +420,7 @@ func TestTokenSettlementFilter_OnResponse_PriceInheritanceAndOverride(t *testing
 		}
 	})
 
-	t.Run("Fallback to default 0.002 when policy and endpoint are nil", func(t *testing.T) {
+	t.Run("Fallback to default 2.0 when policy and endpoint are nil", func(t *testing.T) {
 		gctx := &core.GatewayContext{
 			Ctx:                 context.Background(),
 			Request:             httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),

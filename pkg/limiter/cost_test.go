@@ -55,8 +55,8 @@ func TestCostLimitExecutor_Execute(t *testing.T) {
 
 	p := &policy.Policy{
 		Billing: &policy.BillingPolicy{
-			InputPrice:  0.005, // 0.005厘 / token
-			OutputPrice: 0.010,
+			InputPrice:  5.0, // 5 元/百万 Tokens
+			OutputPrice: 10.0, // 10 元/百万 Tokens
 		},
 	}
 
@@ -67,8 +67,9 @@ func TestCostLimitExecutor_Execute(t *testing.T) {
 		Policy:  p,
 	}
 
-	// (5 + 200) tokens * 0.005 * 1000 = 1025 厘
-	expectedCost := int64(1025)
+	// estimatedInputTokens = 20/4 = 5, estimatedOutputTokens = 200 (EMA default)
+	// estimateCost = (5*5.0 + 200*10.0) / 1000.0 = (25+2000)/1000 = 2.025 厘 -> int64 = 2
+	expectedCost := int64(2)
 
 	t.Run("Within limit", func(t *testing.T) {
 		mock := &mockCostStore{
