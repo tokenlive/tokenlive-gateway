@@ -6,7 +6,7 @@
 
 在原设计中，网关的重试机制存在以下局限：
 1. **策略结构不对齐**：Go 端的 `RetryPolicy` 中 `ErrorCodes` 为 `[]int`（仅限 HTTP 状态码），而 Java 端 (`joylive-agent`) 为 `Set<String>`，且 Java 端包含 `ErrorParserPolicy`（支持通过 JsonPath/Regexp 从响应体中提取内部 API 错误码）以及对 `errorMessages`（错误消息匹配）的支持。
-2. **重试判定静态化**：网关的重试过滤（`ShouldRetry`）主要依赖于静态配置文件（`local.yml`）解析而成的 `RetryStrategy`，对于保存在 Redis/DB 里的请求级动态策略 `gctx.Policy.InvokePolicy.RetryPolicy`，网关仅动态使用了其中的最大重试次数（`Retry`），未动态匹配其中的错误判定规则。
+2. **重试判定静态化**：网关的重试过滤（`ShouldRetry`）主要依赖于静态配置文件（`local.yml`）解析而成的 `RetryStrategy`，对于保存在 Redis/DB 里的请求级动态策略 `gctx.Policy.InvocationPolicy.RetryPolicy`，网关仅动态使用了其中的最大重试次数（`Retry`），未动态匹配其中的错误判定规则。
 
 为了实现多端策略配置的一致性，我们需要：
 1. 对齐网关端、管理后台端与 Java 端的 `RetryPolicy` 配置结构，使配置能通过 Redis/DB 零开销无缝互通。

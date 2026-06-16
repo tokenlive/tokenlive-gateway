@@ -105,7 +105,7 @@
   ```go
   func TestUnmarshalLLMPolicies(t *testing.T) {
    rawJSON := `{
-    "invokePolicy": {
+    "invocationPolicy": {
      "type": "failover",
      "retryPolicy": {
       "retry": 3,
@@ -142,8 +142,8 @@
     t.Fatalf("failed to unmarshal: %v", err)
    }
 
-   if p.InvokePolicy.RetryPolicy.TTFTimeout != 5000 {
-    t.Errorf("expected ttftTimeout 5000, got %d", p.InvokePolicy.RetryPolicy.TTFTimeout)
+   if p.InvocationPolicy.RetryPolicy.TTFTimeout != 5000 {
+    t.Errorf("expected ttftTimeout 5000, got %d", p.InvocationPolicy.RetryPolicy.TTFTimeout)
    }
    if p.LimitPolicies[0].Estimator.Type != "length_ratio" {
     t.Errorf("expected estimator length_ratio, got %s", p.LimitPolicies[0].Estimator.Type)

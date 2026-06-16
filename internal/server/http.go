@@ -54,7 +54,7 @@ func NewHTTPServer(
 	s.GET("/", func(ctx *gin.Context) {
 		deps.Logger.WithContext(ctx).Info("hello")
 		apiV1.HandleSuccess(ctx, map[string]interface{}{
-			":)": "Thank you for using token hub!",
+			":)": "Thank you for using tokenlive!",
 		})
 	})
 

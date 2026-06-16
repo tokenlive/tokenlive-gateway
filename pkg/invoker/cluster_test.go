@@ -244,8 +244,8 @@ func TestClusterInvoker_NoEndpoints(t *testing.T) {
 	defer core.ReleaseContext(gctx)
 
 	err := ci.Invoke(gctx)
-	if !errors.Is(err, ErrNoAvailableEndpoint) {
-		t.Fatalf("expected ErrNoAvailableEndpoint, got %v", err)
+	if !errors.Is(err, core.ErrNoAvailableEndpoint) {
+		t.Fatalf("expected core.ErrNoAvailableEndpoint, got %v", err)
 	}
 }
 

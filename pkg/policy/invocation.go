@@ -15,6 +15,28 @@ type InvocationPolicy struct {
 	FallbackPolicy *FallbackPolicy `yaml:"fallback_policy" json:"fallback_policy"`
 }
 
+// UnmarshalJSON 兼容 retryPolicy/fallbackPolicy 小驼峰字段。
+func (i *InvocationPolicy) UnmarshalJSON(data []byte) error {
+	type Alias InvocationPolicy
+	aux := &struct {
+		RetryPolicyCamel    *RetryPolicy    `json:"retryPolicy"`
+		FallbackPolicyCamel *FallbackPolicy `json:"fallbackPolicy"`
+		*Alias
+	}{
+		Alias: (*Alias)(i),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.RetryPolicyCamel != nil {
+		i.RetryPolicy = aux.RetryPolicyCamel
+	}
+	if aux.FallbackPolicyCamel != nil {
+		i.FallbackPolicy = aux.FallbackPolicyCamel
+	}
+	return nil
+}
+
 // FallbackPolicy 降级子配置
 type FallbackPolicy struct {
 	Targets []string `yaml:"targets" json:"targets"` // 降级目标模型链条，如 ["gpt-4:free", "gpt-3.5-turbo"]

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
 
@@ -24,6 +25,78 @@ type BillingPolicy struct {
 	OutputPrice        float64 `yaml:"output_price" json:"output_price"`                 // 每百万 Tokens 价格 (元)
 	CachedPrice        float64 `yaml:"cached_price" json:"cached_price"`                 // 每百万缓存命中 Tokens 价格 (元)
 	CacheCreationPrice float64 `yaml:"cache_creation_price" json:"cache_creation_price"` // 每百万缓存创建 Tokens 价格 (元)
+}
+
+// UnmarshalJSON 兼容 Redis/Admin 侧历史小驼峰策略字段。
+func (p *Policy) UnmarshalJSON(data []byte) error {
+	type Alias Policy
+	aux := &struct {
+		LoadBalancePolicyCamel      *LoadBalancePolicy    `json:"loadBalancePolicy"`
+		InvocationPolicyCamel       *InvocationPolicy     `json:"invocationPolicy"`
+		LimitPoliciesCamel          []*LimitPolicy        `json:"limitPolicies"`
+		RoutePoliciesCamel          []*RoutePolicy        `json:"routePolicies"`
+		CircuitBreakPoliciesCamel   []*CircuitBreakPolicy `json:"circuitBreakPolicies"`
+		TaggingPoliciesCamel        []*TaggingPolicy      `json:"taggingPolicies"`
+		EnableMetricsReportingCamel *bool                 `json:"enableMetricsReporting"`
+		*Alias
+	}{
+		Alias: (*Alias)(p),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.LoadBalancePolicyCamel != nil {
+		p.LoadBalancePolicy = aux.LoadBalancePolicyCamel
+	}
+	if aux.InvocationPolicyCamel != nil {
+		p.InvocationPolicy = aux.InvocationPolicyCamel
+	}
+	if len(aux.LimitPoliciesCamel) > 0 {
+		p.LimitPolicies = aux.LimitPoliciesCamel
+	}
+	if len(aux.RoutePoliciesCamel) > 0 {
+		p.RoutePolicies = aux.RoutePoliciesCamel
+	}
+	if len(aux.CircuitBreakPoliciesCamel) > 0 {
+		p.CircuitBreakPolicies = aux.CircuitBreakPoliciesCamel
+	}
+	if len(aux.TaggingPoliciesCamel) > 0 {
+		p.TaggingPolicies = aux.TaggingPoliciesCamel
+	}
+	if aux.EnableMetricsReportingCamel != nil {
+		p.EnableMetricsReporting = *aux.EnableMetricsReportingCamel
+	}
+	return nil
+}
+
+// UnmarshalJSON 兼容计费策略小驼峰字段。
+func (b *BillingPolicy) UnmarshalJSON(data []byte) error {
+	type Alias BillingPolicy
+	aux := &struct {
+		InputPriceCamel         *float64 `json:"inputPrice"`
+		OutputPriceCamel        *float64 `json:"outputPrice"`
+		CachedPriceCamel        *float64 `json:"cachedPrice"`
+		CacheCreationPriceCamel *float64 `json:"cacheCreationPrice"`
+		*Alias
+	}{
+		Alias: (*Alias)(b),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.InputPriceCamel != nil {
+		b.InputPrice = *aux.InputPriceCamel
+	}
+	if aux.OutputPriceCamel != nil {
+		b.OutputPrice = *aux.OutputPriceCamel
+	}
+	if aux.CachedPriceCamel != nil {
+		b.CachedPrice = *aux.CachedPriceCamel
+	}
+	if aux.CacheCreationPriceCamel != nil {
+		b.CacheCreationPrice = *aux.CacheCreationPriceCamel
+	}
+	return nil
 }
 
 // PolicyProvider 策略提供者接口（用以接口反转，隔离核心层与 I/O 业务层）

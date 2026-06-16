@@ -16,3 +16,4 @@ scratch/
 .env
 .env.local
 config/*.local.yml
+/deploy.sh

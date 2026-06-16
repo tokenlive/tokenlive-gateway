@@ -12,9 +12,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// RetryStrategy 重试策略（已实现 policy.ErrorPolicy 接口，与策略结构完全对齐）
-var ErrNoAvailableEndpoint = fmt.Errorf("no available endpoint")
-
 // DefaultRetryStrategy 默认全局重试策略
 var DefaultRetryStrategy = &policy.RetryPolicy{
 	Retry:       0,
@@ -82,6 +79,14 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 	excluded := make(map[string]bool)
 	var lastErr error
 
+	var lastInvoker core.Invoker
+	var lastEndpoint *core.Endpoint
+	var lastConnect time.Time
+	var lastResponse *http.Response
+	var lastBody []byte
+	var lastUpstreamErr error
+	var hasPhysicalCall bool
+
 	// 解析并应用 TotalTimeout (请求总超时，毫秒，默认非流式 60s，流式 10分钟)
 	totalTimeout := 60000
 	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy.TotalTimeout > 0 {
@@ -126,7 +131,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		if len(endpoints) == 0 {
 			if lastErr == nil {
-				lastErr = ErrNoAvailableEndpoint
+				lastErr = core.ErrNoAvailableEndpoint
 			}
 			continue
 		}
@@ -165,7 +170,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		if len(endpoints) == 0 {
 			if lastErr == nil {
-				lastErr = ErrNoAvailableEndpoint
+				lastErr = core.ErrNoAvailableEndpoint
 			}
 			continue
 		}
@@ -180,7 +185,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		if len(filtered) == 0 {
 			if lastErr == nil {
-				lastErr = ErrNoAvailableEndpoint
+				lastErr = core.ErrNoAvailableEndpoint
 			}
 			continue
 		}
@@ -212,7 +217,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		invoker := lb.Select(gctx, filtered)
 		if invoker == nil {
 			if lastErr == nil {
-				lastErr = ErrNoAvailableEndpoint
+				lastErr = core.ErrNoAvailableEndpoint
 			}
 			continue
 		}
@@ -237,6 +242,14 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		// 执行调用
 		err = invoker.Invoke(gctx)
 		gctx.RecordAttempt(err == nil)
+
+		lastInvoker = gctx.SelectedInvoker
+		lastEndpoint = gctx.SelectedEndpoint
+		lastConnect = gctx.UpstreamConnect
+		lastResponse = gctx.UpstreamResponse
+		lastBody = gctx.UpstreamBody
+		lastUpstreamErr = gctx.UpstreamError
+		hasPhysicalCall = true
 
 		if err == nil {
 			isSlowCall := false
@@ -312,6 +325,15 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		// 排除该 endpoint
 		excluded[gctx.SelectedEndpoint.ID] = true
+	}
+
+	if hasPhysicalCall && (gctx.SelectedEndpoint == nil || (gctx.UpstreamResponse == nil && gctx.UpstreamError == nil)) {
+		gctx.SelectedInvoker = lastInvoker
+		gctx.SelectedEndpoint = lastEndpoint
+		gctx.UpstreamConnect = lastConnect
+		gctx.UpstreamResponse = lastResponse
+		gctx.UpstreamBody = lastBody
+		gctx.UpstreamError = lastUpstreamErr
 	}
 
 	return lastErr

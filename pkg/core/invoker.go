@@ -2,10 +2,14 @@ package core
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.uber.org/zap"
 )
+
+// ErrNoAvailableEndpoint 无可用端点错误
+var ErrNoAvailableEndpoint = errors.New("no available endpoint")
 
 // Invoker 统一的"可被调用"抽象
 type Invoker interface {

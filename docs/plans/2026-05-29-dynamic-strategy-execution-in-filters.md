@@ -144,7 +144,7 @@
   ```go
   type Policy struct {
    LoadBalancePolicy    *LoadBalancePolicy     `yaml:"loadBalancePolicy" json:"loadBalancePolicy"`
-   InvokePolicy         *InvokePolicy          `yaml:"invokePolicy" json:"invokePolicy"`
+   InvocationPolicy     *InvocationPolicy      `yaml:"invocationPolicy" json:"invocationPolicy"`
    LimitPolicies        []*LimitPolicy         `yaml:"limitPolicies" json:"limitPolicies"`
    RoutePolicies        []*RoutePolicy         `yaml:"routePolicies" json:"routePolicies"`
    CircuitBreakPolicies []*CircuitBreakPolicy  `yaml:"circuitBreakPolicies" json:"circuitBreakPolicies"`

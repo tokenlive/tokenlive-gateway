@@ -1228,7 +1228,7 @@ PolicyMatcher 内部维护高性能本地内存缓存快照（Local Memory Cache
 ```go
 type Policy struct {
  LoadBalancePolicy    *LoadBalancePolicy     `yaml:"loadBalancePolicy" json:"loadBalancePolicy"`
- InvokePolicy         *InvokePolicy          `yaml:"invokePolicy" json:"invokePolicy"`
+ InvocationPolicy     *InvocationPolicy      `yaml:"invocationPolicy" json:"invocationPolicy"`
  LimitPolicies        []*LimitPolicy         `yaml:"limitPolicies" json:"limitPolicies"`
  RoutePolicies        []*RoutePolicy         `yaml:"routePolicies" json:"routePolicies"`
  CircuitBreakPolicies []*CircuitBreakPolicy  `yaml:"circuitBreakPolicies" json:"circuitBreakPolicies"`
@@ -2626,7 +2626,7 @@ func (p *OpenAIProvider) RequestTypes() []RequestType {
 |---|--------|------|
 | 188 | ErrorCodes 类型对齐 | 变更为 `[]string`，并配合 `UnmarshalJSON` 实现与整型 `error_codes` 配置的向前兼容 |
 | 189 | 统一 ErrorParserPolicy | 统一网关与管理端，包含 `Parser`、`Expression`、`Statuses`、`ContentTypes`，重构替换 `CircuitBreakPolicy.CodePolicy` |
-| 190 | 动态重试决策执行 | 在 `ClusterInvoker` 中优先根据请求级 `gctx.Policy.InvokePolicy.RetryPolicy` 动态运行 MatchError 决策，未配置则回退到静态策略 |
+| 190 | 动态重试决策执行 | 在 `ClusterInvoker` 中优先根据请求级 `gctx.Policy.InvocationPolicy.RetryPolicy` 动态运行 MatchError 决策，未配置则回退到静态策略 |
 | 191 | 多语言模型互通 | 与 Java 端 `joylive-agent` 的 RetryPolicy 及 ErrorParserPolicy 概念完全对齐，实现多端策略无损互传 |
 
 ---

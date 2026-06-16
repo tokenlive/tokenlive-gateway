@@ -230,6 +230,99 @@ func TestUnmarshalLLMPolicies(t *testing.T) {
 	}
 }
 
+func TestPolicy_UnmarshalCamelCaseRuntimeConfig(t *testing.T) {
+	rawJSON := `{
+		"loadBalancePolicy": {
+			"type": "ROUND_ROBIN",
+			"params": "{\"sticky\":true}"
+		},
+		"invocationPolicy": {
+			"type": "failover",
+			"retryPolicy": {
+				"retry": 3,
+				"errorCodes": [429, 502],
+				"connectTimeout": 2000,
+				"ttftTimeout": 5000,
+				"totalTimeout": 60
+			},
+			"fallbackPolicy": {
+				"targets": ["gpt-4:free", "gpt-3.5-turbo"]
+			}
+		},
+		"circuitBreakPolicies": [
+			{
+				"name": "cb-gpt-4",
+				"level": "SERVICE",
+				"slidingWindowType": "count",
+				"slidingWindowSize": 20,
+				"minCallsThreshold": 5,
+				"errorCodes": [429, "502"],
+				"failureRateThreshold": 50,
+				"slowCallMetric": "TTFT",
+				"slowCallRateThreshold": 40,
+				"slowCallDurationThreshold": 3000,
+				"waitDurationInOpenState": 10000,
+				"allowedCallsInHalfOpenState": 3,
+				"forceOpen": false,
+				"degradeConfig": {
+					"responseCode": 503,
+					"responseBody": "{\"error\":\"service unavailable\"}"
+				}
+			}
+		],
+		"enableMetricsReporting": true,
+		"billing": {
+			"inputPrice": 0.0015,
+			"outputPrice": 0.002,
+			"cachedPrice": 0.0001,
+			"cacheCreationPrice": 0.0002
+		}
+	}`
+
+	var p Policy
+	if err := json.Unmarshal([]byte(rawJSON), &p); err != nil {
+		t.Fatalf("failed to unmarshal camel case runtime config: %v", err)
+	}
+
+	if p.LoadBalancePolicy == nil || p.LoadBalancePolicy.Type != "ROUND_ROBIN" || p.LoadBalancePolicy.Params["sticky"] != true {
+		t.Fatalf("unexpected loadBalancePolicy: %+v", p.LoadBalancePolicy)
+	}
+	if p.InvocationPolicy == nil || p.InvocationPolicy.Type != "failover" {
+		t.Fatalf("unexpected invocation policy: %+v", p.InvocationPolicy)
+	}
+	if p.InvocationPolicy.RetryPolicy == nil || p.InvocationPolicy.RetryPolicy.Retry != 3 {
+		t.Fatalf("unexpected retry policy: %+v", p.InvocationPolicy.RetryPolicy)
+	}
+	if got := p.InvocationPolicy.RetryPolicy.ErrorCodes; len(got) != 2 || got[0] != "429" || got[1] != "502" {
+		t.Fatalf("expected retry error codes [429 502], got %v", got)
+	}
+	if p.InvocationPolicy.RetryPolicy.TotalTimeout != 60000 {
+		t.Fatalf("expected totalTimeout seconds to be converted to ms, got %d", p.InvocationPolicy.RetryPolicy.TotalTimeout)
+	}
+	if got := p.InvocationPolicy.FallbackPolicy.Targets; len(got) != 2 || got[0] != "gpt-4:free" || got[1] != "gpt-3.5-turbo" {
+		t.Fatalf("unexpected fallback targets: %v", got)
+	}
+	if len(p.CircuitBreakPolicies) != 1 {
+		t.Fatalf("expected one circuitBreakPolicy, got %d", len(p.CircuitBreakPolicies))
+	}
+	cb := p.CircuitBreakPolicies[0]
+	if cb.SlidingWindowType != "count" || cb.SlidingWindowSize != 20 || cb.MinCallsThreshold != 5 {
+		t.Fatalf("unexpected circuit window config: %+v", cb)
+	}
+	if got := cb.ErrorCodes; len(got) != 2 || got[0] != "429" || got[1] != "502" {
+		t.Fatalf("expected circuit error codes [429 502], got %v", got)
+	}
+	if cb.DegradeConfig == nil || cb.DegradeConfig.ResponseCode != 503 || cb.DegradeConfig.ResponseBody == "" {
+		t.Fatalf("unexpected degradeConfig: %+v", cb.DegradeConfig)
+	}
+	if !p.EnableMetricsReporting {
+		t.Fatal("expected enableMetricsReporting true")
+	}
+	if p.Billing == nil || p.Billing.InputPrice != 0.0015 || p.Billing.CacheCreationPrice != 0.0002 {
+		t.Fatalf("unexpected billing: %+v", p.Billing)
+	}
+}
+
 func TestRetryPolicy_UnmarshalAndMatchError(t *testing.T) {
 	// 1. 验证 JSON 反序列化混合数组兼容性
 	rawIntJSON := `{
