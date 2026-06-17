@@ -242,9 +242,6 @@ curl http://localhost:8000/metrics
 | `/v1/models` | GET | 返回当前 API Key 授权的模型列表（OpenAI 标准格式）。数据源：Redis SET `aigw:user:{userID}:models`；未鉴权返回 401，用户未授权任何模型返回 `{object:"list", data:[]}` |
 | `/health` | GET | 健康检查 |
 | `/metrics` | GET | Prometheus 指标 |
-| `/v1/register` | POST | 用户注册 |
-| `/v1/login` | POST | 用户登录 |
-| `/v1/user` | GET/PUT | 用户信息管理 |
 
 ## 配置
 
@@ -352,9 +349,9 @@ func init() {
 - [x] 关系型三表配置（models / providers / model_providers）
 - [x] 分层配置源（YAML 默认 + Redis 覆盖 + 懒加载 + 版本轮询）
 - [x] UpstreamModel 机制（Endpoint 级 model 名替换）
+- [x] Web UI 管理界面
 - [ ] 更多 Provider（Google Gemini、DeepSeek、Qwen）
 - [ ] K8s 服务发现完整集成
-- [ ] Web UI 管理界面
 - [ ] Docker / Kubernetes Helm Chart 部署
 
 ## License

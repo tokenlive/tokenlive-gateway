@@ -242,9 +242,6 @@ curl http://localhost:8000/metrics
 | `/v1/models` | GET | List authorized models for the current API Key (OpenAI standard format). Data source: Redis SET `aigw:user:{userID}:models`. Unauthenticated requests return 401. If the user has no authorized models, returns `{object:"list", data:[]}` |
 | `/health` | GET | Gateway health check |
 | `/metrics` | GET | Prometheus metrics |
-| `/v1/register` | POST | User registration |
-| `/v1/login` | POST | User login |
-| `/v1/user` | GET/PUT | User profile management |
 
 ## Configuration
 
@@ -352,9 +349,9 @@ To add a new Provider:
 - [x] Relational three-table configuration models (models / providers / model_providers)
 - [x] Layered configuration sources (YAML default + Redis override + lazy loading + version polling)
 - [x] UpstreamModel mechanism (Endpoint-level model name rewrite)
+- [x] Web UI management console
 - [ ] More Providers (Google Gemini, DeepSeek, Qwen)
 - [ ] Complete Kubernetes Service Discovery integration
-- [ ] Web UI management console
 - [ ] Docker / Kubernetes Helm Chart deployment
 
 ## License
