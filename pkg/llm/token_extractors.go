@@ -32,6 +32,12 @@ func OpenAITokenExtractor(data string) (int, int, int, int) {
 
 // AnthropicTokenExtractor 从 Anthropic SSE 事件数据中提取 token 数量，包括缓存读取与写入。
 // 处理 message_start (input_tokens) 和 message_delta (output_tokens)。
+//
+// 重要语义：与 OpenAI 不同，Anthropic 的 input_tokens 仅表示「未命中缓存的输入」，
+// cache_read_input_tokens 和 cache_creation_input_tokens 是额外单独计量的部分。
+// 为了让下游计费公式（nonCached = InputTokens - Cached - CacheCreation）对所有 provider 通用，
+// 这里将返回的 inputTokens 统一为「总输入」= input_tokens + cache_read + cache_creation，
+// 使其与 OpenAI 的 prompt_tokens（已含 cached_tokens）语义对齐。
 func AnthropicTokenExtractor(data string) (int, int, int, int) {
 	var event struct {
 		Type    string `json:"type"`
@@ -58,16 +64,23 @@ func AnthropicTokenExtractor(data string) (int, int, int, int) {
 	switch event.Type {
 	case "message_start":
 		if event.Message != nil && event.Message.Usage != nil {
-			in = event.Message.Usage.InputTokens
-			cached = event.Message.Usage.CacheReadInputTokens
-			cacheCreated = event.Message.Usage.CacheCreationInputTokens
+			u := event.Message.Usage
+			cached = u.CacheReadInputTokens
+			cacheCreated = u.CacheCreationInputTokens
+			// 归一化为总输入（含缓存读取与缓存写入），对齐 OpenAI 语义
+			in = u.InputTokens + cached + cacheCreated
 		}
 	case "message_delta":
 		if event.Usage != nil {
-			in = event.Usage.InputTokens
-			out = event.Usage.OutputTokens
-			cached = event.Usage.CacheReadInputTokens
-			cacheCreated = event.Usage.CacheCreationInputTokens
+			u := event.Usage
+			out = u.OutputTokens
+			cached = u.CacheReadInputTokens
+			cacheCreated = u.CacheCreationInputTokens
+			// 仅当本帧确实携带了输入信息时才输出总输入；
+			// message_delta 通常只更新 output，input 相关字段为 0，此时返回 0 避免覆盖 message_start 的值
+			if u.InputTokens > 0 || cached > 0 || cacheCreated > 0 {
+				in = u.InputTokens + cached + cacheCreated
+			}
 		}
 	}
 

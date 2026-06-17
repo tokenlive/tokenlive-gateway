@@ -37,22 +37,28 @@ func (f *TokenSettlementFilter) Order() int                          { return 10
 func (f *TokenSettlementFilter) Criticality() core.FilterCriticality { return core.Critical }
 
 func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
+	// 先解析费率，供配额扣减与费用结算共用
+	inputPrice, outputPrice, cachedPrice, cacheCreationPrice := resolvePrices(gctx)
+
 	// ===== 配额扣减逻辑 =====
 	// 只对个人用户（UserID != ""）且请求成功的场景进行配额扣减
 	if gctx.UserID != "" && gctx.Err == nil && f.quotaDeductor != nil {
-		// 计算总 Token 数（输入 + 输出）
-		totalTokens := int64(gctx.InputTokens + gctx.OutputTokens)
+		// 按实际计费成本折算的「等效 token」扣减配额：
+		// 缓存读取/写入 token 按其相对输入原价的折扣等比折算为「原价输入等效 token」。
+		// 这样重度使用 prompt caching 的用户（实际成本更低）会被扣更少的配额，计费更公平，
+		// 同时保持配额存储仍为整数 token，无需改动 DeductQuota 接口与 Redis 结构。
+		quotaTokens := computeCostEquivalentTokens(gctx, inputPrice, outputPrice, cachedPrice, cacheCreationPrice)
 
-		if totalTokens > 0 {
+		if quotaTokens > 0 {
 			// 扣减配额
-			newQuota, err := f.quotaDeductor.DeductQuota(gctx.Ctx, gctx.APIKey, totalTokens)
+			newQuota, err := f.quotaDeductor.DeductQuota(gctx.Ctx, gctx.APIKey, quotaTokens)
 			if err != nil {
 				// 配额扣减失败，记录错误并返回（触发补偿机制）
 				if f.logger != nil {
 					f.logger.Error("failed to deduct quota",
 						zap.String("user_id", gctx.UserID),
 						zap.String("api_key", gctx.APIKey[:8]+"..."),
-						zap.Int64("tokens", totalTokens),
+						zap.Int64("tokens", quotaTokens),
 						zap.Error(err))
 				}
 				return err
@@ -62,7 +68,7 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 			if f.logger != nil {
 				f.logger.Debug("quota deducted successfully",
 					zap.String("user_id", gctx.UserID),
-					zap.Int64("tokens", totalTokens),
+					zap.Int64("tokens", quotaTokens),
 					zap.Int64("new_quota", newQuota))
 			}
 		}
@@ -88,6 +94,29 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 			gctx.Tags = make(map[string]string)
 		}
 		gctx.Tags["completion_token_estimated"] = "true"
+
+		// 缺陷3修复：流式异常中断时 usage（通常在最后一帧）往往缺失，InputTokens 也为 0，
+		// 导致 computeActualCost 仅算出输出费用、完全漏算输入费用（网关收入损失）。
+		// 这里用与预估相同的口径从 RawBody 估算输入 token 并补齐，并标记为估算。
+		// 注意：此场景无法知道缓存命中情况，按全部未命中（原价）估算，偏保守。
+		if gctx.InputTokens == 0 && len(gctx.RawBody) > 0 {
+			estimatedInput := int64(0)
+			if gctx.Policy != nil {
+				for _, lp := range gctx.Policy.LimitPolicies {
+					if lp.Type == "token" || lp.Type == "cost" {
+						estimatedInput = limiter.EstimateInputTokens(gctx, lp)
+						break
+					}
+				}
+			}
+			if estimatedInput <= 0 {
+				estimatedInput = limiter.EstimateInputTokens(gctx, nil)
+			}
+			if estimatedInput > 0 {
+				gctx.InputTokens = int(estimatedInput)
+				gctx.Tags["input_token_estimated"] = "true"
+			}
+		}
 	}
 
 	// 异步更新 EMA 估算值
@@ -109,61 +138,11 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 		}()
 	}
 
-	// 统一定义并解析本请求的最终费率 (元/百万 Tokens)
-	var (
-		inputPrice         = 2.0 // 默认兜底价格 (元/百万 Tokens)
-		outputPrice        = 2.0
-		cachedPrice        = 2.0
-		cacheCreationPrice = 2.0
-	)
-
-	// 1. 回退继承模型级别策略
-	if gctx.Policy != nil && gctx.Policy.Billing != nil {
-		inputPrice = gctx.Policy.Billing.InputPrice
-		outputPrice = gctx.Policy.Billing.OutputPrice
-		if gctx.Policy.Billing.CachedPrice > 0 {
-			cachedPrice = gctx.Policy.Billing.CachedPrice
-		} else {
-			cachedPrice = inputPrice
-		}
-		if gctx.Policy.Billing.CacheCreationPrice > 0 {
-			cacheCreationPrice = gctx.Policy.Billing.CacheCreationPrice
-		} else {
-			cacheCreationPrice = inputPrice
-		}
-	}
-
-	// 2. 覆盖 Endpoint 级别配置价格 (最高优先级)
-	if gctx.SelectedEndpoint != nil {
-		if gctx.SelectedEndpoint.InputPrice != nil {
-			inputPrice = *gctx.SelectedEndpoint.InputPrice
-		}
-		if gctx.SelectedEndpoint.OutputPrice != nil {
-			outputPrice = *gctx.SelectedEndpoint.OutputPrice
-		}
-		if gctx.SelectedEndpoint.CachedPrice != nil {
-			cachedPrice = *gctx.SelectedEndpoint.CachedPrice
-		}
-		if gctx.SelectedEndpoint.CacheCreationPrice != nil {
-			cacheCreationPrice = *gctx.SelectedEndpoint.CacheCreationPrice
-		}
-	}
+	// 统一定义并解析本请求的最终费率 (元/百万 Tokens)，已在 OnResponse 开头解析（供配额与费用共用）
 
 	// 计算实际费用并赋给 gctx.Cost (包含缓存命中的支持)
 	if gctx.Err == nil {
-		if gctx.CachedTokens+gctx.CacheCreationTokens > gctx.InputTokens {
-			gctx.CachedTokens = gctx.InputTokens
-			gctx.CacheCreationTokens = 0
-		}
-
-		cachedTokens := gctx.CachedTokens
-		cacheCreationTokens := gctx.CacheCreationTokens
-		nonCachedPromptTokens := gctx.InputTokens - cachedTokens - cacheCreationTokens
-
-		gctx.Cost = (float64(nonCachedPromptTokens)*inputPrice +
-			float64(cachedTokens)*cachedPrice +
-			float64(cacheCreationTokens)*cacheCreationPrice +
-			float64(gctx.OutputTokens)*outputPrice) / 1_000_000.0
+		gctx.Cost = computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice)
 	}
 
 	policy := gctx.Policy
@@ -187,25 +166,46 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 			estimated := limiter.EstimateInputTokens(gctx, lp) + limiter.EstimateOutputTokens(context.Background(), f.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
 			diff = actual - estimated
 		} else if lp.Type == "cost" {
-			// 分别估算 input/output token 数，使用各自单价计算预估费用 (厘)
+			// 缺陷2修复：预估费用需与实际费用口径对齐，避免缓存命中场景下预估系统性偏高。
+			// 实际口径：缓存的命中/写入部分按 cachedPrice/cacheCreationPrice 计费。
+			// 由于 OnResponse 时上游已返回 cached/cacheCreation（若有），预估应复用这些已知值，
+			// 仅对「未知部分」做估算：
+			//   - 输入：总输入未知 → 用 EstimateInputTokens 估算（此时它代表预估的总输入），
+			//     但其中已知 cached/cacheCreation 部分应按各自单价计费，剩余按 inputPrice。
+			//   - 输出：完全未知 → 用 EstimateOutputTokens (EMA) 估算，按 outputPrice。
 			estimatedInputTokens := limiter.EstimateInputTokens(gctx, lp)
 			estimatedOutputTokens := limiter.EstimateOutputTokens(context.Background(), f.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
-			estimatedCost := int64((float64(estimatedInputTokens)*inputPrice +
+
+			// 在预估口径下，对 cached/cacheCreation 做与实际一致的拆分（口径统一）
+			estCached := int64(gctx.CachedTokens)
+			estCacheCreation := int64(gctx.CacheCreationTokens)
+			if estCached < 0 {
+				estCached = 0
+			}
+			if estCacheCreation < 0 {
+				estCacheCreation = 0
+			}
+			if estCached+estCacheCreation > estimatedInputTokens {
+				// 预估总输入不足以覆盖已知缓存部分，钳制（保守）
+				if estCached > estimatedInputTokens {
+					estCached = estimatedInputTokens
+				}
+				estCacheCreation = estimatedInputTokens - estCached
+				if estCacheCreation < 0 {
+					estCacheCreation = 0
+				}
+			}
+			estNonCached := estimatedInputTokens - estCached - estCacheCreation
+
+			// 预估费用 (厘)，与 actualCost 口径一致
+			estimatedCost := int64((float64(estNonCached)*inputPrice +
+				float64(estCached)*cachedPrice +
+				float64(estCacheCreation)*cacheCreationPrice +
 				float64(estimatedOutputTokens)*outputPrice) / 1000.0)
 
-			// 实际费用：考虑缓存命中及创建的单价 (厘)
-			cachedTokens := gctx.CachedTokens
-			cacheCreationTokens := gctx.CacheCreationTokens
-			if cachedTokens+cacheCreationTokens > gctx.InputTokens {
-				cachedTokens = gctx.InputTokens
-				cacheCreationTokens = 0
-			}
-			nonCachedPromptTokens := gctx.InputTokens - cachedTokens - cacheCreationTokens
-
-			actualCost := int64((float64(nonCachedPromptTokens)*inputPrice +
-				float64(cachedTokens)*cachedPrice +
-				float64(cacheCreationTokens)*cacheCreationPrice +
-				float64(gctx.OutputTokens)*outputPrice) / 1000.0)
+			// 实际费用：考虑缓存命中及创建的单价 (厘)，使用与 gctx.Cost 完全一致的计算口径
+			// computeActualCost 返回元；1 元 = 1000 厘，故乘以 1000
+			actualCost := int64(computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice) * 1000.0)
 
 			diff = actualCost - estimatedCost
 		}
@@ -244,4 +244,108 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 		}
 	}
 	return nil
+}
+
+// computeActualCost 按四段单价计算一次请求的实际费用（单位：元）。
+// 缓存读取/写入 token 仅是 InputTokens 的子集，需把命中/写入部分从原价输入中扣除，
+// 剩余部分按 inputPrice 计费，避免重复计费。本函数不修改 gctx 状态，
+// 仅对缓存 token 做防御性 clamp（保证 nonCached >= 0）。
+func computeActualCost(gctx *core.GatewayContext, inputPrice, cachedPrice, cacheCreationPrice, outputPrice float64) float64 {
+	cached, cacheCreation, nonCachedPrompt, output := clampAndSplitTokens(gctx)
+	return (float64(nonCachedPrompt)*inputPrice +
+		float64(cached)*cachedPrice +
+		float64(cacheCreation)*cacheCreationPrice +
+		float64(output)*outputPrice) / 1_000_000.0
+}
+
+// computeCostEquivalentTokens 把本次请求的实际计费成本，折算为「按输入原价计费的等效 token 数」，
+// 用于配额扣减。这样缓存命中/写入 token（单价更低）会折算为更少的等效 token，
+// 使重度使用 prompt caching 的用户扣减更少的配额，与网关真实成本对齐。
+// 计算方式：总实际费用(元) / 输入单价(元/百万 token) * 1_000_000 = 等效 token。
+// 当 inputPrice <= 0 时回退为原始 token 总数，保证不会漏扣。
+func computeCostEquivalentTokens(gctx *core.GatewayContext, inputPrice, outputPrice, cachedPrice, cacheCreationPrice float64) int64 {
+	totalRaw := int64(gctx.InputTokens) + int64(gctx.OutputTokens)
+	if inputPrice <= 0 {
+		return totalRaw
+	}
+	costYuan := computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice)
+	equiv := costYuan / inputPrice * 1_000_000.0
+	if equiv < 0 {
+		equiv = 0
+	}
+	equivInt := int64(equiv + 0.5) // 四舍五入
+	if equivInt <= 0 {
+		// 至少扣 1 个 token，避免极端情况下漏扣
+		equivInt = 1
+	}
+	return equivInt
+}
+
+// clampAndSplitTokens 是 computeActualCost / computeCostEquivalentTokens 的公共子例程：
+// 对缓存 token 做防御性 clamp（不修改 gctx），并返回四段拆分后的 token 数。
+// 返回顺序：cached, cacheCreation, nonCachedPrompt, output。
+func clampAndSplitTokens(gctx *core.GatewayContext) (cached, cacheCreation, nonCachedPrompt, output int) {
+	cached = gctx.CachedTokens
+	cacheCreation = gctx.CacheCreationTokens
+	if cached < 0 {
+		cached = 0
+	}
+	if cacheCreation < 0 {
+		cacheCreation = 0
+	}
+	// 防御性 clamp：缓存部分之和不得超过总输入；优先保留缓存读取（单价通常更低）
+	if cached+cacheCreation > gctx.InputTokens {
+		if cached > gctx.InputTokens {
+			cached = gctx.InputTokens
+		}
+		cacheCreation = gctx.InputTokens - cached
+		if cacheCreation < 0 {
+			cacheCreation = 0
+		}
+	}
+	nonCachedPrompt = gctx.InputTokens - cached - cacheCreation
+	output = gctx.OutputTokens
+	return
+}
+
+// resolvePrices 解析本请求最终的费率 (元/百万 Tokens)。
+// 解析顺序（后者优先级更高）：默认兜底 → Policy.Billing（缺失缓存类单价时回退为 inputPrice）→ SelectedEndpoint 按字段覆盖。
+func resolvePrices(gctx *core.GatewayContext) (inputPrice, outputPrice, cachedPrice, cacheCreationPrice float64) {
+	inputPrice = 2.0 // 默认兜底价格 (元/百万 Tokens)
+	outputPrice = 2.0
+	cachedPrice = 2.0
+	cacheCreationPrice = 2.0
+
+	// 1. 回退继承模型级别策略
+	if gctx.Policy != nil && gctx.Policy.Billing != nil {
+		inputPrice = gctx.Policy.Billing.InputPrice
+		outputPrice = gctx.Policy.Billing.OutputPrice
+		if gctx.Policy.Billing.CachedPrice > 0 {
+			cachedPrice = gctx.Policy.Billing.CachedPrice
+		} else {
+			cachedPrice = inputPrice
+		}
+		if gctx.Policy.Billing.CacheCreationPrice > 0 {
+			cacheCreationPrice = gctx.Policy.Billing.CacheCreationPrice
+		} else {
+			cacheCreationPrice = inputPrice
+		}
+	}
+
+	// 2. 覆盖 Endpoint 级别配置价格 (最高优先级)
+	if gctx.SelectedEndpoint != nil {
+		if gctx.SelectedEndpoint.InputPrice != nil {
+			inputPrice = *gctx.SelectedEndpoint.InputPrice
+		}
+		if gctx.SelectedEndpoint.OutputPrice != nil {
+			outputPrice = *gctx.SelectedEndpoint.OutputPrice
+		}
+		if gctx.SelectedEndpoint.CachedPrice != nil {
+			cachedPrice = *gctx.SelectedEndpoint.CachedPrice
+		}
+		if gctx.SelectedEndpoint.CacheCreationPrice != nil {
+			cacheCreationPrice = *gctx.SelectedEndpoint.CacheCreationPrice
+		}
+	}
+	return
 }

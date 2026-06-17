@@ -44,10 +44,12 @@ func TestAnthropicTokenExtractor_MessageStart(t *testing.T) {
 }
 
 func TestAnthropicTokenExtractor_MessageStartWithCaching(t *testing.T) {
+	// Anthropic 的 input_tokens 仅含「未命中缓存」部分，提取器需归一化为「总输入」对齐 OpenAI 语义：
+	// total = input_tokens(100) + cache_read(60) + cache_creation(40) = 200
 	data := `{"type":"message_start","message":{"id":"msg-1","usage":{"input_tokens":100,"output_tokens":0,"cache_read_input_tokens":60,"cache_creation_input_tokens":40}}}`
 	pt, ct, cached, cc := AnthropicTokenExtractor(data)
-	if pt != 100 || ct != 0 || cached != 60 || cc != 40 {
-		t.Errorf("expected (100, 0, 60, 40), got (%d, %d, %d, %d)", pt, ct, cached, cc)
+	if pt != 200 || ct != 0 || cached != 60 || cc != 40 {
+		t.Errorf("expected (200, 0, 60, 40), got (%d, %d, %d, %d)", pt, ct, cached, cc)
 	}
 }
 
@@ -60,10 +62,11 @@ func TestAnthropicTokenExtractor_MessageDelta(t *testing.T) {
 }
 
 func TestAnthropicTokenExtractor_MessageDeltaWithInputAndCaching(t *testing.T) {
+	// message_delta 携带输入时同样归一化为总输入：80 + 120 + 10 = 210
 	data := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":80,"output_tokens":40,"cache_read_input_tokens":120,"cache_creation_input_tokens":10}}`
 	pt, ct, cached, cc := AnthropicTokenExtractor(data)
-	if pt != 80 || ct != 40 || cached != 120 || cc != 10 {
-		t.Errorf("expected (80, 40, 120, 10), got (%d, %d, %d, %d)", pt, ct, cached, cc)
+	if pt != 210 || ct != 40 || cached != 120 || cc != 10 {
+		t.Errorf("expected (210, 40, 120, 10), got (%d, %d, %d, %d)", pt, ct, cached, cc)
 	}
 }
 

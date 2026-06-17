@@ -98,10 +98,16 @@ func (p *AnthropicProvider) handleMessagesNonStream(gctx *core.GatewayContext, r
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &anthropicResp); err == nil {
-		gctx.InputTokens = anthropicResp.Usage.InputTokens
-		gctx.OutputTokens = anthropicResp.Usage.OutputTokens
-		gctx.CachedTokens = anthropicResp.Usage.CacheReadInputTokens
-		gctx.CacheCreationTokens = anthropicResp.Usage.CacheCreationInputTokens
+		u := anthropicResp.Usage
+		cached := u.CacheReadInputTokens
+		cacheCreated := u.CacheCreationInputTokens
+		// Anthropic 的 input_tokens 仅含「未命中缓存的输入」，缓存读取/写入是额外单独计量。
+		// 归一化为「总输入」（含缓存读取与缓存写入），对齐 OpenAI 的 prompt_tokens 语义，
+		// 使下游计费公式 nonCached = InputTokens - Cached - CacheCreation 对所有 provider 通用。
+		gctx.InputTokens = u.InputTokens + cached + cacheCreated
+		gctx.OutputTokens = u.OutputTokens
+		gctx.CachedTokens = cached
+		gctx.CacheCreationTokens = cacheCreated
 	}
 	return nil
 }
