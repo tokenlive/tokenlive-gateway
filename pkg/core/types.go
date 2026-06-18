@@ -40,32 +40,58 @@ type Endpoint struct {
 	CacheCreationPrice *float64
 }
 
-// SupportsRequestType 检查端点是否支持指定请求类型
+// SupportsRequestType 检查端点是否支持指定请求类型。
+// RequestTypes 表达模型/端点声明约束，ProviderProtocol 表达实际适配器能力；
+// 二者必须同时满足，避免把 OpenAI Chat 能力误判给没有对应 invoker 的协议。
 func (ep *Endpoint) SupportsRequestType(rt RequestType) bool {
+	if ep == nil {
+		return false
+	}
+	if !ep.protocolSupportsRequestType(rt) {
+		return false
+	}
+
 	for _, c := range ep.RequestTypes {
 		if c == rt {
 			return true
 		}
 	}
 
-	// 隐式能力推导：
-	// 1. 如果请求类型是 RequestTypeMessages (例如 Anthropic /v1/messages) 且当前端点显式支持 RequestTypeChatCompletion，
-	//    由于我们在适配层实现了自动翻译，因此该端点隐式支持 messages 请求，免去模型配置 messages 能力 of 负担。
-	if rt == RequestTypeMessages {
-		for _, c := range ep.RequestTypes {
-			if c == RequestTypeChatCompletion {
-				return true
-			}
+	if ep.declaresRequestType(RequestTypeChatCompletion) {
+		switch rt {
+		case RequestTypeMessages, RequestTypeResponses:
+			return true
 		}
 	}
-	// 2. 如果请求类型是 RequestTypeResponses (例如 OpenAI /v1/responses) 且当前端点显式支持 RequestTypeChatCompletion，
-	//    由于我们支持降级翻译，该端点隐式支持 responses 请求。
-	if rt == RequestTypeResponses {
-		for _, c := range ep.RequestTypes {
-			if c == RequestTypeChatCompletion {
-				return true
-			}
+
+	return false
+}
+
+func (ep *Endpoint) declaresRequestType(rt RequestType) bool {
+	for _, c := range ep.RequestTypes {
+		if c == rt {
+			return true
 		}
+	}
+	return false
+}
+
+func (ep *Endpoint) protocolSupportsRequestType(rt RequestType) bool {
+	switch ep.Protocol() {
+	case ProtocolOpenAI:
+		switch rt {
+		case RequestTypeChatCompletion, RequestTypeEmbedding, RequestTypeResponses, RequestTypeMessages:
+			return true
+		}
+	case ProtocolAnthropic:
+		return rt == RequestTypeMessages
+	case ProtocolJoyCode:
+		switch rt {
+		case RequestTypeChatCompletion, RequestTypeResponses:
+			return true
+		}
+	case "":
+		return true
 	}
 	return false
 }
