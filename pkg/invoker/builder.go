@@ -33,7 +33,7 @@ func buildClusterInvoker(invokerCfg *core.InvokerConfig, r core.InvokerDependenc
 	cbManager := r.CircuitBreakerManager()
 
 	// 获取所有的负载均衡实例
-	knownLBStrategies := []string{"round_robin", "weighted_rr", "random", "least_connections", "least_latency", "cost", "composite"}
+	knownLBStrategies := []string{"round_robin", "weighted_rr", "random", "weighted_random", "least_connections", "least_latency", "cost", "sticky", "composite"}
 	lbs := make(map[string]core.LoadBalancer)
 	for _, name := range knownLBStrategies {
 		if lb := r.ResolveLoadBalancer(name); lb != nil {
@@ -84,7 +84,7 @@ func buildHedgingInvoker(cfg *core.InvokerConfig, r core.InvokerDependencyResolv
 	routers := r.ResolveRouters(cfg.Routers)
 	cbManager := r.CircuitBreakerManager()
 
-	knownLBStrategies := []string{"round_robin", "weighted_rr", "random", "least_connections", "least_latency", "cost", "composite"}
+	knownLBStrategies := []string{"round_robin", "weighted_rr", "random", "weighted_random", "least_connections", "least_latency", "cost", "sticky", "composite"}
 	lbs := make(map[string]core.LoadBalancer)
 	for _, name := range knownLBStrategies {
 		if lb := r.ResolveLoadBalancer(name); lb != nil {

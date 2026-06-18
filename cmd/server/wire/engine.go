@@ -232,6 +232,11 @@ func NewGatewayEngine(
 	engine.RegisterLoadBalancerFactory("composite", func(ss core.StateStore) core.LoadBalancer {
 		return lbs.NewCompositeLoadBalancer(ss, 0.5, 0.5)
 	})
+	engine.RegisterLoadBalancerFactory("sticky", func(ss core.StateStore) core.LoadBalancer {
+		return lbs.NewStickyLoadBalancer(ss, lbs.NewRoundRobin(), func(gctx *core.GatewayContext) string {
+			return gctx.SessionID
+		}, 5*time.Minute)
+	})
 
 	// 注册 InboundFilter
 	engine.RegisterFilter("auth", inbound.NewAuthFilter())
