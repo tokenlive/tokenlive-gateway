@@ -286,7 +286,7 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			gctx.Err = err
 			// Inbound 拦截报错时，手动触发统计类 OutboundFilters
 			for _, outf := range pipe.OutboundFilters {
-				if outf.Name() == "metrics" || outf.Name() == "status_collector" {
+				if outf.Name() == "metrics" || outf.Name() == "status_collector" || outf.Name() == "event_publisher" {
 					_ = outf.OnResponse(gctx)
 				}
 			}

@@ -8,6 +8,7 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/compensation"
 	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
+	"github.com/tokenlive/tokenlive-gateway/pkg/events"
 	"github.com/tokenlive/tokenlive-gateway/pkg/filters/inbound"
 	"github.com/tokenlive/tokenlive-gateway/pkg/filters/outbound"
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
@@ -257,9 +258,20 @@ func NewGatewayEngine(
 	engine.RegisterFilter("access_log", outbound.NewAccessLogFilter(logger.Logger))
 	engine.RegisterFilter("status_collector", outbound.NewStatusCollectorFilter(rdb))
 
+	// 注册 Event Publisher 过滤器
+	var eventsCfg events.PublisherConfig
+	if v.IsSet("events") {
+		_ = v.UnmarshalKey("events", &eventsCfg)
+	}
+	eventPublisher := events.NewPublisher(eventsCfg, rdb)
+	engine.RegisterFilter("event_publisher", outbound.NewEventPublishFilter(eventPublisher, logger.Logger))
+
 	// 初始化引擎
 	if err := engine.Init(); err != nil {
 		otelCleanup()
+		if eventPublisher != nil {
+			_ = eventPublisher.Close()
+		}
 		return nil, nil, fmt.Errorf("engine init: %w", err)
 	}
 
@@ -272,6 +284,9 @@ func NewGatewayEngine(
 		otelCleanup()
 		if err := engine.Close(); err != nil {
 			logger.Logger.Error("engine close error", zap.Error(err))
+		}
+		if eventPublisher != nil {
+			_ = eventPublisher.Close()
 		}
 	}
 
@@ -375,7 +390,7 @@ func buildFromRelationalConfig(
 				Type: "cluster",
 			},
 			InboundFilters:          inboundFilters,
-			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log"},
+			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher"},
 			CriticalOutboundFilters: []string{"token_settlement", "sticky_session"},
 		}
 	}
@@ -389,7 +404,7 @@ func buildFromRelationalConfig(
 				Type: "cluster",
 			},
 			InboundFilters:          inboundFilters,
-			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log"},
+			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher"},
 			CriticalOutboundFilters: []string{"token_settlement", "sticky_session"},
 		}
 	}
@@ -403,7 +418,7 @@ func buildFromRelationalConfig(
 				Type: "cluster",
 			},
 			InboundFilters:          inboundFilters,
-			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log"},
+			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher"},
 			CriticalOutboundFilters: []string{"token_settlement", "sticky_session"},
 		}
 	}
@@ -417,7 +432,7 @@ func buildFromRelationalConfig(
 				Type: "cluster",
 			},
 			InboundFilters:          inboundFilters,
-			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log"},
+			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher"},
 			CriticalOutboundFilters: []string{"token_settlement", "sticky_session"},
 		}
 	}

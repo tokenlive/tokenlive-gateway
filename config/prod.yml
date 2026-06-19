@@ -35,11 +35,20 @@ llm:
   enable_logging: true
   enable_active_health_check: false
 
+# 运行指标上报配置
 otel:
   metrics:
     enabled: ${OTEL_ENABLED:true}
     endpoint: "${OTEL_ENDPOINT:192.168.68.8:4317}"
     insecure: true
+
+# 策略触发事件发送配置
+events:
+  enabled: true
+  type: redis
+  topic: aigw:events:policy
+  # kafka:
+  #   brokers: ["localhost:9092"]
 
 # LLM Gateway 配置（model-centric 格式）
 models:
@@ -130,7 +139,7 @@ pipelines:
     name: "chat_completion"
     request_types: [ "chat_completion" ]
     inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
-    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log" ]
+    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
       type: "cluster"
@@ -146,7 +155,7 @@ pipelines:
     name: "responses"
     request_types: [ "responses" ]
     inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
-    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log" ]
+    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
       type: "cluster"
@@ -162,7 +171,7 @@ pipelines:
     name: "embedding"
     request_types: [ "embedding" ]
     inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
-    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log" ]
+    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
       type: "cluster"
@@ -179,7 +188,7 @@ pipelines:
     name: "messages"
     request_types: [ "messages" ]
     inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
-    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log" ]
+    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
       type: "cluster"
