@@ -245,7 +245,8 @@ func NewGatewayEngine(
 	engine.RegisterFilter("session_reader", inbound.NewSessionReaderFilter("X-Session-ID"))
 	engine.RegisterFilter("quota_check", inbound.NewQuotaCheckFilter(apiKeyService))
 	engine.RegisterFilter("tagging", inbound.NewTaggingFilter())
-	engine.RegisterFilter("rate_limit", inbound.NewRateLimitFilter(stateStore))
+	rateLimitFilter := inbound.NewRateLimitFilter(stateStore)
+	engine.RegisterFilter("rate_limit", rateLimitFilter)
 	engine.RegisterFilter("validate", inbound.NewValidateFilter(modelService))
 
 	// 注册 OutboundFilter
@@ -265,7 +266,9 @@ func NewGatewayEngine(
 		_ = v.UnmarshalKey("events", &eventsCfg)
 	}
 	eventPublisher := events.NewPublisher(eventsCfg, rdb)
-	engine.RegisterFilter("event_publisher", outbound.NewEventPublishFilter(eventPublisher, logger.Logger))
+	eventPubFilter := outbound.NewEventPublishFilter(eventPublisher, logger.Logger)
+	eventPubFilter.SetDiscovery(engine.Discovery())
+	engine.RegisterFilter("event_publisher", eventPubFilter)
 
 	// 熔断器状态变更时直接发布事件（Closed→Open）
 	engine.CircuitBreakerManager().SetEventHandler(func(evt core.CBEvent) {
@@ -309,6 +312,26 @@ func NewGatewayEngine(
 
 			if err := eventPublisher.Publish(bgCtx, evtOps); err != nil {
 				logger.Logger.Warn("circuit breaker event publish failed", zap.String("key", evt.Key), zap.Error(err))
+			}
+		}()
+	})
+
+	// 限流触发时直接发布事件
+	rateLimitFilter.SetEventHandler(func(tenant, model, policyID, policyName, limitType string) {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			evtOps := &events.OpsEvent{
+				EventType:  events.EventTypeRateLimit,
+				TenantCode: tenant,
+				ModelCode:  model,
+				PolicyID:   policyID,
+				PolicyName: policyName,
+				Message:    "rate limit exceeded: type=" + limitType,
+				Timestamp:  time.Now().Unix(),
+			}
+			if err := eventPublisher.Publish(bgCtx, evtOps); err != nil {
+				logger.Logger.Warn("rate limit event publish failed", zap.String("model", model), zap.Error(err))
 			}
 		}()
 	})

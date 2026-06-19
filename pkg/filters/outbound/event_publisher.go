@@ -3,6 +3,7 @@ package outbound
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 type EventPublishFilter struct {
 	publisher events.Publisher
 	logger    *zap.Logger
+	discovery core.Discovery
 }
 
 // NewEventPublishFilter creates a new EventPublishFilter.
@@ -25,6 +27,11 @@ func NewEventPublishFilter(publisher events.Publisher, logger *zap.Logger) *Even
 		publisher: publisher,
 		logger:    logger,
 	}
+}
+
+// SetDiscovery sets the Discovery service for endpoint lookup.
+func (f *EventPublishFilter) SetDiscovery(discovery core.Discovery) {
+	f.discovery = discovery
 }
 
 func (f *EventPublishFilter) Name() string                        { return "event_publisher" }
@@ -91,6 +98,17 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 	if gctx.SelectedEndpoint != nil {
 		base.EndpointID = gctx.SelectedEndpoint.ID
 		base.ProviderName = gctx.SelectedEndpoint.Provider
+		if gctx.SelectedEndpoint.Model != "" {
+			base.ModelCode = gctx.SelectedEndpoint.Model
+		}
+	} else {
+		// 针对限流或熔断拦截等未进行物理选路的场景，尝试通过服务发现推断默认供应商，以补全事件中的供应商字段
+		if f.discovery != nil && gctx.Model != "" {
+			if eps, err := f.discovery.List(gctx.Ctx, gctx.Model); err == nil && len(eps) > 0 {
+				base.EndpointID = eps[0].ID
+				base.ProviderName = eps[0].Provider
+			}
+		}
 	}
 
 	var result []*events.OpsEvent
@@ -138,6 +156,9 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 		evt := base
 		evt.EventType = events.EventTypeInvocationFail
 		evt.Message = gctx.Err.Error()
+		if gctx.OriginalModel != "" && evt.ModelCode != gctx.OriginalModel {
+			evt.Message = fmt.Sprintf("%s (original request model: %s)", evt.Message, gctx.OriginalModel)
+		}
 		if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
 			evt.PolicyID = gctx.Policy.InvocationPolicy.ID
 			evt.PolicyName = gctx.Policy.InvocationPolicy.Name

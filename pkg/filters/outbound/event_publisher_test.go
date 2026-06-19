@@ -26,6 +26,22 @@ func (m *mockPublisher) Close() error {
 	return nil
 }
 
+type mockDiscovery struct {
+	endpoints []*core.Endpoint
+}
+
+func (m *mockDiscovery) List(ctx context.Context, model string) ([]*core.Endpoint, error) {
+	return m.endpoints, nil
+}
+
+func (m *mockDiscovery) Watch(ctx context.Context, model string) (<-chan []*core.Endpoint, error) {
+	return nil, nil
+}
+
+func (m *mockDiscovery) Close() error {
+	return nil
+}
+
 func TestEventPublishFilter_OnResponse(t *testing.T) {
 	t.Run("No event when successful and no fallback", func(t *testing.T) {
 		pub := &mockPublisher{}
@@ -148,6 +164,89 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 		evt := pub.published[0]
 		if evt.EventType != events.EventTypeInvocationFail {
 			t.Errorf("expected event type %q, got %q", events.EventTypeInvocationFail, evt.EventType)
+		}
+	})
+
+	t.Run("Invocation Failure event with fallback mismatch correction", func(t *testing.T) {
+		pub := &mockPublisher{}
+		f := NewEventPublishFilter(pub, nil)
+		gctx := &core.GatewayContext{
+			Ctx:           context.Background(),
+			Request:       httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+			OriginalModel: "claude-opus-4.8",
+			Model:         "mimo-v2.5-pro-anthropic",
+			SelectedEndpoint: &core.Endpoint{
+				ID:       "ep-xiaomi-1",
+				Provider: "Xiaomi",
+				Model:    "mimo-v2.5-pro-anthropic",
+			},
+			Err: errors.New("upstream error: status 401"),
+		}
+
+		err := f.OnResponse(gctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond) // Wait for async goroutine
+
+		if len(pub.published) != 1 {
+			t.Fatalf("expected 1 published event, got %d", len(pub.published))
+		}
+		evt := pub.published[0]
+		if evt.EventType != events.EventTypeInvocationFail {
+			t.Errorf("expected event type %q, got %q", events.EventTypeInvocationFail, evt.EventType)
+		}
+		if evt.ModelCode != "mimo-v2.5-pro-anthropic" {
+			t.Errorf("expected ModelCode to be %q, got %q", "mimo-v2.5-pro-anthropic", evt.ModelCode)
+		}
+		if evt.ProviderName != "Xiaomi" {
+			t.Errorf("expected ProviderName to be %q, got %q", "Xiaomi", evt.ProviderName)
+		}
+		expectedMsg := "upstream error: status 401 (original request model: claude-opus-4.8)"
+		if evt.Message != expectedMsg {
+			t.Errorf("expected Message to be %q, got %q", expectedMsg, evt.Message)
+		}
+	})
+
+	t.Run("Rate Limit event with discovery provider completion", func(t *testing.T) {
+		pub := &mockPublisher{}
+		f := NewEventPublishFilter(pub, nil)
+		disc := &mockDiscovery{
+			endpoints: []*core.Endpoint{
+				{
+					ID:       "ep-muyuan-1",
+					Provider: "Muyuan",
+					Model:    "claude-opus-4.8",
+				},
+			},
+		}
+		f.SetDiscovery(disc)
+
+		gctx := &core.GatewayContext{
+			Ctx:     context.Background(),
+			Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+			Model:   "claude-opus-4.8",
+			Err:     &limiter.HTTPError{Code: http.StatusTooManyRequests, Message: "rate limit exceeded"},
+		}
+
+		err := f.OnResponse(gctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond) // Wait for async goroutine
+
+		if len(pub.published) != 1 {
+			t.Fatalf("expected 1 published event, got %d", len(pub.published))
+		}
+		evt := pub.published[0]
+		if evt.EventType != events.EventTypeRateLimit {
+			t.Errorf("expected event type %q, got %q", events.EventTypeRateLimit, evt.EventType)
+		}
+		if evt.ProviderName != "Muyuan" {
+			t.Errorf("expected ProviderName to be %q, got %q", "Muyuan", evt.ProviderName)
+		}
+		if evt.EndpointID != "ep-muyuan-1" {
+			t.Errorf("expected EndpointID to be %q, got %q", "ep-muyuan-1", evt.EndpointID)
 		}
 	})
 }

@@ -13,7 +13,16 @@ import (
 
 // RateLimitFilter 限流过滤器，基于动态 Policy 进行令牌桶限流
 type RateLimitFilter struct {
-	stateStore core.StateStore
+	stateStore   core.StateStore
+	eventHandler RateLimitEventHandler
+}
+
+// RateLimitEventHandler is called when a rate limit is triggered.
+type RateLimitEventHandler func(tenant, model, policyID, policyName, limitType string)
+
+// SetEventHandler 注入限流事件回调
+func (f *RateLimitFilter) SetEventHandler(handler RateLimitEventHandler) {
+	f.eventHandler = handler
 }
 
 // NewRateLimitFilter 创建 RateLimitFilter 并向工厂注册其执行器
@@ -76,6 +85,12 @@ func (f *RateLimitFilter) OnRequest(gctx *core.GatewayContext) error {
 				err = exec.Execute(gctx.Ctx, gctx, lp)
 			}
 			if err != nil {
+				// 限流触发时直接发事件，此时 policy 信息完整
+				if f.eventHandler != nil {
+					if httpErr, ok := err.(*limiter.HTTPError); ok && httpErr.Code == http.StatusTooManyRequests {
+						f.eventHandler(gctx.Tenant, gctx.Model, lp.ID, lp.Name, lp.Type)
+					}
+				}
 				return err
 			}
 		}
