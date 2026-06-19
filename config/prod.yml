@@ -4,8 +4,8 @@ http:
   port: 8000
   tls:
     enabled: true                     # 生产环境启用 HTTPS
-    cert_file: "certs/server.cer"     # TLS 证书文件路径
-    key_file: "certs/server.key"      # TLS 私钥文件路径
+    cert_file: "certs/tokenlive.net.crt"     # TLS 证书文件路径
+    key_file: "certs/tokenlive.net.key"      # TLS 私钥文件路径
 security:
   api_sign:
     app_key: 123456
