@@ -326,9 +326,13 @@ func mergeRoutePolicy(target, source *RoutePolicy) *RoutePolicy {
 		return target
 	}
 	res := &RoutePolicy{
+		ID:      target.ID,
 		Name:    target.Name,
 		Version: target.Version,
 		Order:   target.Order,
+	}
+	if source.ID != "" {
+		res.ID = source.ID
 	}
 	if source.Version > 0 {
 		res.Version = source.Version
@@ -352,6 +356,9 @@ func mergeCircuitBreakPolicy(target, source *CircuitBreakPolicy) *CircuitBreakPo
 		return target
 	}
 	res := *target
+	if source.ID != "" {
+		res.ID = source.ID
+	}
 	if source.Level != "" {
 		res.Level = source.Level
 	}
@@ -408,9 +415,13 @@ func mergeTaggingPolicy(target, source *TaggingPolicy) *TaggingPolicy {
 		return target
 	}
 	res := &TaggingPolicy{
+		ID:      target.ID,
 		Name:    target.Name,
 		Version: target.Version,
 		Order:   target.Order,
+	}
+	if source.ID != "" {
+		res.ID = source.ID
 	}
 	if source.Version > 0 {
 		res.Version = source.Version

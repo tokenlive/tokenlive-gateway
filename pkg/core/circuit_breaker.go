@@ -30,6 +30,14 @@ type circuitBreakerEntry struct {
 	activeCalls   int // 当前正在进行的半开探路并发数
 	policyVersion int64
 	modelCode     string
+	policyID      string
+	policyName    string
+	providerName  string
+	lastTenant    string
+	lastTraceID   string
+	lastRequestID string
+	threshold     float64
+	currentVal    float64
 }
 
 func (e *circuitBreakerEntry) record(success bool, now time.Time, windowType string, windowSize, failThresh, hoSuccessThr int, recoveryTO time.Duration) (CircuitState, CircuitState) {
@@ -101,6 +109,27 @@ func (e *circuitBreakerEntry) record(success bool, now time.Time, windowType str
 	}
 
 	e.computeState(now)
+	if e.state == CircuitOpen && oldState != CircuitOpen {
+		failures := 0
+		if oldState == CircuitHalfOpen {
+			e.threshold = float64(e.failThresh)
+			e.currentVal = 1.0
+		} else {
+			if e.windowType == "time" {
+				for _, b := range e.buckets {
+					failures += b.failures
+				}
+			} else {
+				for _, r := range e.results {
+					if !r {
+						failures++
+					}
+				}
+			}
+			e.threshold = float64(e.failThresh)
+			e.currentVal = float64(failures)
+		}
+	}
 	return oldState, e.state
 }
 
@@ -239,11 +268,12 @@ func (e *circuitBreakerEntry) tryAcquireHalfOpenPermit(enableActive bool) bool {
 
 // CircuitBreakerManager 管理双层熔断器。
 type CircuitBreakerManager struct {
-	mu      sync.RWMutex
-	entries map[string]*circuitBreakerEntry
-	rdb     *redis.Client // 共享的 Redis 客户端，用于同步熔断状态
-	logger  *zap.Logger
-	metrics *CircuitBreakerMetrics // 指标发射器
+	mu           sync.RWMutex
+	entries      map[string]*circuitBreakerEntry
+	rdb          *redis.Client // 共享的 Redis 客户端，用于同步熔断状态
+	logger       *zap.Logger
+	metrics      *CircuitBreakerMetrics // 指标发射器
+	eventHandler CBEventHandler         // 状态变更事件回调
 }
 
 // NewCircuitBreakerManager 创建熔断管理器，使用内部独立的内存状态存储。
@@ -267,6 +297,32 @@ func (cbm *CircuitBreakerManager) SetLogger(logger *zap.Logger) {
 	cbm.logger = logger
 }
 
+// CBEvent carries circuit breaker state transition context.
+type CBEvent struct {
+	Key          string
+	ModelCode    string
+	PolicyID     string
+	PolicyName   string
+	TenantCode   string
+	ProviderName string
+	RequestID    string
+	TraceID      string
+	Threshold    *float64
+	CurrentValue *float64
+	OldState     string
+	NewState     string
+}
+
+// CBEventHandler is called when the circuit breaker transitions to Open.
+type CBEventHandler func(evt CBEvent)
+
+// SetEventHandler 注入状态变更事件回调
+func (cbm *CircuitBreakerManager) SetEventHandler(handler CBEventHandler) {
+	cbm.mu.Lock()
+	defer cbm.mu.Unlock()
+	cbm.eventHandler = handler
+}
+
 // SetMetrics 注入指标发射器
 func (cbm *CircuitBreakerManager) SetMetrics(metrics *CircuitBreakerMetrics) {
 	cbm.mu.Lock()
@@ -285,12 +341,31 @@ func (cbm *CircuitBreakerManager) onStateChange(key string, oldState, newState C
 	}
 
 	modelCode := ""
+	policyID := ""
+	policyName := ""
+	tenantCode := ""
+	providerName := ""
+	requestID := ""
+	traceID := ""
+	var thresholdVal *float64
+	var currentVal *float64
+
 	cbm.mu.RLock()
 	e, exists := cbm.entries[key]
 	cbm.mu.RUnlock()
 	if exists {
 		e.mu.Lock()
 		modelCode = e.modelCode
+		policyID = e.policyID
+		policyName = e.policyName
+		tenantCode = e.lastTenant
+		providerName = e.providerName
+		requestID = e.lastRequestID
+		traceID = e.lastTraceID
+		tVal := e.threshold
+		cVal := e.currentVal
+		thresholdVal = &tVal
+		currentVal = &cVal
 		e.mu.Unlock()
 	}
 	if modelCode == "" && containsColon(key) {
@@ -303,6 +378,24 @@ func (cbm *CircuitBreakerManager) onStateChange(key string, oldState, newState C
 	// 被动触发：状态变更时立即发射指标
 	if cbm.metrics != nil {
 		cbm.metrics.RecordState(key, modelCode, newState)
+	}
+
+	// 状态变为 Open 时触发事件回调
+	if newState == CircuitOpen && cbm.eventHandler != nil {
+		cbm.eventHandler(CBEvent{
+			Key:          key,
+			ModelCode:    modelCode,
+			PolicyID:     policyID,
+			PolicyName:   policyName,
+			TenantCode:   tenantCode,
+			ProviderName: providerName,
+			RequestID:    requestID,
+			TraceID:      traceID,
+			Threshold:    thresholdVal,
+			CurrentValue: currentVal,
+			OldState:     oldState.String(),
+			NewState:     newState.String(),
+		})
 	}
 
 	if cbm.rdb == nil {
@@ -361,6 +454,21 @@ func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoi
 		return
 	}
 
+	traceID := ""
+	if gctx.Request != nil {
+		traceID = gctx.Request.Header.Get("X-Trace-ID")
+	}
+	if traceID == "" && gctx.ResponseWriter != nil {
+		traceID = gctx.ResponseWriter.Header().Get("X-Trace-Id")
+	}
+	requestID := ""
+	if gctx.Request != nil {
+		requestID = gctx.Request.Header.Get("X-Request-ID")
+	}
+	if requestID == "" {
+		requestID = traceID
+	}
+
 	now := time.Now()
 	for _, p := range gctx.Policy.CircuitBreakPolicies {
 		if p == nil {
@@ -372,14 +480,32 @@ func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoi
 		if level == "" || level == "SERVICE" {
 			serviceKey := ep.Provider + ":" + ep.Model
 			cbm.CheckAndResetOnVersionChange(serviceKey, p.Version)
-			old, newStatus := cbm.GetEntryWithModel(serviceKey, ep.Model).record(true, now, p.SlidingWindowType, ws, mc, ho, to)
+			entry := cbm.GetEntryWithModel(serviceKey, ep.Model)
+			entry.mu.Lock()
+			entry.policyID = p.ID
+			entry.policyName = p.Name
+			entry.providerName = ep.Provider
+			entry.lastTenant = gctx.Tenant
+			entry.lastTraceID = traceID
+			entry.lastRequestID = requestID
+			entry.mu.Unlock()
+			old, newStatus := entry.record(true, now, p.SlidingWindowType, ws, mc, ho, to)
 			if old != newStatus {
 				cbm.onStateChange(serviceKey, old, newStatus)
 			}
 		}
 		if level == "" || level == "INSTANCE" || level == "ENDPOINT" {
 			cbm.CheckAndResetOnVersionChange(ep.ID, p.Version)
-			old, newStatus := cbm.GetEntryWithModel(ep.ID, ep.Model).record(true, now, p.SlidingWindowType, ws, mc, ho, to)
+			entry := cbm.GetEntryWithModel(ep.ID, ep.Model)
+			entry.mu.Lock()
+			entry.policyID = p.ID
+			entry.policyName = p.Name
+			entry.providerName = ep.Provider
+			entry.lastTenant = gctx.Tenant
+			entry.lastTraceID = traceID
+			entry.lastRequestID = requestID
+			entry.mu.Unlock()
+			old, newStatus := entry.record(true, now, p.SlidingWindowType, ws, mc, ho, to)
 			if old != newStatus {
 				cbm.onStateChange(ep.ID, old, newStatus)
 			}
@@ -402,6 +528,21 @@ func (cbm *CircuitBreakerManager) RecordFailure(gctx *GatewayContext, ep *Endpoi
 		errMsg = err.Error()
 	}
 
+	traceID := ""
+	if gctx.Request != nil {
+		traceID = gctx.Request.Header.Get("X-Trace-ID")
+	}
+	if traceID == "" && gctx.ResponseWriter != nil {
+		traceID = gctx.ResponseWriter.Header().Get("X-Trace-Id")
+	}
+	requestID := ""
+	if gctx.Request != nil {
+		requestID = gctx.Request.Header.Get("X-Request-ID")
+	}
+	if requestID == "" {
+		requestID = traceID
+	}
+
 	now := time.Now()
 	for _, p := range gctx.Policy.CircuitBreakPolicies {
 		if p == nil {
@@ -417,14 +558,32 @@ func (cbm *CircuitBreakerManager) RecordFailure(gctx *GatewayContext, ep *Endpoi
 		if level == "" || level == "SERVICE" {
 			serviceKey := ep.Provider + ":" + ep.Model
 			cbm.CheckAndResetOnVersionChange(serviceKey, p.Version)
-			old, newStatus := cbm.GetEntryWithModel(serviceKey, ep.Model).record(false, now, p.SlidingWindowType, ws, mc, ho, to)
+			entry := cbm.GetEntryWithModel(serviceKey, ep.Model)
+			entry.mu.Lock()
+			entry.policyID = p.ID
+			entry.policyName = p.Name
+			entry.providerName = ep.Provider
+			entry.lastTenant = gctx.Tenant
+			entry.lastTraceID = traceID
+			entry.lastRequestID = requestID
+			entry.mu.Unlock()
+			old, newStatus := entry.record(false, now, p.SlidingWindowType, ws, mc, ho, to)
 			if old != newStatus {
 				cbm.onStateChange(serviceKey, old, newStatus)
 			}
 		}
 		if level == "" || level == "INSTANCE" || level == "ENDPOINT" {
 			cbm.CheckAndResetOnVersionChange(ep.ID, p.Version)
-			old, newStatus := cbm.GetEntryWithModel(ep.ID, ep.Model).record(false, now, p.SlidingWindowType, ws, mc, ho, to)
+			entry := cbm.GetEntryWithModel(ep.ID, ep.Model)
+			entry.mu.Lock()
+			entry.policyID = p.ID
+			entry.policyName = p.Name
+			entry.providerName = ep.Provider
+			entry.lastTenant = gctx.Tenant
+			entry.lastTraceID = traceID
+			entry.lastRequestID = requestID
+			entry.mu.Unlock()
+			old, newStatus := entry.record(false, now, p.SlidingWindowType, ws, mc, ho, to)
 			if old != newStatus {
 				cbm.onStateChange(ep.ID, old, newStatus)
 			}

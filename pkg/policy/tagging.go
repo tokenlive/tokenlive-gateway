@@ -4,6 +4,7 @@ import "github.com/tokenlive/tokenlive-gateway/pkg/matcher"
 
 // TaggingPolicy 染色打标策略：当 Conditions 命中时，执行 TaggingActions 将标签注入 GatewayContext.Tags
 type TaggingPolicy struct {
+	ID         string                  `yaml:"id" json:"id"`
 	Name       string                  `yaml:"name" json:"name"`
 	Version    int64                   `yaml:"version" json:"version"`
 	Order      int                     `yaml:"order" json:"order"`

@@ -10,6 +10,8 @@ import (
 
 // InvocationPolicy 调用与重试/降级策略
 type InvocationPolicy struct {
+	ID             string          `yaml:"id" json:"id"`
+	Name           string          `yaml:"name" json:"name"`
 	Type           string          `yaml:"type" json:"type"` // e.g. "failover"
 	RetryPolicy    *RetryPolicy    `yaml:"retry_policy" json:"retry_policy"`
 	FallbackPolicy *FallbackPolicy `yaml:"fallback_policy" json:"fallback_policy"`

@@ -6,6 +6,7 @@ import (
 
 // RoutePolicy 路由策略
 type RoutePolicy struct {
+	ID       string     `yaml:"id" json:"id"`
 	Name     string     `yaml:"name" json:"name"`
 	Version  int64      `yaml:"version" json:"version"`
 	Order    int        `yaml:"order" json:"order"`

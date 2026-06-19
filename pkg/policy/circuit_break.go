@@ -7,6 +7,7 @@ import (
 
 // CircuitBreakPolicy 熔断隔离策略
 type CircuitBreakPolicy struct {
+	ID                          string             `yaml:"id" json:"id"`
 	Name                        string             `yaml:"name" json:"name"`
 	Level                       string             `yaml:"level" json:"level"`                             // e.g. "SERVICE", "INSTANCE"
 	SlidingWindowType           string             `yaml:"sliding_window_type" json:"sliding_window_type"` // "time", "count"
@@ -39,6 +40,7 @@ type DegradeConfig struct {
 func (c *CircuitBreakPolicy) UnmarshalJSON(data []byte) error {
 	type Alias CircuitBreakPolicy
 	aux := &struct {
+		IDCamel                          string             `json:"id"`
 		SlidingWindowTypeCamel           string             `json:"slidingWindowType"`
 		SlidingWindowSizeCamel           int                `json:"slidingWindowSize"`
 		MinCallsThresholdCamel           int                `json:"minCallsThreshold"`
@@ -62,6 +64,10 @@ func (c *CircuitBreakPolicy) UnmarshalJSON(data []byte) error {
 	}
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
+	}
+
+	if aux.IDCamel != "" {
+		c.ID = aux.IDCamel
 	}
 
 	if aux.SlidingWindowTypeCamel != "" {

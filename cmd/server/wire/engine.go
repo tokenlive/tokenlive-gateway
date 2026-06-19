@@ -3,6 +3,7 @@ package wire
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/compensation"
@@ -265,6 +266,52 @@ func NewGatewayEngine(
 	}
 	eventPublisher := events.NewPublisher(eventsCfg, rdb)
 	engine.RegisterFilter("event_publisher", outbound.NewEventPublishFilter(eventPublisher, logger.Logger))
+
+	// 熔断器状态变更时直接发布事件（Closed→Open）
+	engine.CircuitBreakerManager().SetEventHandler(func(evt core.CBEvent) {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			provider := evt.ProviderName
+
+			// 如果是服务级熔断，且缓存的 provider 为空，尝试从 key（provider:model）中拆分
+			if provider == "" && strings.Contains(evt.Key, ":") {
+				parts := strings.Split(evt.Key, ":")
+				if len(parts) > 0 {
+					provider = parts[0]
+				}
+			}
+
+			transitionStr := ""
+			if evt.OldState != "" && evt.NewState != "" {
+				transitionStr = fmt.Sprintf(" [%s -> %s]", evt.OldState, evt.NewState)
+			}
+
+			evtOps := &events.OpsEvent{
+				EventType:    events.EventTypeCircuitBreak,
+				TenantCode:   evt.TenantCode,
+				ModelCode:    evt.ModelCode,
+				ProviderName: provider,
+				PolicyID:     evt.PolicyID,
+				PolicyName:   evt.PolicyName,
+				Threshold:    evt.Threshold,
+				CurrentValue: evt.CurrentValue,
+				RequestID:    evt.RequestID,
+				TraceID:      evt.TraceID,
+				Message:      "circuit breaker opened: " + evt.Key + transitionStr,
+				Timestamp:    time.Now().Unix(),
+			}
+			// 如果是实例级熔断，我们将 EndpointID 设为 key
+			if !strings.Contains(evt.Key, ":") {
+				evtOps.EndpointID = evt.Key
+			}
+
+			if err := eventPublisher.Publish(bgCtx, evtOps); err != nil {
+				logger.Logger.Warn("circuit breaker event publish failed", zap.String("key", evt.Key), zap.Error(err))
+			}
+		}()
+	})
 
 	// 初始化引擎
 	if err := engine.Init(); err != nil {
