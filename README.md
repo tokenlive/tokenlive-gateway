@@ -50,7 +50,7 @@ TokenLive is tailored for large-scale language model ecosystems and high-concurr
 
 ## Admin Console Screenshot
 
-![Admin Console Screenshot](./docs/images/dashboard.png)
+![Admin Console Screenshot](./docs/images/dashboard.jpg)
 
 ---
 

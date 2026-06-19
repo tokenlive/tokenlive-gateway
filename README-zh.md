@@ -50,7 +50,7 @@ TokenLive 专为大模型算力生态及高并发生产环境打造，具备以�
 
 ## 管理控制台截图
 
-![管理控制台](./docs/images/dashboard.png)
+![管理控制台](./docs/images/dashboard.jpg)
 
 ---
 

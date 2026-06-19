@@ -65,7 +65,7 @@ type GatewayContext struct {
 	cancelTTFTimer      func()
 }
 
-// ResetAttempt 清空 per-attempt 字段
+// ResetAttempt 清空 per-attempt 字段及 token 统计，防止重试时旧值残留
 func (c *GatewayContext) ResetAttempt() {
 	c.SelectedInvoker = nil
 	c.SelectedEndpoint = nil
@@ -74,6 +74,25 @@ func (c *GatewayContext) ResetAttempt() {
 	c.UpstreamBody = nil
 	c.UpstreamError = nil
 	// TTFT 不重置 —— 一旦置位表示已发首字节
+
+	// 清空本次尝试的 token 统计，避免重试时旧值污染最终结果
+	c.InputTokens = 0
+	c.OutputTokens = 0
+	c.CachedTokens = 0
+	c.CacheCreationTokens = 0
+	c.TransmittedChars = 0
+	c.Cost = 0
+	c.Response = nil
+	c.Err = nil
+
+	// 清空单次尝试相关的动态标签
+	if c.Tags != nil {
+		delete(c.Tags, "response_id")
+		delete(c.Tags, "response_model")
+		delete(c.Tags, "response_completed_sent")
+		delete(c.Tags, "completion_token_estimated")
+		delete(c.Tags, "input_token_estimated")
+	}
 }
 
 // RecordAttempt 推一条 attempt 记录
