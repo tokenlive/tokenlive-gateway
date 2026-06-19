@@ -316,25 +316,6 @@ func NewGatewayEngine(
 		}()
 	})
 
-	// 限流触发时直接发布事件
-	rateLimitFilter.SetEventHandler(func(tenant, model, policyID, policyName, limitType string) {
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			evtOps := &events.OpsEvent{
-				EventType:  events.EventTypeRateLimit,
-				TenantCode: tenant,
-				ModelCode:  model,
-				PolicyID:   policyID,
-				PolicyName: policyName,
-				Message:    "rate limit exceeded: type=" + limitType,
-				Timestamp:  time.Now().Unix(),
-			}
-			if err := eventPublisher.Publish(bgCtx, evtOps); err != nil {
-				logger.Logger.Warn("rate limit event publish failed", zap.String("model", model), zap.Error(err))
-			}
-		}()
-	})
 
 	// 初始化引擎
 	if err := engine.Init(); err != nil {
