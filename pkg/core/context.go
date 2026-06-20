@@ -53,7 +53,6 @@ type GatewayContext struct {
 	FallbackChain []string
 	History       []AttemptRecord
 	StartTime     time.Time
-	TotalLatency  time.Duration
 
 	// ===== 动态标签（InboundFilter 打标，全链路可读） =====
 	Tags map[string]string
@@ -69,6 +68,14 @@ type GatewayContext struct {
 	Response            interface{}
 	Err                 error
 	cancelTTFTimer      func()
+}
+
+// perAttemptTagKeys 每次重试需要清空的动态标签 key 集中维护于此。
+// 新增 per-attempt 标签时请同步登记，避免重试时旧值泄漏。
+var perAttemptTagKeys = []string{
+	"response_id",
+	"response_model",
+	"response_completed_sent",
 }
 
 // ResetAttempt 清空 per-attempt 字段及 token 统计，防止重试时旧值残留
@@ -93,11 +100,9 @@ func (c *GatewayContext) ResetAttempt() {
 
 	// 清空单次尝试相关的动态标签
 	if c.Tags != nil {
-		delete(c.Tags, "response_id")
-		delete(c.Tags, "response_model")
-		delete(c.Tags, "response_completed_sent")
-		delete(c.Tags, "completion_token_estimated")
-		delete(c.Tags, "input_token_estimated")
+		for _, k := range perAttemptTagKeys {
+			delete(c.Tags, k)
+		}
 	}
 }
 

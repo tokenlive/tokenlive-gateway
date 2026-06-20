@@ -272,12 +272,14 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		if err == nil {
 			isSlowCall := false
-			if gctx.Policy != nil && len(gctx.Policy.CircuitBreakPolicies) > 0 {
-				p := gctx.Policy.CircuitBreakPolicies[0]
-				if p.SlowCallMetric == "TTFT" && gctx.TTFT > 0 {
-					limit := time.Duration(p.SlowCallDurationThreshold) * time.Millisecond
-					if gctx.TTFT > limit {
-						isSlowCall = true
+			if gctx.Policy != nil {
+				for _, p := range gctx.Policy.CircuitBreakPolicies {
+					if p.SlowCallMetric == "TTFT" && gctx.TTFT > 0 {
+						limit := time.Duration(p.SlowCallDurationThreshold) * time.Millisecond
+						if gctx.TTFT > limit {
+							isSlowCall = true
+							break
+						}
 					}
 				}
 			}
