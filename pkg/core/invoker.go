@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/tokenlive/tokenlive-gateway/pkg/events"
+
 	"go.uber.org/zap"
 )
 
@@ -26,6 +28,7 @@ type InvokerDependencyResolver interface {
 	ResolveRouters(names []string) []Router
 	ResolveLoadBalancer(name string) LoadBalancer
 	EnableActiveHealthCheck() bool
+	Publisher() events.Publisher
 }
 
 // InvokerBuilder 用于在外部构建 Invoker 具体实现，规避循环依赖

@@ -110,18 +110,18 @@ func (p *JoyCodeProvider) doRequest(gctx *core.GatewayContext, functionId string
 		}
 	}
 
-	singleCtx, singleCancel := context.WithCancel(gctx.Ctx)
+	singleCtx, singleCancel := context.WithCancelCause(gctx.Ctx)
 	shouldCancel := true
 	defer func() {
 		if shouldCancel {
-			singleCancel()
+			singleCancel(nil)
 		}
 	}()
 
 	// 注册首包前定时器
 	timer := time.AfterFunc(time.Duration(firstByteTimeout)*time.Millisecond, func() {
 		if gctx.TTFT == 0 {
-			singleCancel()
+			singleCancel(core.ErrGatewayFirstByteTimeout)
 		}
 	})
 	defer timer.Stop()
@@ -176,6 +176,9 @@ func (p *JoyCodeProvider) doRequest(gctx *core.GatewayContext, functionId string
 
 	resp, err := p.client.Do(req)
 	if err != nil {
+		if context.Cause(singleCtx) == core.ErrGatewayFirstByteTimeout {
+			return fmt.Errorf("upstream request timeout (gateway policy active disconnect, first byte timeout): %w", err)
+		}
 		return fmt.Errorf("upstream request: %w", err)
 	}
 
@@ -199,7 +202,7 @@ func (p *JoyCodeProvider) doRequest(gctx *core.GatewayContext, functionId string
 			idleTimeout = gctx.Policy.InvocationPolicy.RetryPolicy.IdleTimeout
 		}
 		if idleTimeout > 0 {
-			resp.Body = llm.WrapIdleTimeoutReader(resp.Body, time.Duration(idleTimeout)*time.Millisecond, singleCancel)
+			resp.Body = llm.WrapIdleTimeoutReader(resp.Body, time.Duration(idleTimeout)*time.Millisecond, func() { singleCancel(nil) })
 		}
 
 		contentType := resp.Header.Get("Content-Type")
@@ -213,7 +216,7 @@ func (p *JoyCodeProvider) doRequest(gctx *core.GatewayContext, functionId string
 			shouldCancel = false
 			resp.Body = &cancelReadCloser{
 				ReadCloser: resp.Body,
-				cancel:     singleCancel,
+				cancel:     func() { singleCancel(nil) },
 			}
 			return nil
 		}

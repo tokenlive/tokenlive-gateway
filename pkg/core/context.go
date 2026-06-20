@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -10,6 +11,10 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// ErrGatewayFirstByteTimeout 表示由于网关超时策略（连接超时+首字节超时）导致的主动断开错误
+var ErrGatewayFirstByteTimeout = errors.New("gateway policy timeout: first byte timeout (connect timeout + ttft timeout exceeded)")
+
 
 // GatewayContext 贯穿整个管线的请求上下文
 // 不实现 context.Context 接口（强类型字段优先）
@@ -54,6 +59,7 @@ type GatewayContext struct {
 	Tags map[string]string
 
 	// ===== 最终结果 =====
+	PolicyEventEmitted  bool `json:"-"` // ClusterInvoker 内已发出策略错误事件后置 true，OutboundFilter 据此抑制兜底事件
 	InputTokens         int
 	OutputTokens        int
 	CachedTokens        int // 缓存命中/读取 Token 数

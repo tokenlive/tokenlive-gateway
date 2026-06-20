@@ -42,12 +42,12 @@ func TestTimeoutPolicy_FirstByteTimeout(t *testing.T) {
 	connectTimeout := 10
 	ttftTimeout := 30
 
-	singleCtx, singleCancel := context.WithCancel(gctx.Ctx)
-	defer singleCancel()
+	singleCtx, singleCancel := context.WithCancelCause(gctx.Ctx)
+	defer singleCancel(nil)
 
 	timer := time.AfterFunc(time.Duration(connectTimeout+ttftTimeout)*time.Millisecond, func() {
 		if gctx.TTFT == 0 {
-			singleCancel()
+			singleCancel(core.ErrGatewayFirstByteTimeout)
 		}
 	})
 	defer timer.Stop()
@@ -65,8 +65,12 @@ func TestTimeoutPolicy_FirstByteTimeout(t *testing.T) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		// 如果在建立连接或接收 Header 阶段就超时了，这也是正确的
-		t.Logf("expected timeout during connection/headers phase: %v", err)
+		// 校验我们定义的错误原因
+		if context.Cause(singleCtx) == core.ErrGatewayFirstByteTimeout {
+			t.Logf("successfully detected gateway policy timeout during headers: %v", err)
+		} else {
+			t.Errorf("expected gateway policy timeout error, got other: %v", err)
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -77,7 +81,11 @@ func TestTimeoutPolicy_FirstByteTimeout(t *testing.T) {
 	if err == nil {
 		t.Error("expected context canceled error due to TTFTimeout, but read succeeded")
 	} else {
-		t.Logf("successfully caught expected timeout error during body read: %v", err)
+		if context.Cause(singleCtx) == core.ErrGatewayFirstByteTimeout {
+			t.Logf("successfully caught expected timeout error during body read: %v", err)
+		} else {
+			t.Errorf("expected gateway policy timeout error, got: %v", err)
+		}
 	}
 }
 

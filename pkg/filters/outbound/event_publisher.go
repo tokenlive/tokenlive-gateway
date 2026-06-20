@@ -1,7 +1,6 @@
 package outbound
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -48,18 +47,14 @@ func (f *EventPublishFilter) OnResponse(gctx *core.GatewayContext) error {
 		return nil
 	}
 
-	// Publish asynchronously to avoid blocking the response path
+	// Publish asynchronously via publisher's buffered channel
 	for _, evt := range evts {
-		go func(e *events.OpsEvent) {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := f.publisher.Publish(bgCtx, e); err != nil {
-				f.logger.Warn("event publish failed",
-					zap.String("event_type", e.EventType),
-					zap.Error(err),
-				)
-			}
-		}(evt)
+		if err := f.publisher.Publish(gctx.Ctx, evt); err != nil {
+			f.logger.Warn("event publish failed",
+				zap.String("event_type", evt.EventType),
+				zap.Error(err),
+			)
+		}
 	}
 
 	return nil
@@ -151,8 +146,8 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 		}
 	}
 
-	// 4. Invocation failure (generic, only if no circuit breaker already detected)
-	if gctx.Err != nil && len(result) == 0 {
+	// 4. Invocation failure (generic, only if no circuit breaker already detected and no policy event emitted by ClusterInvoker)
+	if gctx.Err != nil && len(result) == 0 && !gctx.PolicyEventEmitted {
 		evt := base
 		evt.EventType = events.EventTypeInvocationFail
 		evt.Message = gctx.Err.Error()

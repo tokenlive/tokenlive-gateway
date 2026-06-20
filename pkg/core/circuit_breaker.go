@@ -40,7 +40,7 @@ type circuitBreakerEntry struct {
 	currentVal    float64
 }
 
-func (e *circuitBreakerEntry) record(success bool, now time.Time, windowType string, windowSize, failThresh, hoSuccessThr int, recoveryTO time.Duration) (CircuitState, CircuitState) {
+func (e *circuitBreakerEntry) record(success bool, now time.Time, windowType string, windowSize, failThresh, hoSuccessThr int, recoveryTO time.Duration, failureRateThreshold float64) (CircuitState, CircuitState) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -112,12 +112,19 @@ func (e *circuitBreakerEntry) record(success bool, now time.Time, windowType str
 	if e.state == CircuitOpen && oldState != CircuitOpen {
 		failures := 0
 		if oldState == CircuitHalfOpen {
-			e.threshold = float64(e.failThresh)
-			e.currentVal = 1.0
+			if failureRateThreshold > 0 {
+				e.threshold = failureRateThreshold
+				e.currentVal = 100.0
+			} else {
+				e.threshold = float64(e.failThresh)
+				e.currentVal = 1.0
+			}
 		} else {
+			totalCalls := 0
 			if e.windowType == "time" {
 				for _, b := range e.buckets {
 					failures += b.failures
+					totalCalls += b.successes + b.failures
 				}
 			} else {
 				for _, r := range e.results {
@@ -125,9 +132,20 @@ func (e *circuitBreakerEntry) record(success bool, now time.Time, windowType str
 						failures++
 					}
 				}
+				totalCalls = len(e.results)
 			}
-			e.threshold = float64(e.failThresh)
-			e.currentVal = float64(failures)
+
+			if failureRateThreshold > 0 {
+				e.threshold = failureRateThreshold
+				if totalCalls > 0 {
+					e.currentVal = (float64(failures) / float64(totalCalls)) * 100.0
+				} else {
+					e.currentVal = 0.0
+				}
+			} else {
+				e.threshold = float64(e.failThresh)
+				e.currentVal = float64(failures)
+			}
 		}
 	}
 	return oldState, e.state
@@ -489,7 +507,7 @@ func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoi
 			entry.lastTraceID = traceID
 			entry.lastRequestID = requestID
 			entry.mu.Unlock()
-			old, newStatus := entry.record(true, now, p.SlidingWindowType, ws, mc, ho, to)
+			old, newStatus := entry.record(true, now, p.SlidingWindowType, ws, mc, ho, to, p.FailureRateThreshold)
 			if old != newStatus {
 				cbm.onStateChange(serviceKey, old, newStatus)
 			}
@@ -505,7 +523,7 @@ func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoi
 			entry.lastTraceID = traceID
 			entry.lastRequestID = requestID
 			entry.mu.Unlock()
-			old, newStatus := entry.record(true, now, p.SlidingWindowType, ws, mc, ho, to)
+			old, newStatus := entry.record(true, now, p.SlidingWindowType, ws, mc, ho, to, p.FailureRateThreshold)
 			if old != newStatus {
 				cbm.onStateChange(ep.ID, old, newStatus)
 			}
@@ -567,7 +585,7 @@ func (cbm *CircuitBreakerManager) RecordFailure(gctx *GatewayContext, ep *Endpoi
 			entry.lastTraceID = traceID
 			entry.lastRequestID = requestID
 			entry.mu.Unlock()
-			old, newStatus := entry.record(false, now, p.SlidingWindowType, ws, mc, ho, to)
+			old, newStatus := entry.record(false, now, p.SlidingWindowType, ws, mc, ho, to, p.FailureRateThreshold)
 			if old != newStatus {
 				cbm.onStateChange(serviceKey, old, newStatus)
 			}
@@ -583,7 +601,7 @@ func (cbm *CircuitBreakerManager) RecordFailure(gctx *GatewayContext, ep *Endpoi
 			entry.lastTraceID = traceID
 			entry.lastRequestID = requestID
 			entry.mu.Unlock()
-			old, newStatus := entry.record(false, now, p.SlidingWindowType, ws, mc, ho, to)
+			old, newStatus := entry.record(false, now, p.SlidingWindowType, ws, mc, ho, to, p.FailureRateThreshold)
 			if old != newStatus {
 				cbm.onStateChange(ep.ID, old, newStatus)
 			}
@@ -637,7 +655,7 @@ func (cbm *CircuitBreakerManager) CheckAndResetOnVersionChange(key string, versi
 }
 
 func (cbm *CircuitBreakerManager) RecordRaw(key string, success bool, windowSize, minCalls, allowedCallsInHalfOpen int, recoveryTimeout time.Duration) {
-	old, new := cbm.getEntry(key).record(success, time.Now(), "count", windowSize, minCalls, allowedCallsInHalfOpen, recoveryTimeout)
+	old, new := cbm.getEntry(key).record(success, time.Now(), "count", windowSize, minCalls, allowedCallsInHalfOpen, recoveryTimeout, 0.0)
 	if old != new {
 		cbm.onStateChange(key, old, new)
 	}

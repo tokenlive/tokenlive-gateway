@@ -13,13 +13,13 @@ func TestCircuitBreakerEntry_TimeWindowSliding(t *testing.T) {
 	now := time.Now()
 
 	// 1. 记录 2 次成功和 1 次失败，对齐在当前这秒
-	old, newStatus := e.record(true, now, "time", 5, 3, 1, 10*time.Second)
+	old, newStatus := e.record(true, now, "time", 5, 3, 1, 10*time.Second, 0.0)
 	if old != CircuitClosed || newStatus != CircuitClosed {
 		t.Errorf("expected CLOSED -> CLOSED, got %v -> %v", old, newStatus)
 	}
-	e.record(true, now, "time", 5, 3, 1, 10*time.Second)
+	e.record(true, now, "time", 5, 3, 1, 10*time.Second, 0.0)
 	// 触发第 3 次记录（失败），达到了阈值（mc = 3）但由于总失败数是 1，小于 failThresh (3)，不应熔断
-	e.record(false, now, "time", 5, 3, 1, 10*time.Second)
+	e.record(false, now, "time", 5, 3, 1, 10*time.Second, 0.0)
 
 	if e.state != CircuitClosed {
 		t.Errorf("expected state to be CLOSED, got %v", e.state)
@@ -32,8 +32,8 @@ func TestCircuitBreakerEntry_TimeWindowSliding(t *testing.T) {
 	}
 
 	// 2. 在当前这秒再投递 2 次失败。此时这一秒的总失败数达到 3，应该触发熔断
-	e.record(false, now, "time", 5, 3, 1, 10*time.Second)
-	_, finalStatus := e.record(false, now, "time", 5, 3, 1, 10*time.Second)
+	e.record(false, now, "time", 5, 3, 1, 10*time.Second, 0.0)
+	_, finalStatus := e.record(false, now, "time", 5, 3, 1, 10*time.Second, 0.0)
 
 	if finalStatus != CircuitOpen {
 		t.Errorf("expected state to turn OPEN, got %v", finalStatus)
@@ -46,9 +46,9 @@ func TestCircuitBreakerEntry_TimeWindowSliding(t *testing.T) {
 	}
 
 	// 在 t=now 秒，记录 3 次失败 -> 触发熔断
-	e.record(false, now, "time", 5, 3, 1, 10*time.Second)
-	e.record(false, now, "time", 5, 3, 1, 10*time.Second)
-	_, curStatus := e.record(false, now, "time", 5, 3, 1, 10*time.Second)
+	e.record(false, now, "time", 5, 3, 1, 10*time.Second, 0.0)
+	e.record(false, now, "time", 5, 3, 1, 10*time.Second, 0.0)
+	_, curStatus := e.record(false, now, "time", 5, 3, 1, 10*time.Second, 0.0)
 	if curStatus != CircuitOpen {
 		t.Errorf("expected OPEN, got %v", curStatus)
 	}

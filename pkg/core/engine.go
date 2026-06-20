@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/compensation"
+	"github.com/tokenlive/tokenlive-gateway/pkg/events"
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 
 	"go.uber.org/zap"
@@ -58,6 +59,7 @@ type Engine struct {
 	invokerBuilder          InvokerBuilder
 	enableActiveHealthCheck bool
 	aliasService            AliasResolver
+	publisher               events.Publisher
 }
 
 // NewEngine 创建 Engine
@@ -125,6 +127,11 @@ func (e *Engine) SetInvokerBuilder(ib InvokerBuilder) {
 // SetAliasService 注入别名解析服务（可选，Init 之前调用）
 func (e *Engine) SetAliasService(as AliasResolver) {
 	e.aliasService = as
+}
+
+// SetPublisher 注入事件发布器（可选，Init 之前调用）
+func (e *Engine) SetPublisher(pub events.Publisher) {
+	e.publisher = pub
 }
 
 // Context 返回 Engine 的生命周期 context，用于后台 goroutine 优雅退出
@@ -461,6 +468,10 @@ func (e *Engine) ResolveLoadBalancer(name string) LoadBalancer {
 
 func (e *Engine) EnableActiveHealthCheck() bool {
 	return e.enableActiveHealthCheck
+}
+
+func (e *Engine) Publisher() events.Publisher {
+	return e.publisher
 }
 
 func getFallbackPolicy(gctx *GatewayContext) *policy.FallbackPolicy {

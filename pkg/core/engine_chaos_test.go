@@ -247,8 +247,8 @@ func TestChaosHarness_FallbackOnPreByteFailure(t *testing.T) {
 	}
 	cbManager := core.NewCircuitBreakerManager()
 
-	ciGpt4 := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, defaultRetry, cbManager, store, logger)
-	ciGpt3 := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, defaultRetry, cbManager, store, logger)
+	ciGpt4 := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, defaultRetry, cbManager, store, logger, nil)
+	ciGpt3 := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, defaultRetry, cbManager, store, logger, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`))
 	w := httptest.NewRecorder()
@@ -354,7 +354,7 @@ func TestChaosHarness_TTFTSlowCallMelting(t *testing.T) {
 		"round_robin": &mockLoadBalancer{provider: openAIProvider},
 	}
 	cbManager := core.NewCircuitBreakerManager()
-	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger)
+	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger, nil)
 
 	testPolicy := &policy.Policy{
 		CircuitBreakPolicies: []*policy.CircuitBreakPolicy{
@@ -443,7 +443,7 @@ func TestChaosHarness_DisconnectPostTTFTAndRefund(t *testing.T) {
 		"round_robin": &mockLoadBalancer{provider: openAIProvider},
 	}
 	cbManager := core.NewCircuitBreakerManager()
-	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger)
+	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger, nil)
 
 	engineConfig := &core.EngineConfig{
 		Pipelines: map[string]*core.PipelineConfig{
@@ -626,7 +626,7 @@ func TestChaosHarness_ResponsesStreamDisconnect(t *testing.T) {
 		"round_robin": &mockLoadBalancer{provider: openAIProvider},
 	}
 	cbManager := core.NewCircuitBreakerManager()
-	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger)
+	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger, nil)
 
 	engineConfig := &core.EngineConfig{
 		Pipelines: map[string]*core.PipelineConfig{
@@ -704,7 +704,7 @@ func TestChaosHarness_ResponsesStreamDisconnectWithDoneSubstring(t *testing.T) {
 		"round_robin": &mockLoadBalancer{provider: openAIProvider},
 	}
 	cbManager := core.NewCircuitBreakerManager()
-	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger)
+	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger, nil)
 
 	engineConfig := &core.EngineConfig{
 		Pipelines: map[string]*core.PipelineConfig{
@@ -786,7 +786,7 @@ func TestChaosHarness_MessagesStreamDisconnect(t *testing.T) {
 		"round_robin": &mockLoadBalancer{provider: openAIProvider},
 	}
 	cbManager := core.NewCircuitBreakerManager()
-	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger)
+	ci := invoker.NewClusterInvoker(discovery, []core.Router{}, lbs, nil, cbManager, store, logger, nil)
 
 	engineConfig := &core.EngineConfig{
 		Pipelines: map[string]*core.PipelineConfig{

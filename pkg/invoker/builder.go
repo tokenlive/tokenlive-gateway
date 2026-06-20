@@ -62,6 +62,7 @@ func buildClusterInvoker(invokerCfg *core.InvokerConfig, r core.InvokerDependenc
 		cbManager,
 		r.StateStore(),
 		r.Logger(),
+		r.Publisher(),
 	)
 	ci.SetEnableActive(r.EnableActiveHealthCheck())
 	if invokerCfg.LoadBalancer != "" {

@@ -41,13 +41,13 @@ func (i *anthropicMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Prov
 		}
 	}
 
-	singleCtx, singleCancel := context.WithCancel(gctx.Ctx)
-	defer singleCancel()
+	singleCtx, singleCancel := context.WithCancelCause(gctx.Ctx)
+	defer singleCancel(nil)
 
 	// 注册首包前定时器
 	timer := time.AfterFunc(time.Duration(firstByteTimeout)*time.Millisecond, func() {
 		if gctx.TTFT == 0 {
-			singleCancel()
+			singleCancel(core.ErrGatewayFirstByteTimeout)
 		}
 	})
 	defer timer.Stop()
@@ -91,6 +91,9 @@ func (i *anthropicMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Prov
 
 	resp, err := ap.client.Do(req)
 	if err != nil {
+		if context.Cause(singleCtx) == core.ErrGatewayFirstByteTimeout {
+			return fmt.Errorf("upstream request timeout (gateway policy active disconnect, first byte timeout): %w", err)
+		}
 		return fmt.Errorf("upstream request: %w", err)
 	}
 	defer func() {
@@ -110,7 +113,7 @@ func (i *anthropicMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Prov
 			idleTimeout = gctx.Policy.InvocationPolicy.RetryPolicy.IdleTimeout
 		}
 		if idleTimeout > 0 {
-			resp.Body = llm.WrapIdleTimeoutReader(resp.Body, time.Duration(idleTimeout)*time.Millisecond, singleCancel)
+			resp.Body = llm.WrapIdleTimeoutReader(resp.Body, time.Duration(idleTimeout)*time.Millisecond, func() { singleCancel(nil) })
 		}
 
 		contentType := resp.Header.Get("Content-Type")

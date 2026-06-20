@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
+	"github.com/tokenlive/tokenlive-gateway/pkg/events"
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 
 	"go.uber.org/zap"
@@ -31,6 +32,7 @@ type ClusterInvoker struct {
 	stateStore        core.StateStore
 	logger            *zap.Logger
 	enableActive      bool
+	publisher         events.Publisher
 }
 
 func NewClusterInvoker(
@@ -41,6 +43,7 @@ func NewClusterInvoker(
 	cbManager *core.CircuitBreakerManager,
 	stateStore core.StateStore,
 	logger *zap.Logger,
+	publisher events.Publisher,
 ) *ClusterInvoker {
 	if retry == nil {
 		retry = DefaultRetryStrategy
@@ -54,6 +57,7 @@ func NewClusterInvoker(
 		cbManager:         cbManager,
 		stateStore:        stateStore,
 		logger:            logger,
+		publisher:         publisher,
 	}
 }
 
@@ -107,6 +111,21 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
 		maxRetries = gctx.Policy.InvocationPolicy.RetryPolicy.Retry
 	}
+
+	// 解析重试策略（提到循环外，供 defer 闭包捕获）
+	var rp *policy.RetryPolicy
+	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
+		rp = gctx.Policy.InvocationPolicy.RetryPolicy
+	} else {
+		rp = ci.retryStrategy
+	}
+
+	// 请求结束后按策略条件判断是否发出 invocation_fail 事件（defer 统一覆盖所有错误出口）
+	defer func() {
+		if lastErr != nil && !gctx.PolicyEventEmitted {
+			ci.emitPolicyErrorEvents(gctx, rp, lastErr)
+		}
+	}()
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
@@ -292,15 +311,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		// 检查是否应该重试
 		shouldRetry := false
 		retryReason := ""
-		policyType := "static"
 		statusCode := getStatusCode(gctx.UpstreamResponse)
-		var rp *policy.RetryPolicy
-		if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
-			policyType = "dynamic"
-			rp = gctx.Policy.InvocationPolicy.RetryPolicy
-		} else {
-			rp = ci.retryStrategy
-		}
 
 		contentType := ""
 		if gctx.UpstreamResponse != nil {
@@ -317,6 +328,10 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		}
 
 		// 触发重试前打印详细日志
+		policyType := "static"
+		if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
+			policyType = "dynamic"
+		}
 		gctx.Logger(ci.logger).Info("triggering retry strategy",
 			zap.String("policy_type", policyType),
 			zap.String("reason", retryReason),
@@ -344,6 +359,80 @@ func getStatusCode(resp *http.Response) int {
 		return resp.StatusCode
 	}
 	return 0
+}
+
+// emitPolicyErrorEvents 在请求结束后按重试策略和熔断策略的错误条件判断是否发出 invocation_fail 事件。
+// 两个策略独立判断，都命中时发两条事件；Message 前缀区分来源。
+func (ci *ClusterInvoker) emitPolicyErrorEvents(gctx *core.GatewayContext, rp *policy.RetryPolicy, invokeErr error) {
+	if ci.publisher == nil {
+		return
+	}
+
+	statusCode := getStatusCode(gctx.UpstreamResponse)
+	contentType := ""
+	if gctx.UpstreamResponse != nil {
+		contentType = gctx.UpstreamResponse.Header.Get("Content-Type")
+	}
+	errMsg := ""
+	if invokeErr != nil {
+		errMsg = invokeErr.Error()
+	}
+
+	traceID := ""
+	if gctx.Request != nil {
+		traceID = gctx.Request.Header.Get("X-Trace-ID")
+	}
+	if traceID == "" && gctx.ResponseWriter != nil {
+		traceID = gctx.ResponseWriter.Header().Get("X-Trace-Id")
+	}
+	requestID := ""
+	if gctx.Request != nil {
+		requestID = gctx.Request.Header.Get("X-Request-ID")
+	}
+	if requestID == "" {
+		requestID = traceID
+	}
+
+	base := events.OpsEvent{
+		EventType:  events.EventTypeInvocationFail,
+		TenantCode: gctx.Tenant,
+		ModelCode:  gctx.OriginalModel,
+		RequestID:  requestID,
+		TraceID:    traceID,
+		Timestamp:  time.Now().Unix(),
+	}
+	if gctx.SelectedEndpoint != nil {
+		base.EndpointID = gctx.SelectedEndpoint.ID
+		base.ProviderName = gctx.SelectedEndpoint.Provider
+	}
+
+	// 1. 重试策略匹配
+	if rp != nil {
+		if matched, reason := rp.MatchErrorWithReason(statusCode, contentType, errMsg, gctx.UpstreamBody); matched {
+			evt := base
+			evt.Message = fmt.Sprintf("retry policy matched: %s", reason)
+			if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
+				evt.PolicyID = gctx.Policy.InvocationPolicy.ID
+				evt.PolicyName = gctx.Policy.InvocationPolicy.Name
+			}
+			_ = ci.publisher.Publish(gctx.Ctx, &evt)
+			gctx.PolicyEventEmitted = true
+		}
+	}
+
+	// 2. 熔断策略匹配（独立调用，不改 RecordFailure）
+	if gctx.Policy != nil {
+		for _, cbPolicy := range gctx.Policy.CircuitBreakPolicies {
+			if matched, reason := cbPolicy.MatchErrorWithReason(statusCode, contentType, errMsg, gctx.UpstreamBody); matched {
+				evt := base
+				evt.Message = fmt.Sprintf("circuit breaker policy matched: %s", reason)
+				evt.PolicyID = cbPolicy.ID
+				evt.PolicyName = cbPolicy.Name
+				_ = ci.publisher.Publish(gctx.Ctx, &evt)
+				gctx.PolicyEventEmitted = true
+			}
+		}
+	}
 }
 
 func (ci *ClusterInvoker) Endpoint() *core.Endpoint {

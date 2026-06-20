@@ -270,6 +270,9 @@ func NewGatewayEngine(
 	eventPubFilter.SetDiscovery(engine.Discovery())
 	engine.RegisterFilter("event_publisher", eventPubFilter)
 
+	// 注入事件发布器到 Engine，供 InvokerDependencyResolver.Publisher() 使用
+	engine.SetPublisher(eventPublisher)
+
 	// 熔断器状态变更时直接发布事件（Closed→Open）
 	engine.CircuitBreakerManager().SetEventHandler(func(evt core.CBEvent) {
 		go func() {
@@ -288,7 +291,9 @@ func NewGatewayEngine(
 
 			transitionStr := ""
 			if evt.OldState != "" && evt.NewState != "" {
-				transitionStr = fmt.Sprintf(" [%s -> %s]", evt.OldState, evt.NewState)
+				oldState := strings.ReplaceAll(strings.ToUpper(evt.OldState), " ", "")
+				newState := strings.ReplaceAll(strings.ToUpper(evt.NewState), " ", "")
+				transitionStr = fmt.Sprintf("[%s->%s] ", oldState, newState)
 			}
 
 			evtOps := &events.OpsEvent{
@@ -302,7 +307,7 @@ func NewGatewayEngine(
 				CurrentValue: evt.CurrentValue,
 				RequestID:    evt.RequestID,
 				TraceID:      evt.TraceID,
-				Message:      "circuit breaker opened: " + evt.Key + transitionStr,
+				Message:      transitionStr + "circuit breaker opened: " + evt.Key,
 				Timestamp:    time.Now().Unix(),
 			}
 			// 如果是实例级熔断，我们将 EndpointID 设为 key

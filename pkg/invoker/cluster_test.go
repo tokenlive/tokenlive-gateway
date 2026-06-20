@@ -130,6 +130,7 @@ func newTestClusterInvoker(
 		cbManager,
 		stateStore,
 		logger,
+		nil,
 	)
 }
 

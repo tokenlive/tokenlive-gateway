@@ -47,6 +47,12 @@ events:
   enabled: true
   type: redis
   topic: aigw:events:policy
+  # 各个事件类型发送开关，不配置默认开启（true）
+  types:
+    circuit_break: true
+    rate_limit: true
+    invocation_fail: true
+    lb_switch: true
   # kafka:
   #   brokers: ["localhost:9092"]
 
