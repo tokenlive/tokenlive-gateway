@@ -291,9 +291,9 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	for _, f := range pipe.InboundFilters {
 		if err := f.OnRequest(gctx); err != nil {
 			gctx.Err = err
-			// Inbound 拦截报错时，手动触发统计类 OutboundFilters
+			// Inbound 拦截报错时，执行声明了 InboundSafe 的 OutboundFilters
 			for _, outf := range pipe.OutboundFilters {
-				if outf.Name() == "metrics" || outf.Name() == "status_collector" || outf.Name() == "event_publisher" {
+				if _, ok := outf.(InboundSafeFilter); ok {
 					_ = outf.OnResponse(gctx)
 				}
 			}

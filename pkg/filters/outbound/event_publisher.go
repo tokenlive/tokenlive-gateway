@@ -36,6 +36,7 @@ func (f *EventPublishFilter) SetDiscovery(discovery core.Discovery) {
 func (f *EventPublishFilter) Name() string                        { return "event_publisher" }
 func (f *EventPublishFilter) Order() int                          { return 50 }
 func (f *EventPublishFilter) Criticality() core.FilterCriticality { return core.BestEffort }
+func (f *EventPublishFilter) InboundSafe()                        {}
 
 func (f *EventPublishFilter) OnResponse(gctx *core.GatewayContext) error {
 	if f.publisher == nil {

@@ -29,6 +29,7 @@ func NewAccessLogFilter(logger *zap.Logger) *AccessLogFilter {
 func (f *AccessLogFilter) Name() string                        { return "access_log" }
 func (f *AccessLogFilter) Order() int                          { return 40 }
 func (f *AccessLogFilter) Criticality() core.FilterCriticality { return core.BestEffort }
+func (f *AccessLogFilter) InboundSafe()                        {}
 
 func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 	provider := ""

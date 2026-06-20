@@ -22,3 +22,9 @@ type OutboundFilter interface {
 	Criticality() FilterCriticality
 	OnResponse(gctx *GatewayContext) error
 }
+
+// InboundSafeFilter 标记接口：实现此接口的 OutboundFilter 在 InboundError 路径也会执行。
+// InboundError 路径指请求被 InboundFilter 拒截、未到达 Invoker 的场景。
+type InboundSafeFilter interface {
+	InboundSafe()
+}

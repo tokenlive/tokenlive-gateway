@@ -30,6 +30,7 @@ func NewMetricsFilter(registry *telemetry.MetricsRegistry, extractor MetricsExtr
 func (f *MetricsFilter) Name() string                        { return "metrics" }
 func (f *MetricsFilter) Order() int                          { return 30 }
 func (f *MetricsFilter) Criticality() core.FilterCriticality { return core.BestEffort }
+func (f *MetricsFilter) InboundSafe()                        {}
 
 func (f *MetricsFilter) OnResponse(gctx *core.GatewayContext) error {
 	// BestEffort 语义：即使出错也不能阻塞响应

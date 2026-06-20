@@ -25,6 +25,7 @@ func NewStatusCollectorFilter(rdb *redis.Client) *StatusCollectorFilter {
 func (f *StatusCollectorFilter) Name() string                        { return "status_collector" }
 func (f *StatusCollectorFilter) Order() int                          { return 31 }
 func (f *StatusCollectorFilter) Criticality() core.FilterCriticality { return core.BestEffort }
+func (f *StatusCollectorFilter) InboundSafe()                        {}
 
 func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 	if f.rdb == nil || gctx.Model == "" {

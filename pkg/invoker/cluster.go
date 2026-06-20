@@ -404,6 +404,13 @@ func (ci *ClusterInvoker) emitPolicyErrorEvents(gctx *core.GatewayContext, rp *p
 	if gctx.SelectedEndpoint != nil {
 		base.EndpointID = gctx.SelectedEndpoint.ID
 		base.ProviderName = gctx.SelectedEndpoint.Provider
+	} else if ci.discovery != nil && gctx.Model != "" {
+		// SelectedEndpoint 为空时（如 Discovery 失败、Router 过滤后无可用端点），
+		// 尝试通过服务发现推断默认供应商，补全事件中的供应商字段
+		if eps, err := ci.discovery.List(gctx.Ctx, gctx.Model); err == nil && len(eps) > 0 {
+			base.EndpointID = eps[0].ID
+			base.ProviderName = eps[0].Provider
+		}
 	}
 
 	// 1. 重试策略匹配
