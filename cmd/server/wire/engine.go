@@ -28,9 +28,11 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 )
+
 
 // NewGatewayDataStores 创建 StateStore 和 CompensationQueue。
 // rdb 为 nil 时返回内存实现；非 nil 时共享同一个 *redis.Client。
@@ -77,7 +79,7 @@ func NewGatewayConfigManager(
 	return config.NewConfigManager(gwCfg, redisSrc, logger.Logger), nil
 }
 
-// NewGatewayEngine 创建 Engine（直接从 viper 读取配置，使用共享的 Redis client）
+// NewGatewayEngine 创建 Engine（直接从 viper 读取配置，使用共享的 Redis client，支持 ClickHouse 审计落库）
 func NewGatewayEngine(
 	v *viper.Viper,
 	logger *log.Logger,
@@ -85,7 +87,9 @@ func NewGatewayEngine(
 	apiKeyService *service.ApiKeyService,
 	configMgr *config.ConfigManager,
 	rdb *redis.Client,
+	chConn clickhouse.Conn,
 ) (*core.Engine, func(), error) {
+
 	otelCleanup, otelErr := telemetry.InitOTelMetrics(v, logger.Logger)
 	if otelErr != nil {
 		return nil, nil, fmt.Errorf("init otel metrics: %w", otelErr)
@@ -257,7 +261,8 @@ func NewGatewayEngine(
 		&outbound.DefaultMetricsExtractor{},
 		logger.Logger,
 	))
-	engine.RegisterFilter("access_log", outbound.NewAccessLogFilter(logger.Logger))
+	engine.RegisterFilter("access_log", outbound.NewAccessLogFilter(logger.Logger, rdb, compQueue, chConn, v))
+
 	engine.RegisterFilter("status_collector", outbound.NewStatusCollectorFilter(rdb))
 
 	// 注册 Event Publisher 过滤器
@@ -335,8 +340,22 @@ func NewGatewayEngine(
 	engine.StartHealthCheck(engine.Context(), 30*time.Second, v.GetBool("llm.enable_active_health_check"))
 	engine.StartCircuitBreakerProbe(engine.Context(), 5*time.Second)
 
+	var compWorker *compensation.Worker
+	chEnabled := v.GetBool("access_log.clickhouse.enabled")
+	if chEnabled && compQueue != nil && chConn != nil && rdb != nil {
+
+		if redisQ, ok := compQueue.(*compensation.RedisQueue); ok {
+			compWorker = compensation.NewWorker(rdb, redisQ, logger.Logger)
+			compWorker.RegisterCompensator("access_log", outbound.NewAccessLogCompensator(chConn, logger.Logger))
+			go compWorker.Run(engine.Context())
+		}
+	}
+
 	// cleanup 函数
 	cleanup := func() {
+		if compWorker != nil {
+			compWorker.Close()
+		}
 		otelCleanup()
 		if err := engine.Close(); err != nil {
 			logger.Logger.Error("engine close error", zap.Error(err))
@@ -347,6 +366,7 @@ func NewGatewayEngine(
 	}
 
 	return engine, cleanup, nil
+
 }
 
 // buildFromRelationalConfig 从 model-centric 配置构建 EngineConfig 和 Provider 实例

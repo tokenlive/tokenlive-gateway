@@ -24,11 +24,13 @@ var repositorySet = wire.NewSet(
 	repository.NewDB,
 	repository.LoadRedisConfig,
 	repository.NewRedis,
+	repository.NewClickHouse,
 	//repository.NewMongo,
 	repository.NewRepository,
 	repository.NewTransaction,
 	repository.NewUserRepository,
 )
+
 
 var serviceSet = wire.NewSet(
 	service.NewService,

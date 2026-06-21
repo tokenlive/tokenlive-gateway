@@ -51,8 +51,14 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 		cleanup()
 		return nil, nil, err
 	}
-	engine, cleanup2, err := NewGatewayEngine(viperViper, logger, modelService, apiKeyService, configManager, client)
+	conn, cleanup2, err := repository.NewClickHouse(viperViper, logger)
 	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	engine, cleanup3, err := NewGatewayEngine(viperViper, logger, modelService, apiKeyService, configManager, client, conn)
+	if err != nil {
+		cleanup2()
 		cleanup()
 		return nil, nil, err
 	}
@@ -71,6 +77,7 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 	jobServer := server.NewJobServer(logger, userJob)
 	appApp := newApp(httpServer, jobServer)
 	return appApp, func() {
+		cleanup3()
 		cleanup2()
 		cleanup()
 	}, nil
@@ -78,7 +85,7 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 
 // wire.go:
 
-var repositorySet = wire.NewSet(repository.NewDB, repository.LoadRedisConfig, repository.NewRedis, repository.NewRepository, repository.NewTransaction, repository.NewUserRepository)
+var repositorySet = wire.NewSet(repository.NewDB, repository.LoadRedisConfig, repository.NewRedis, repository.NewClickHouse, repository.NewRepository, repository.NewTransaction, repository.NewUserRepository)
 
 var serviceSet = wire.NewSet(service.NewService, service.NewUserService, service.NewApiKeyService, service.NewModelService)
 

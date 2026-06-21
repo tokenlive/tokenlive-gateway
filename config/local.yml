@@ -32,6 +32,12 @@ data:
     write_timeout: 2s
   mongo:
     uri: ${MONGO_URI:mongodb://root:123456@localhost:27017}
+  clickhouse:
+    addr: ["${CLICKHOUSE_ADDR:127.0.0.1:9000}"]
+    database: "${CLICKHOUSE_DATABASE:tokenlive_gateway}"
+    username: "${CLICKHOUSE_USERNAME:default}"
+    password: "${CLICKHOUSE_PASSWORD:}"
+
 log:
   log_level: debug
   mode: both               #  file or console or both
@@ -235,3 +241,12 @@ policies:
         error_codes:
           - "500"
           - "429"
+
+access_log:
+  clickhouse:
+    enabled: true
+  batch:
+    batch_size: 2000
+    flush_interval: 2s
+
+
