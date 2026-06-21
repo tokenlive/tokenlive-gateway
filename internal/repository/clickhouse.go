@@ -16,7 +16,15 @@ import (
 func NewClickHouse(conf *viper.Viper, l *log.Logger) (clickhouse.Conn, func(), error) {
 	zapLogger := l.Logger
 
+	// 优先检查 clickhouse 写入开关是否开启。若为 false，则不尝试进行任何网络连接 and 初始化
+	if !conf.GetBool("access_log.clickhouse.enabled") {
+		zapLogger.Info("ClickHouse log writing is disabled (access_log.clickhouse.enabled is false), skipping connection initialization")
+		return nil, func() {}, nil
+	}
+
+
 	if !conf.IsSet("data.clickhouse") {
+
 		zapLogger.Info("ClickHouse configuration not found, skipping ClickHouse initialization")
 		return nil, func() {}, nil
 	}
