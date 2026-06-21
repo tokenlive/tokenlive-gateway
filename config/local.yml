@@ -248,5 +248,3 @@ access_log:
   batch:
     batch_size: 2000
     flush_interval: 2s
-
-

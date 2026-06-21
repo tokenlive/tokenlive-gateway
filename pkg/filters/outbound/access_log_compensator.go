@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -97,7 +97,7 @@ func writeBatchToClickHouse(ctx context.Context, conn clickhouse.Conn, items []A
 			item.OutputTokens,
 			item.CachedTokens,
 			item.CacheCreationTokens,
-			item.Cost,
+			decimal.NewFromFloat(item.Cost),
 		)
 		if err != nil {
 			_ = batch.Abort()
