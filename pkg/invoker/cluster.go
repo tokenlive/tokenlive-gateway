@@ -310,6 +310,10 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return err
 		}
 
+		if attempt >= maxRetries {
+			return err
+		}
+
 		// 检查是否应该重试
 		shouldRetry := false
 		retryReason := ""
@@ -416,7 +420,7 @@ func (ci *ClusterInvoker) emitPolicyErrorEvents(gctx *core.GatewayContext, rp *p
 	}
 
 	// 1. 重试策略匹配
-	if rp != nil {
+	if rp != nil && rp.Retry > 0 {
 		if matched, reason := rp.MatchErrorWithReason(statusCode, contentType, errMsg, gctx.UpstreamBody); matched {
 			evt := base
 			evt.Message = fmt.Sprintf("retry policy matched: %s", reason)
