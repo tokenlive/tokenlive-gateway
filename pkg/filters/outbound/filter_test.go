@@ -371,7 +371,7 @@ func TestMetricsFilter_NilEndpoint(t *testing.T) {
 
 func TestAccessLogFilter_NameAndOrder(t *testing.T) {
 	logger := zap.NewNop()
-	f := NewAccessLogFilter(logger)
+	f := NewAccessLogFilter(logger, nil, nil, nil, nil)
 	if f.Name() != "access_log" {
 		t.Errorf("expected name 'access_log', got '%s'", f.Name())
 	}
@@ -385,7 +385,7 @@ func TestAccessLogFilter_NameAndOrder(t *testing.T) {
 
 func TestAccessLogFilter_SuccessfulRequest(t *testing.T) {
 	logger := zap.NewNop()
-	f := NewAccessLogFilter(logger)
+	f := NewAccessLogFilter(logger, nil, nil, nil, nil)
 
 	gctx := &core.GatewayContext{
 		OriginalModel:    "gpt-4",
@@ -413,7 +413,7 @@ func TestAccessLogFilter_SuccessfulRequest(t *testing.T) {
 
 func TestAccessLogFilter_RequestWithError(t *testing.T) {
 	logger := zap.NewNop()
-	f := NewAccessLogFilter(logger)
+	f := NewAccessLogFilter(logger, nil, nil, nil, nil)
 
 	gctx := &core.GatewayContext{
 		OriginalModel:    "claude-3-opus",
@@ -433,7 +433,7 @@ func TestAccessLogFilter_RequestWithError(t *testing.T) {
 
 func TestAccessLogFilter_NilEndpoint(t *testing.T) {
 	logger := zap.NewNop()
-	f := NewAccessLogFilter(logger)
+	f := NewAccessLogFilter(logger, nil, nil, nil, nil)
 
 	gctx := &core.GatewayContext{
 		OriginalModel: "gpt-4",

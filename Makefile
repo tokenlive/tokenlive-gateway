@@ -23,7 +23,7 @@ test:
 
 .PHONY: build
 build:
-	go build -ldflags="-s -w" -o ./bin/server ./cmd/server
+	go build -ldflags="-s -w" -o ./bin/tokenlive-gateway ./cmd/server
 
 .PHONY: docker
 docker:

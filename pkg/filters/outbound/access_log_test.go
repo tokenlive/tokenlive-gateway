@@ -14,7 +14,7 @@ import (
 func TestAccessLogFilter_RedactsAPIKey(t *testing.T) {
 	coreObs, logs := observer.New(zap.InfoLevel)
 	logger := zap.New(coreObs)
-	f := NewAccessLogFilter(logger)
+	f := NewAccessLogFilter(logger, nil, nil, nil, nil)
 
 	gctx := &core.GatewayContext{
 		OriginalModel: "gpt-4",
