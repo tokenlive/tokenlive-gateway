@@ -283,6 +283,8 @@ func TestChaosHarness_FallbackOnPreByteFailure(t *testing.T) {
 		if i > 0 {
 			gctx.Model = modelName
 			gctx.FallbackChain = append(gctx.FallbackChain, modelName)
+		} else {
+			gctx.FallbackChain = append(gctx.FallbackChain, modelName)
 		}
 		var currentInvoker core.Invoker = ciGpt4
 		if modelName == "gpt-3.5-turbo" {
@@ -315,8 +317,8 @@ func TestChaosHarness_FallbackOnPreByteFailure(t *testing.T) {
 	if gctx.AttemptCount != 3 {
 		t.Errorf("expected attempt count 3, got %d", gctx.AttemptCount)
 	}
-	if len(gctx.FallbackChain) != 1 || gctx.FallbackChain[0] != "gpt-3.5-turbo" {
-		t.Errorf("expected fallback chain ['gpt-3.5-turbo'], got %v", gctx.FallbackChain)
+	if len(gctx.FallbackChain) != 2 || gctx.FallbackChain[0] != "gpt-4" || gctx.FallbackChain[1] != "gpt-3.5-turbo" {
+		t.Errorf("expected fallback chain ['gpt-4', 'gpt-3.5-turbo'], got %v", gctx.FallbackChain)
 	}
 
 	cb1 := cbManager.GetState("ep-1")

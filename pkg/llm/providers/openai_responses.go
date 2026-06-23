@@ -878,6 +878,12 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 				if ev.OutputTokens > 0 {
 					gctx.OutputTokens = ev.OutputTokens
 				}
+				if ev.CachedTokens > 0 {
+					gctx.CachedTokens = ev.CachedTokens
+				}
+				if ev.CacheCreationTokens > 0 {
+					gctx.CacheCreationTokens = ev.CacheCreationTokens
+				}
 
 				var chunk struct {
 					ID      string `json:"id"`

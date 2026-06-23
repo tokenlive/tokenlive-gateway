@@ -318,6 +318,8 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			if i > 0 {
 				gctx.Model = modelName
 				gctx.FallbackChain = append(gctx.FallbackChain, modelName)
+			} else {
+				gctx.FallbackChain = append(gctx.FallbackChain, modelName)
 			}
 			invokeErr = invoker.Invoke(gctx)
 			if invokeErr == nil {
