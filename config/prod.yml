@@ -44,7 +44,7 @@ llm:
 otel:
   metrics:
     enabled: ${OTEL_ENABLED:true}
-    endpoint: "${OTEL_ENDPOINT:192.168.68.8:4317}"
+    endpoint: "${OTEL_ENDPOINT:192.168.68.6:4317}"
     insecure: true
 
 # 策略触发事件发送配置

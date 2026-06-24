@@ -11,7 +11,7 @@ import (
 func TestOsExpandEnvBehavior(t *testing.T) {
 	// 测试 os.ExpandEnv 对带默认值语法的表现
 	os.Setenv("TEST_VAR", "my_value")
-	
+
 	// 如果 TEST_VAR 存在，且使用 ${TEST_VAR:default}
 	// os.ExpandEnv 会去查找名为 "TEST_VAR:default" 的环境变量，找不到就会置空（或者在某些 go 版本保留原本）
 	res := os.ExpandEnv("${TEST_VAR:default}")
@@ -42,14 +42,14 @@ func TestCustomExpandEnv(t *testing.T) {
 driver: ${DB_DRIVER:sqlite}
 dsn: ${DB_DSN:storage/gateway.db?_busy_timeout=5000}
 redis_pwd: ${REDIS_PASSWORD:}
-otel: "${OTEL_ENDPOINT:192.168.68.8:4317}"
+otel: "${OTEL_ENDPOINT:192.168.68.6:4317}"
 mongo: ${MONGO_URI:mongodb://root:123456@localhost:27017}
 `
 	expected := `
 driver: sqlite
 dsn: storage/gateway.db?_busy_timeout=5000
 redis_pwd: 
-otel: "192.168.68.8:4317"
+otel: "192.168.68.6:4317"
 mongo: mongodb://root:123456@localhost:27017
 `
 	assert.Equal(t, expected, customExpandEnv(input))

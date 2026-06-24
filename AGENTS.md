@@ -50,11 +50,11 @@ Current config (from `config/local.yml`):
 
 ```bash
 make init          # Install dev tools: wire, mockgen, swag
-make build         # Build binary to ./bin/server
+make build         # Build binary to ./bin/tokenlive-gateway
 make test          # Run tests with coverage (outputs coverage.html)
 make mock          # Regenerate gomock mocks
 make swag          # Regenerate Swagger docs from annotations in cmd/server/main.go
-make bootstrap     # Start docker-compose infra, run migration, start server
+make bootstrap     # Start docker-compose infra, run migration, start tokenlive-gateway
 ```
 
 Run the server directly:

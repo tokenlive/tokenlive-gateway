@@ -184,7 +184,7 @@ APP_CONF=config/prod.yml go run ./cmd/server
 
 # 或构建二进制
 make build
-./bin/server
+./bin/tokenlive-gateway
 ```
 
 ### 调用 API
@@ -282,7 +282,7 @@ fallbacks:
 ## 开发命令
 
 ```bash
-make build         # 构建二进制到 ./bin/server
+make build         # 构建二进制到 ./bin/tokenlive-gateway
 make test          # 运行测试（输出 coverage.html）
 make mock          # 重新生成 gomock mocks
 make swag          # 重新生成 Swagger 文档

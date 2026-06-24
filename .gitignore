@@ -4,11 +4,11 @@ storage/*.db
 *.log
 deploy/docker-compose/conf
 deploy/docker-compose/data
-bin/server
+bin/tokenlive-gateway
 .claude/
 coverage.html
 coverage.out
-/server
+/tokenlive-gateway
 bin/
 scratch/
 

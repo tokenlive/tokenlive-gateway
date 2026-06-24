@@ -184,7 +184,7 @@ APP_CONF=config/prod.yml go run ./cmd/server
 
 # Or build and run binary
 make build
-./bin/server
+./bin/tokenlive-gateway
 ```
 
 ### Call API
@@ -282,7 +282,7 @@ Field inheritance priority: model_provider level > provider level > default valu
 ## Development Commands
 
 ```bash
-make build         # Build binary to ./bin/server
+make build         # Build binary to ./bin/tokenlive-gateway
 make test          # Run tests (outputs coverage.html)
 make mock          # Regenerate gomock mocks
 make swag          # Regenerate Swagger documentation
