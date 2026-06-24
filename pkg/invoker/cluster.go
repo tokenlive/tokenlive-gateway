@@ -272,12 +272,22 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		if err == nil {
 			isSlowCall := false
+			var slowReason string
 			if gctx.Policy != nil {
 				for _, p := range gctx.Policy.CircuitBreakPolicies {
 					if p.SlowCallMetric == "TTFT" && gctx.TTFT > 0 {
 						limit := time.Duration(p.SlowCallDurationThreshold) * time.Millisecond
 						if gctx.TTFT > limit {
 							isSlowCall = true
+							slowReason = "slow call TTFT exceeded"
+							break
+						}
+					} else if p.SlowCallMetric == "RTT" || p.SlowCallMetric == "Duration" {
+						rtt := time.Since(gctx.UpstreamConnect)
+						limit := time.Duration(p.SlowCallDurationThreshold) * time.Millisecond
+						if rtt > limit {
+							isSlowCall = true
+							slowReason = "slow call RTT exceeded"
 							break
 						}
 					}
@@ -285,7 +295,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			}
 
 			if isSlowCall {
-				ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, fmt.Errorf("slow call TTFT exceeded"))
+				ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, fmt.Errorf("%s", slowReason))
 			} else {
 				ci.cbManager.RecordSuccess(gctx, gctx.SelectedEndpoint)
 			}
