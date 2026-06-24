@@ -318,6 +318,10 @@ func NewGatewayEngine(
 			// 如果是实例级熔断，我们将 EndpointID 设为 key
 			if !strings.Contains(evt.Key, ":") {
 				evtOps.EndpointID = evt.Key
+				// 尝试从 StaticDiscovery 查找 endpoint code
+				if ep := findEndpointByID(staticDiscovery, evt.Key); ep != nil {
+					evtOps.EndpointCode = ep.Code
+				}
 			}
 
 			if err := eventPublisher.Publish(bgCtx, evtOps); err != nil {
@@ -538,6 +542,7 @@ func registerEndpointsFromResolvedEndpoints(sd *core.StaticDiscovery, resolved m
 			}
 			endpoint := &core.Endpoint{
 				ID:                 epID,
+				Code:               re.Code,
 				URL:                re.URL,
 				Provider:           re.ProviderName,
 				ProviderProtocol:   re.ProviderProtocol,
@@ -576,6 +581,19 @@ func readAuthKeys(v *viper.Viper) map[string]string {
 	return keys
 }
 
+// findEndpointByID 从 StaticDiscovery 中查找指定 ID 的端点
+func findEndpointByID(sd *core.StaticDiscovery, endpointID string) *core.Endpoint {
+	if sd == nil {
+		return nil
+	}
+	for _, ep := range sd.GetAllEndpoints() {
+		if ep.ID == endpointID {
+			return ep
+		}
+	}
+	return nil
+}
+
 type dynamicEndpointAdapter struct {
 	mgr *config.ConfigManager
 }
@@ -586,6 +604,7 @@ func (a *dynamicEndpointAdapter) GetEndpoints(ctx context.Context, model string)
 	for i, ep := range eps {
 		res[i] = core.DynamicEndpoint{
 			ID:                 ep.ID,
+			Code:               ep.Code,
 			ProviderName:       ep.ProviderName,
 			ProviderProtocol:   ep.ProviderProtocol,
 			URL:                ep.URL,

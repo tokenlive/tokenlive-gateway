@@ -46,6 +46,7 @@ type GatewayConfig struct {
 // timeout 字段为毫秒
 type ResolvedEndpoint struct {
 	ID                 string            `json:"id,omitempty"`
+	Code               string            `json:"code,omitempty"`
 	Description        string            `json:"description,omitempty"`
 	RealModel          string            `json:"real_model"`
 	ProviderName       string            `json:"provider_name"`

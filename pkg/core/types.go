@@ -19,6 +19,7 @@ const (
 // Endpoint Gateway 层的端点视图
 type Endpoint struct {
 	ID               string
+	Code             string
 	URL              string
 	Provider         string
 	Model            string

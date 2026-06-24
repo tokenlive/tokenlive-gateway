@@ -93,6 +93,7 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 
 	if gctx.SelectedEndpoint != nil {
 		base.EndpointID = gctx.SelectedEndpoint.ID
+		base.EndpointCode = gctx.SelectedEndpoint.Code
 		base.ProviderName = gctx.SelectedEndpoint.Provider
 		if gctx.SelectedEndpoint.Model != "" {
 			base.ModelCode = gctx.SelectedEndpoint.Model
@@ -102,6 +103,7 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 		if f.discovery != nil && gctx.Model != "" {
 			if eps, err := f.discovery.List(gctx.Ctx, gctx.Model); err == nil && len(eps) > 0 {
 				base.EndpointID = eps[0].ID
+				base.EndpointCode = eps[0].Code
 				base.ProviderName = eps[0].Provider
 			}
 		}

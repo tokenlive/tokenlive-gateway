@@ -8,6 +8,7 @@ import (
 // DynamicEndpoint 动态端点描述结构
 type DynamicEndpoint struct {
 	ID                 string
+	Code               string
 	ProviderName       string
 	ProviderProtocol   string
 	URL                string
@@ -71,6 +72,7 @@ func (d *DynamicDiscovery) List(ctx context.Context, model string) ([]*Endpoint,
 		}
 		ep := &Endpoint{
 			ID:                 epID,
+			Code:               de.Code,
 			URL:                de.URL,
 			Provider:           de.ProviderName,
 			ProviderProtocol:   de.ProviderProtocol,

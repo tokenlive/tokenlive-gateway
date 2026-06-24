@@ -16,6 +16,7 @@ type OpsEvent struct {
 	TenantCode   string  `json:"tenant_code"`
 	ModelCode    string  `json:"model_code"`
 	EndpointID   string  `json:"endpoint_id"`
+	EndpointCode string  `json:"endpoint_code"`
 	ProviderName string  `json:"provider_name"`
 	PolicyID     string  `json:"policy_id"`
 	PolicyName   string  `json:"policy_name"`
