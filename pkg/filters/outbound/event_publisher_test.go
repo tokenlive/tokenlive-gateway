@@ -150,6 +150,12 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 			Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 			Model:   "gpt-4",
 			Err:     errors.New("some network error"),
+			AttemptCount: 1, // 表示已经尝试过调用上游
+			SelectedEndpoint: &core.Endpoint{
+				ID:       "ep-test-1",
+				Provider: "TestProvider",
+				Model:    "gpt-4",
+			},
 		}
 
 		err := f.OnResponse(gctx)
@@ -164,6 +170,28 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 		evt := pub.published[0]
 		if evt.EventType != events.EventTypeInvocationFail {
 			t.Errorf("expected event type %q, got %q", events.EventTypeInvocationFail, evt.EventType)
+		}
+	})
+
+	t.Run("No Invocation Failure event for Inbound validation error", func(t *testing.T) {
+		pub := &mockPublisher{}
+		f := NewEventPublishFilter(pub, nil)
+		gctx := &core.GatewayContext{
+			Ctx:     context.Background(),
+			Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+			Model:   "unknown-model-xyz",
+			Err:     errors.New("unknown model: unknown-model-xyz"),
+			// 没有设置 AttemptCount 或 SelectedEndpoint，表示请求在 Inbound 阶段就失败了
+		}
+
+		err := f.OnResponse(gctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond) // Wait for async goroutine
+
+		if len(pub.published) != 0 {
+			t.Fatalf("expected 0 published events for inbound error, got %d", len(pub.published))
 		}
 	})
 

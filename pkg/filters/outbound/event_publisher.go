@@ -148,18 +148,23 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 	}
 
 	// 4. Invocation failure (generic, only if no circuit breaker already detected and no policy event emitted by ClusterInvoker)
+	// 只在真正调用了上游服务时才发出 invocation_fail 事件（AttemptCount > 0 或 SelectedEndpoint != nil）
 	if gctx.Err != nil && len(result) == 0 && !gctx.PolicyEventEmitted {
-		evt := base
-		evt.EventType = events.EventTypeInvocationFail
-		evt.Message = gctx.Err.Error()
-		if gctx.OriginalModel != "" && evt.ModelCode != gctx.OriginalModel {
-			evt.Message = fmt.Sprintf("%s (original request model: %s)", evt.Message, gctx.OriginalModel)
+		// 判断是否真正到达了 Invoker 阶段并尝试调用上游
+		hasAttemptedInvocation := gctx.AttemptCount > 0 || gctx.SelectedEndpoint != nil
+		if hasAttemptedInvocation {
+			evt := base
+			evt.EventType = events.EventTypeInvocationFail
+			evt.Message = gctx.Err.Error()
+			if gctx.OriginalModel != "" && evt.ModelCode != gctx.OriginalModel {
+				evt.Message = fmt.Sprintf("%s (original request model: %s)", evt.Message, gctx.OriginalModel)
+			}
+			if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
+				evt.PolicyID = gctx.Policy.InvocationPolicy.ID
+				evt.PolicyName = gctx.Policy.InvocationPolicy.Name
+			}
+			result = append(result, &evt)
 		}
-		if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
-			evt.PolicyID = gctx.Policy.InvocationPolicy.ID
-			evt.PolicyName = gctx.Policy.InvocationPolicy.Name
-		}
-		result = append(result, &evt)
 	}
 
 	return result
