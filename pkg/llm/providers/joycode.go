@@ -174,6 +174,12 @@ func (p *JoyCodeProvider) doRequest(gctx *core.GatewayContext, functionId string
 		req.Header.Set("tenant", tenant)
 	}
 
+	if len(gctx.InjectedHeaders) > 0 {
+		for k, v := range gctx.InjectedHeaders {
+			req.Header.Set(k, v)
+		}
+	}
+
 	resp, err := p.client.Do(req)
 	if err != nil {
 		if context.Cause(singleCtx) == core.ErrGatewayFirstByteTimeout {

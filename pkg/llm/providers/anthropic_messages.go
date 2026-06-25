@@ -79,6 +79,12 @@ func (i *anthropicMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Prov
 		}
 	}
 
+	if len(gctx.InjectedHeaders) > 0 {
+		for k, v := range gctx.InjectedHeaders {
+			req.Header.Set(k, v)
+		}
+	}
+
 	var endpointID string
 	if gctx.SelectedEndpoint != nil {
 		endpointID = gctx.SelectedEndpoint.ID

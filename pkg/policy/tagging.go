@@ -15,6 +15,7 @@ type TaggingPolicy struct {
 
 // TaggingAction 染色打标动作
 type TaggingAction struct {
+	Type  string `yaml:"type" json:"type"`   // 动作类型/操作范围，如 TAG, REQ_HEADER, RSP_HEADER 等
 	Key   string `yaml:"key" json:"key"`     // 标签名
 	Value string `yaml:"value" json:"value"` // 标签值，支持变量插值：${header.xxx}, ${query.xxx}, ${system.xxx}, ${tag.xxx}
 }

@@ -2,6 +2,7 @@ package tagging
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -369,4 +370,146 @@ func TestTaggingEngine_NoPanicOnNilTags(t *testing.T) {
 
 	// 不应 panic
 	engine.Process(ctx, gctx, rules)
+}
+
+func TestTaggingEngine_ActionTypes(t *testing.T) {
+	engine := NewTaggingEngine()
+	ctx := context.Background()
+
+	t.Run("REQ_HEADER 注入请求头", func(t *testing.T) {
+		gctx := newTestGatewayContext(nil, "gpt-4", "user1")
+		defer core.ReleaseContext(gctx)
+
+		rules := []*policy.TaggingPolicy{
+			{
+				Name:  "req-header-rule",
+				Order: 1,
+				Actions: []policy.TaggingAction{
+					{Type: "REQ_HEADER", Key: "X-Custom-Req", Value: "val1"},
+				},
+			},
+		}
+
+		engine.Process(ctx, gctx, rules)
+
+		if gctx.InjectedHeaders["X-Custom-Req"] != "val1" {
+			t.Errorf("expected InjectedHeaders X-Custom-Req=val1, got %q", gctx.InjectedHeaders["X-Custom-Req"])
+		}
+		if gctx.Request.Header.Get("X-Custom-Req") != "val1" {
+			t.Errorf("expected Request Header X-Custom-Req=val1, got %q", gctx.Request.Header.Get("X-Custom-Req"))
+		}
+	})
+
+	t.Run("RSP_HEADER 注入响应头", func(t *testing.T) {
+		gctx := newTestGatewayContext(nil, "gpt-4", "user1")
+		defer core.ReleaseContext(gctx)
+
+		rules := []*policy.TaggingPolicy{
+			{
+				Name:  "rsp-header-rule",
+				Order: 1,
+				Actions: []policy.TaggingAction{
+					{Type: "RSP_HEADER", Key: "X-Custom-Rsp", Value: "val2"},
+				},
+			},
+		}
+
+		engine.Process(ctx, gctx, rules)
+
+		if gctx.ResponseWriter.Header().Get("X-Custom-Rsp") != "val2" {
+			t.Errorf("expected Response Header X-Custom-Rsp=val2, got %q", gctx.ResponseWriter.Header().Get("X-Custom-Rsp"))
+		}
+	})
+
+	t.Run("REQ_COOKIE 注入请求 Cookie", func(t *testing.T) {
+		gctx := newTestGatewayContext(nil, "gpt-4", "user1")
+		defer core.ReleaseContext(gctx)
+
+		rules := []*policy.TaggingPolicy{
+			{
+				Name:  "req-cookie-rule",
+				Order: 1,
+				Actions: []policy.TaggingAction{
+					{Type: "REQ_COOKIE", Key: "my-cookie", Value: "val3"},
+				},
+			},
+		}
+
+		engine.Process(ctx, gctx, rules)
+
+		c, err := gctx.Request.Cookie("my-cookie")
+		if err != nil {
+			t.Fatalf("expected Cookie my-cookie to exist, got error: %v", err)
+		}
+		if c.Value != "val3" {
+			t.Errorf("expected Cookie my-cookie=val3, got %q", c.Value)
+		}
+	})
+
+	t.Run("RSP_COOKIE 注入响应 Cookie", func(t *testing.T) {
+		gctx := newTestGatewayContext(nil, "gpt-4", "user1")
+		defer core.ReleaseContext(gctx)
+
+		rules := []*policy.TaggingPolicy{
+			{
+				Name:  "rsp-cookie-rule",
+				Order: 1,
+				Actions: []policy.TaggingAction{
+					{Type: "RSP_COOKIE", Key: "my-rsp-cookie", Value: "val4"},
+				},
+			},
+		}
+
+		engine.Process(ctx, gctx, rules)
+
+		cookies := gctx.ResponseWriter.(*httptest.ResponseRecorder).Result().Cookies()
+		found := false
+		for _, c := range cookies {
+			if c.Name == "my-rsp-cookie" {
+				if c.Value != "val4" {
+					t.Errorf("expected response cookie my-rsp-cookie=val4, got %q", c.Value)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected response cookie my-rsp-cookie to exist")
+		}
+	})
+
+	t.Run("REQ_BODY 修改请求体 JSON 字段", func(t *testing.T) {
+		gctx := newTestGatewayContext(nil, "gpt-4", "user1")
+		gctx.RawBody = []byte(`{"model":"gpt-4","temperature":0.7,"stream":false}`)
+		defer core.ReleaseContext(gctx)
+
+		rules := []*policy.TaggingPolicy{
+			{
+				Name:  "req-body-rule",
+				Order: 1,
+				Actions: []policy.TaggingAction{
+					{Type: "REQ_BODY", Key: "temperature", Value: "0.5"},
+					{Type: "REQ_BODY", Key: "stream", Value: "true"},
+					{Type: "REQ_BODY", Key: "new_param", Value: "hello"},
+				},
+			},
+		}
+
+		engine.Process(ctx, gctx, rules)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(gctx.RawBody, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal RawBody: %v", err)
+		}
+
+		if parsed["temperature"] != 0.5 {
+			t.Errorf("expected temperature=0.5, got %v", parsed["temperature"])
+		}
+		if parsed["stream"] != true {
+			t.Errorf("expected stream=true, got %v", parsed["stream"])
+		}
+		if parsed["new_param"] != "hello" {
+			t.Errorf("expected new_param=hello, got %v", parsed["new_param"])
+		}
+	})
 }

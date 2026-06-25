@@ -55,7 +55,8 @@ type GatewayContext struct {
 	StartTime     time.Time
 
 	// ===== 动态标签（InboundFilter 打标，全链路可读） =====
-	Tags map[string]string
+	Tags            map[string]string
+	InjectedHeaders map[string]string // 运行期染色注入的请求头（用于在 Invoker 阶段追加至上游请求）
 
 	// ===== 最终结果 =====
 	PolicyEventEmitted  bool `json:"-"` // ClusterInvoker 内已发出策略错误事件后置 true，OutboundFilter 据此抑制兜底事件
@@ -151,6 +152,7 @@ func AcquireContext(w http.ResponseWriter, r *http.Request) *GatewayContext {
 	gctx.ResponseWriter = w
 	gctx.StartTime = time.Now()
 	gctx.Tags = make(map[string]string)
+	gctx.InjectedHeaders = make(map[string]string)
 	return gctx
 }
 

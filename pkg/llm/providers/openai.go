@@ -158,6 +158,12 @@ func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string) e
 		}
 	}
 
+	if len(gctx.InjectedHeaders) > 0 {
+		for k, v := range gctx.InjectedHeaders {
+			req.Header.Set(k, v)
+		}
+	}
+
 	var endpointID string
 	if gctx.SelectedEndpoint != nil {
 		endpointID = gctx.SelectedEndpoint.ID
