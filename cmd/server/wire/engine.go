@@ -243,6 +243,9 @@ func NewGatewayEngine(
 			return gctx.SessionID
 		}, 5*time.Minute)
 	})
+	engine.RegisterLoadBalancerFactory("endpoint_affinity", func(ss core.StateStore) core.LoadBalancer {
+		return lbs.NewEndpointAffinityLoadBalancer(ss)
+	})
 
 	// 注册 InboundFilter
 	engine.RegisterFilter("auth", inbound.NewAuthFilter())
