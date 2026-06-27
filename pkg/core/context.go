@@ -29,11 +29,12 @@ type GatewayContext struct {
 	IsStream       bool
 
 	// InboundFilter 填充
-	APIKey     string
-	UserID     string
-	Tenant     string // Tenant identifier (for toB scenario)
-	UserTenant string // User's tenant (for toC scenario, used for model filtering)
-	SessionID  string
+	APIKey      string
+	UserID      string
+	Tenant      string // Tenant identifier (for toB scenario)
+	WorkspaceID string // Workspace identifier (for Portal scenario)
+	UserTenant  string // User's tenant (for toC scenario, used for model filtering)
+	SessionID   string
 
 	// ===== 决策结果（Fallback 可重写 Model） =====
 	Model  string

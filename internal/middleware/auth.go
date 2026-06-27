@@ -11,7 +11,7 @@ import (
 
 // ApiKeyValidator API Key 验证器接口（解耦）
 type ApiKeyValidator interface {
-	VerifyKey(ctx context.Context, apiKey string) (string, string, string, error)
+	VerifyKey(ctx context.Context, apiKey string) (string, string, string, string, error)
 }
 
 // AuthConfig 认证配置
@@ -37,8 +37,8 @@ func NewAuthMiddleware(config *AuthConfig) gin.HandlerFunc {
 			return
 		}
 
-		// 验证 API Key 并获取 User ID、Tenant Code 和 User Tenant
-		userID, tenant, userTenant, err := config.Validator.VerifyKey(c.Request.Context(), apiKey)
+		// 验证 API Key 并获取 User ID、Tenant Code、Workspace ID 和 User Tenant
+		userID, tenant, workspaceID, userTenant, err := config.Validator.VerifyKey(c.Request.Context(), apiKey)
 		if err != nil {
 			config.Logger.Warn("invalid API key", zap.String("key", maskAPIKey(apiKey)), zap.Error(err))
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -51,14 +51,20 @@ func NewAuthMiddleware(config *AuthConfig) gin.HandlerFunc {
 			return
 		}
 
-		// 区分 toB 和 toC，分别设置 Header
+		// 注入 Header 和 Context
 		if tenant != "" {
 			c.Request.Header.Set("X-Tenant-ID", tenant)
 			c.Set("tenant", tenant)
-		} else {
+		}
+		if userID != "" {
 			c.Request.Header.Set("X-User-ID", userID)
 			c.Set("user_id", userID)
-			// toC 场景：设置用户所属租户，供 ListModels/ValidateModel 过滤使用
+		}
+		if workspaceID != "" {
+			c.Request.Header.Set("X-Workspace-ID", workspaceID)
+			c.Set("workspace_id", workspaceID)
+		}
+		if userTenant != "" {
 			c.Request.Header.Set("X-User-Tenant", userTenant)
 			c.Set("user_tenant", userTenant)
 		}

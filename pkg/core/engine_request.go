@@ -36,6 +36,7 @@ func (e *Engine) parseRequest(gctx *GatewayContext) error {
 	gctx.APIKey = apiKey
 	gctx.Tenant = gctx.Request.Header.Get("X-Tenant-ID")
 	gctx.UserID = gctx.Request.Header.Get("X-User-ID")
+	gctx.WorkspaceID = gctx.Request.Header.Get("X-Workspace-ID")
 	gctx.UserTenant = gctx.Request.Header.Get("X-User-Tenant")
 
 	// 读取 body

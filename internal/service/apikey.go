@@ -15,12 +15,13 @@ import (
 
 // ApiKeyInfo 表示 API Key 的元数据
 type ApiKeyInfo struct {
-	UserID     string `json:"user_id"`
-	Tenant     string `json:"tenant"`      // 关联的租户唯一编码 (toB 场景)
-	UserTenant string `json:"user_tenant"` // 用户所属租户 (toC 场景，用于模型过滤)
-	Status     int    `json:"status"`      // 1-正常, 2-禁用
-	Quota      int64  `json:"quota"`       // 剩余配额, -1表示无限制
-	ExpiresAt  int64  `json:"expires_at"`  // 过期时间戳 (秒)，0表示永不过期
+	UserID      string `json:"user_id"`
+	Tenant      string `json:"tenant"`       // 关联的租户唯一编码 (toB 场景)
+	WorkspaceID string `json:"workspace_id"`  // 关联的工作空间 ID (toC 场景)
+	UserTenant  string `json:"user_tenant"`  // 用户所属租户 (toC 场景，用于模型过滤)
+	Status      int    `json:"status"`       // 1-正常, 2-禁用
+	Quota       int64  `json:"quota"`        // 剩余配额, -1表示无限制
+	ExpiresAt   int64  `json:"expires_at"`   // 过期时间戳 (秒)，0表示永不过期
 }
 
 type ApiKeyService struct {
@@ -72,25 +73,20 @@ func (s *ApiKeyService) ValidateKey(ctx context.Context, apiKey string) (*ApiKey
 	// 4. 解析字段
 	userID := fields["user_id"]
 	tenant := fields["tenant"]
+	workspaceID := fields["workspace_id"]
 	userTenant := fields["user_tenant"]
 	status, _ := strconv.Atoi(fields["status"])
 	quota, _ := strconv.ParseInt(fields["quota"], 10, 64)
 	expiresAt, _ := strconv.ParseInt(fields["expires_at"], 10, 64)
 
-	// 互斥身份安全校验
-	if userID != "" && tenant != "" {
-		errMsg := "misconfigured API key containing both user and tenant"
-		s.cache.AddInvalid(apiKey, errMsg)
-		return nil, errors.New(errMsg)
-	}
-
 	info := &ApiKeyInfo{
-		UserID:     userID,
-		Tenant:     tenant,
-		UserTenant: userTenant,
-		Status:     status,
-		Quota:      quota,
-		ExpiresAt:  expiresAt,
+		UserID:      userID,
+		Tenant:      tenant,
+		WorkspaceID: workspaceID,
+		UserTenant:  userTenant,
+		Status:      status,
+		Quota:       quota,
+		ExpiresAt:   expiresAt,
 	}
 
 	// 5. 校验状态、过期时间
@@ -112,13 +108,13 @@ func (s *ApiKeyService) ValidateKey(ctx context.Context, apiKey string) (*ApiKey
 	return info, nil
 }
 
-// VerifyKey 专为鉴权中间件提供，校验成功返回 User ID、Tenant Code 和 User Tenant，失败返回 error
-func (s *ApiKeyService) VerifyKey(ctx context.Context, apiKey string) (string, string, string, error) {
+// VerifyKey 专为鉴权中间件提供，校验成功返回 User ID、Tenant Code、Workspace ID 和 User Tenant，失败返回 error
+func (s *ApiKeyService) VerifyKey(ctx context.Context, apiKey string) (string, string, string, string, error) {
 	info, err := s.ValidateKey(ctx, apiKey)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
-	return info.UserID, info.Tenant, info.UserTenant, nil
+	return info.UserID, info.Tenant, info.WorkspaceID, info.UserTenant, nil
 }
 
 // CheckQuota 检查 API Key 的配额是否充足（用于 InboundFilter 预检）

@@ -93,7 +93,7 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 
 	// 4. 测试 VerifyKey
 	t.Run("VerifyKey wrapper method", func(t *testing.T) {
-		userID, tenant, userTenant, err := svc.VerifyKey(ctx, testKey)
+		userID, tenant, workspaceID, userTenant, err := svc.VerifyKey(ctx, testKey)
 		if err != nil {
 			t.Fatalf("VerifyKey failed: %v", err)
 		}
@@ -103,8 +103,37 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 		if tenant != "" {
 			t.Errorf("expected empty Tenant, got '%s'", tenant)
 		}
+		if workspaceID != "" {
+			t.Errorf("expected empty WorkspaceID, got '%s'", workspaceID)
+		}
 		if userTenant != "" {
 			t.Errorf("expected empty UserTenant, got '%s'", userTenant)
+		}
+	})
+
+	// 4.1 测试 Portal API Key (同时包含 user_id, tenant 且包含 workspace_id)
+	t.Run("Portal API Key format with user, tenant and workspace_id", func(t *testing.T) {
+		portalKey := "sk-portal-mock-key-111"
+		portalRedisKey := "aigw:apikey:" + portalKey
+		_, err := rdb.HSet(ctx, portalRedisKey, map[string]interface{}{
+			"user_id":      "usr-portal-user",
+			"tenant":       "company-a",
+			"workspace_id": "ws-portal-space",
+			"status":       1,
+			"quota":        -1,
+			"expires_at":   0,
+		}).Result()
+		if err != nil {
+			t.Fatalf("failed to set portal key in redis: %v", err)
+		}
+		defer rdb.Del(ctx, portalRedisKey)
+
+		info, err := svc.ValidateKey(ctx, portalKey)
+		if err != nil {
+			t.Fatalf("ValidateKey failed for portal key: %v", err)
+		}
+		if info.UserID != "usr-portal-user" || info.Tenant != "company-a" || info.WorkspaceID != "ws-portal-space" {
+			t.Errorf("unexpected field mapping: %+v", info)
 		}
 	})
 
