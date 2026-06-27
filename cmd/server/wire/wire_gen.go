@@ -62,7 +62,8 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 		cleanup()
 		return nil, nil, err
 	}
-	llmHandler := handler.NewLLMHandler(engine, modelService, configManager)
+	aliasService := service.NewAliasService(client, logger)
+	llmHandler := handler.NewLLMHandler(engine, modelService, configManager, aliasService)
 	routerDeps := router.RouterDeps{
 		Logger:        logger,
 		Config:        viperViper,

@@ -96,7 +96,7 @@ func setupTestLLMHandler(t *testing.T) (*handler.LLMHandler, *gin.Engine) {
 
 	modelSvc := service.NewModelService(nil, &log.Logger{Logger: logger}, viper.New())
 	cfgMgr := config.NewConfigManager(&config.GatewayConfig{}, nil, logger)
-	llmHandler := handler.NewLLMHandler(engine, modelSvc, cfgMgr)
+	llmHandler := handler.NewLLMHandler(engine, modelSvc, cfgMgr, nil)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -159,11 +159,22 @@ func (s stubModelOwner) AllKnownModels() map[string]bool {
 	return s.knownModels
 }
 
+type stubAliasQuerier struct {
+	aliases map[string][]string
+}
+
+func (s stubAliasQuerier) GetAliases(ctx context.Context, modelCode string) ([]string, error) {
+	if s.aliases == nil {
+		return nil, nil
+	}
+	return s.aliases[modelCode], nil
+}
+
 func TestListModels_Authorized_ReturnsTenantModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	lister := stubModelLister{models: []string{"gpt-4"}}
 	owner := stubModelOwner{owners: map[string]string{"gpt-4": "openai"}}
-	h := handler.NewLLMHandlerWithDeps(lister, owner)
+	h := handler.NewLLMHandlerWithDeps(lister, owner, stubAliasQuerier{})
 
 	r := gin.New()
 	r.GET("/v1/models", func(c *gin.Context) {
@@ -196,7 +207,7 @@ func TestListModels_ToC_ReturnsAllKnownModels(t *testing.T) {
 		owners:      map[string]string{"gpt-4": "openai"},
 		knownModels: map[string]bool{"gpt-4": true},
 	}
-	h := handler.NewLLMHandlerWithDeps(lister, owner)
+	h := handler.NewLLMHandlerWithDeps(lister, owner, stubAliasQuerier{})
 
 	r := gin.New()
 	r.GET("/v1/models", func(c *gin.Context) {
@@ -221,7 +232,7 @@ func TestListModels_ToC_ReturnsAllKnownModels(t *testing.T) {
 
 func TestListModels_Unauthorized_NoTenantAndNoUserID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := handler.NewLLMHandlerWithDeps(stubModelLister{}, stubModelOwner{})
+	h := handler.NewLLMHandlerWithDeps(stubModelLister{}, stubModelOwner{}, stubAliasQuerier{})
 
 	r := gin.New()
 	r.GET("/v1/models", h.ListModels)
@@ -239,7 +250,7 @@ func TestListModels_Unauthorized_NoTenantAndNoUserID(t *testing.T) {
 
 func TestListModels_EmptyList(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := handler.NewLLMHandlerWithDeps(stubModelLister{models: []string{}}, stubModelOwner{})
+	h := handler.NewLLMHandlerWithDeps(stubModelLister{models: []string{}}, stubModelOwner{}, stubAliasQuerier{})
 
 	r := gin.New()
 	r.GET("/v1/models", func(c *gin.Context) {
@@ -263,7 +274,7 @@ func TestListModels_OwnerFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	lister := stubModelLister{models: []string{"unknown-model"}}
 	owner := stubModelOwner{owners: map[string]string{}}
-	h := handler.NewLLMHandlerWithDeps(lister, owner)
+	h := handler.NewLLMHandlerWithDeps(lister, owner, stubAliasQuerier{})
 
 	r := gin.New()
 	r.GET("/v1/models", func(c *gin.Context) {
@@ -288,7 +299,7 @@ func TestListModels_DoesNotCallEngine(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	lister := stubModelLister{models: []string{"gpt-4"}}
 	owner := stubModelOwner{owners: map[string]string{"gpt-4": "openai"}}
-	h := handler.NewLLMHandlerWithDeps(lister, owner)
+	h := handler.NewLLMHandlerWithDeps(lister, owner, stubAliasQuerier{})
 
 	r := gin.New()
 	r.GET("/v1/models", func(c *gin.Context) {
@@ -314,7 +325,7 @@ func TestListModels_Wildcard_ReturnsAllKnownModels(t *testing.T) {
 		owners:      map[string]string{"gpt-4": "openai", "claude-3": "anthropic"},
 		knownModels: map[string]bool{"gpt-4": true, "claude-3": true},
 	}
-	h := handler.NewLLMHandlerWithDeps(lister, owner)
+	h := handler.NewLLMHandlerWithDeps(lister, owner, stubAliasQuerier{})
 
 	r := gin.New()
 	r.GET("/v1/models", func(c *gin.Context) {

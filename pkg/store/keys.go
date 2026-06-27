@@ -27,3 +27,8 @@ func RedisKeyTenantEndpoints(tenantCode, modelCode string) string {
 func RedisKeyAlias(alias string) string {
 	return "aigw:config:alias:" + alias
 }
+
+// RedisKeyModelAliases 返回模型别名集合的 Redis key（反向索引）
+func RedisKeyModelAliases(modelCode string) string {
+	return "aigw:config:model_aliases:" + modelCode
+}

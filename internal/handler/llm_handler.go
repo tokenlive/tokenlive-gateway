@@ -23,6 +23,11 @@ type modelOwner interface {
 	AllKnownModels() map[string]bool
 }
 
+// aliasQuerier 抽象别名查询，用于测试注入。
+type aliasQuerier interface {
+	GetAliases(ctx context.Context, modelCode string) ([]string, error)
+}
+
 // LLMHandler LLM 请求处理器（薄 Gin 适配器）
 type LLMHandler struct {
 	engine *core.Engine
@@ -30,6 +35,7 @@ type LLMHandler struct {
 	// ChatCompletion / CreateEmbedding 不依赖它们。
 	modelService  modelLister
 	configManager modelOwner
+	aliasService  aliasQuerier
 }
 
 // NewLLMHandler 创建 LLM Handler（生产用，注入具体类型）。
@@ -37,11 +43,13 @@ func NewLLMHandler(
 	engine *core.Engine,
 	modelService *service.ModelService,
 	configManager *config.ConfigManager,
+	aliasService *service.AliasService,
 ) *LLMHandler {
 	return &LLMHandler{
 		engine:        engine,
 		modelService:  modelService,
 		configManager: configManager,
+		aliasService:  aliasService,
 	}
 }
 
@@ -49,11 +57,12 @@ func NewLLMHandler(
 // 仅用于本包测试或不需要 LLM 流量委托的场景。
 // WARNING: 用此构造函数生成的 handler 调用 ChatCompletion 或 CreateEmbedding 会 nil panic，
 // 因为 engine == nil。生产 HTTP 路由请使用 NewLLMHandler。
-func NewLLMHandlerWithDeps(modelService modelLister, configManager modelOwner) *LLMHandler {
+func NewLLMHandlerWithDeps(modelService modelLister, configManager modelOwner, aliasService aliasQuerier) *LLMHandler {
 	return &LLMHandler{
 		engine:        nil,
 		modelService:  modelService,
 		configManager: configManager,
+		aliasService:  aliasService,
 	}
 }
 
@@ -118,18 +127,36 @@ func (h *LLMHandler) ListModels(c *gin.Context) {
 		}
 	}
 
+	ctx := c.Request.Context()
 	data := make([]gin.H, 0, len(ids))
+
 	for _, id := range ids {
-		owner := h.configManager.OwnerOf(c.Request.Context(), id)
+		owner := h.configManager.OwnerOf(ctx, id)
 		if owner == "" {
 			owner = "github.com/tokenlive/tokenlive-gateway"
 		}
+
+		// 添加主模型
 		data = append(data, gin.H{
 			"id":       id,
 			"object":   "model",
 			"created":  0,
 			"owned_by": owner,
 		})
+
+		// 查询并添加别名作为独立模型
+		if h.aliasService != nil {
+			if aliases, err := h.aliasService.GetAliases(ctx, id); err == nil {
+				for _, alias := range aliases {
+					data = append(data, gin.H{
+						"id":       alias,
+						"object":   "model",
+						"created":  0,
+						"owned_by": owner,
+					})
+				}
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

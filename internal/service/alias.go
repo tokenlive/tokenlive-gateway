@@ -71,3 +71,23 @@ func (s *AliasService) Resolve(ctx context.Context, model string) (string, error
 	s.cache.AddValid(model, modelCode)
 	return modelCode, nil
 }
+
+// GetAliases 返回指定 modelCode 的所有别名列表。
+// 通过反向索引 aigw:config:model_aliases:{modelCode} 查询。
+func (s *AliasService) GetAliases(ctx context.Context, modelCode string) ([]string, error) {
+	if modelCode == "" || s.rdb == nil {
+		return nil, nil
+	}
+
+	key := store.RedisKeyModelAliases(modelCode)
+	aliases, err := s.rdb.SMembers(ctx, key).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, nil
+		}
+		s.logger.Logger.Error("failed to query model aliases from redis", zap.Error(err), zap.String("key", key))
+		return nil, err
+	}
+
+	return aliases, nil
+}
