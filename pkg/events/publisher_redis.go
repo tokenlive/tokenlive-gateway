@@ -41,6 +41,7 @@ func (p *RedisPublisher) Publish(ctx context.Context, event *OpsEvent) error {
 		"tenant_code":   event.TenantCode,
 		"model_code":    event.ModelCode,
 		"endpoint_id":   event.EndpointID,
+		"endpoint_code": event.EndpointCode,
 		"provider_name": event.ProviderName,
 		"policy_id":     event.PolicyID,
 		"policy_name":   event.PolicyName,
