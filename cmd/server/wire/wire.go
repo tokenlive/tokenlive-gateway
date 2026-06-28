@@ -37,6 +37,7 @@ var serviceSet = wire.NewSet(
 	service.NewUserService,
 	service.NewApiKeyService,
 	service.NewModelService,
+	service.NewAliasService,
 )
 
 var handlerSet = wire.NewSet(
@@ -45,6 +46,7 @@ var handlerSet = wire.NewSet(
 	handler.NewLLMHandler,
 	NewGatewayConfigManager,
 	NewGatewayEngine,
+	ProvideGatewayProvider,
 )
 
 var jobSet = wire.NewSet(

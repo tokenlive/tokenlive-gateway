@@ -133,6 +133,32 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 			evt.PolicyName = gctx.Policy.InvocationPolicy.Name
 		}
 		result = append(result, &evt)
+	} else if len(gctx.History) > 1 {
+		// 3.5. Endpoint-level LB switch (failover within the same model)
+		lastAttempt := gctx.History[len(gctx.History)-1]
+		if lastAttempt.Success {
+			var firstFailed core.AttemptRecord
+			for _, rec := range gctx.History {
+				if !rec.Success {
+					firstFailed = rec
+					break
+				}
+			}
+			if firstFailed.EndpointID != "" {
+				evt := base
+				evt.EventType = events.EventTypeLBSwitch
+				evt.Message = fmt.Sprintf("endpoint failover: switched from %s (%s) to %s (%s) due to error: %s",
+					firstFailed.EndpointID, firstFailed.Provider,
+					lastAttempt.EndpointID, lastAttempt.Provider,
+					firstFailed.Error,
+				)
+				if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
+					evt.PolicyID = gctx.Policy.InvocationPolicy.ID
+					evt.PolicyName = gctx.Policy.InvocationPolicy.Name
+				}
+				result = append(result, &evt)
+			}
+		}
 	}
 
 	// 4. Rate limit (HTTP 429)

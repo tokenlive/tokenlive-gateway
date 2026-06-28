@@ -303,24 +303,34 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond) // Wait for async goroutine
 
-		if len(pub.published) != 1 {
-			t.Fatalf("expected 1 published event, got %d", len(pub.published))
+		if len(pub.published) != 2 {
+			t.Fatalf("expected 2 published events, got %d", len(pub.published))
 		}
-		evt := pub.published[0]
-		if evt.EventType != events.EventTypeInvocationFail {
-			t.Errorf("expected event type %q, got %q", events.EventTypeInvocationFail, evt.EventType)
+		var failEvt, lbEvt *events.OpsEvent
+		for _, e := range pub.published {
+			if e.EventType == events.EventTypeInvocationFail {
+				failEvt = e
+			} else if e.EventType == events.EventTypeLBSwitch {
+				lbEvt = e
+			}
 		}
-		if evt.EndpointID != "d90c177924mt69n7b0n0" {
-			t.Errorf("expected EndpointID to be failed endpoint, got %q", evt.EndpointID)
+		if failEvt == nil {
+			t.Fatalf("expected invocation_fail event to be published")
 		}
-		if evt.EndpointCode != "glm-primary" {
-			t.Errorf("expected EndpointCode to be failed endpoint code, got %q", evt.EndpointCode)
+		if lbEvt == nil {
+			t.Fatalf("expected lb_switch event to be published")
 		}
-		if evt.ModelCode != "glm-5.2" {
-			t.Errorf("expected ModelCode to be %q, got %q", "glm-5.2", evt.ModelCode)
+		if failEvt.EndpointID != "d90c177924mt69n7b0n0" {
+			t.Errorf("expected EndpointID to be failed endpoint, got %q", failEvt.EndpointID)
 		}
-		if evt.PolicyID != "retry-402" {
-			t.Errorf("expected PolicyID to be %q, got %q", "retry-402", evt.PolicyID)
+		if failEvt.EndpointCode != "glm-primary" {
+			t.Errorf("expected EndpointCode to be failed endpoint code, got %q", failEvt.EndpointCode)
+		}
+		if failEvt.ModelCode != "glm-5.2" {
+			t.Errorf("expected ModelCode to be %q, got %q", "glm-5.2", failEvt.ModelCode)
+		}
+		if failEvt.PolicyID != "retry-402" {
+			t.Errorf("expected PolicyID to be %q, got %q", "retry-402", failEvt.PolicyID)
 		}
 	})
 

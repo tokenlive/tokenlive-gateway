@@ -1248,11 +1248,61 @@ type PolicyProvider interface {
 }
 
 type PolicyMatcher struct{}
+```
 
+#### 7.2.5 无 Redis 容器化部署下的 HTTP 细粒度同步与动态回源架构
+
+在不需要引入 Redis 的轻量化或容器化单机部署场景中，网关通过 **HTTP 细粒度通道 + 本地内存 + 动态回源 fallback** 的混动方案，实现了与 Redis 模式完全一致的运行行为和配置/策略热更新能力。
+
+##### 1. 1:1 粒度对齐的设计契约
+网关的 HTTP 同步通道在粒度上与 Redis 的 Key-Value 空间完全对齐，避免了“大 JSON”更新时由于局部变化（如 API Key 额度扣减）导致的全量配置缓存失效。Admin 侧提供三个细粒度接口，并配合 `go-cache` 在 Admin 内存中进行 ETag 缓存：
+
+* **API Key 同步**：
+  * **Redis 键**：`aigw:api_key:<apiKey>`
+  * **HTTP 接口**：`GET /api/v1/gateway/apikeys?apikey=<apiKey>`
+* **治理策略**：
+  * **Redis 键**：`aigw:policies:model:<model>`
+  * **HTTP 接口**：`GET /api/v1/gateway/policies?model_code=<model>`
+* **路由与端点**：
+  * **Redis 键**：`aigw:config:endpoints:<model>`
+  * **HTTP 接口**：`GET /api/v1/gateway/config?model_code=<model>`
+
+##### 2. 动态回源（On-Demand Fallback）机制
+为了兼顾高性能与实时性，网关的 `ApiKeyService` 在无 Redis 模式下实现了**动态回源（On-Demand Fallback）**：
+1. **本地内存匹配**：请求到达时，首先在网关本地的 `localKeys` 内存 Map 和 LRU 缓存中匹配。如果命中则 0 网络开销直接放行。
+2. **动态回源**：如果发生缓存未命中（Cache Miss），网关同步发起一次 HTTP 请求：`GET /api/v1/gateway/apikeys?apikey=<apiKey>`。
+3. **安全注入与缓存**：Admin 侧校验预共享密钥 `GATEWAY_SYNC_TOKEN` 后返回该 Key 状态。网关收到后将其写入 `localKeys` 内存，后续请求将直接命中内存。
+4. **延迟配额扣减**：扣减配额时，网关利用读写锁（`sync.RWMutex`）在本地内存中完成原子扣减，无需同步写回外部数据库，极大保障了网关的吞吐量。
+
+#### 7.2.6 统一的数据源提供者 (GatewayProvider) 接口抽象与解耦
+
+为了彻底消除网关核心业务（策略评估、Key 校验）与具体存储介质（Redis/HTTP）的耦合，网关引入了统一的数据源接口抽象 `GatewayProvider`：
+
+```go
+type GatewayProvider interface {
+	GetConfig(ctx context.Context, modelCode string) (*GatewayConfig, error)
+	GetPolicies(ctx context.Context, modelCode, userID, tenantCode string) ([]HTTPPolicyItem, error)
+	GetApiKey(ctx context.Context, apiKey string) (*HTTPApiKeyItem, error)
+	GetUserModels(ctx context.Context, userID string) ([]string, error)
+	GetTenantModels(ctx context.Context, tenantCode string) ([]string, error)
+	DeductQuota(ctx context.Context, apiKey string, tokens int64) (int64, error)
+}
+```
+
+##### 1. 策略与密钥服务的“零分支”净化
+重构后，`PolicyService` 和 `ApiKeyService` 内部不再包含任何类似于 `if s.rdb != nil` 的介质判断分支，统一通过 `GatewayProvider` 进行数据读取。
+* **Redis 模式**：`RedisGatewayProvider` 会将 Redis 哈希结构和集合直接适配封装为统一的 `HTTPPolicyItem` 契约切片，保留了原汁原味的 Redis 快速同步特征。
+* **HTTP 模式**：`HTTPGatewayProvider` 则接管了本地的 LRU 二级缓存与动态 HTTP 回源逻辑，并将数据以相同的形式提供给上层服务。
+
+##### 2. 配额扣减与模型授权的接口化
+* **DeductQuota 抽象**：对于 API Key 配额扣减，在 Redis 下通过 `HIncrBy` 原子扣减；在 HTTP 内存模式下则自动路由至 `HTTPGatewayProvider` 本地内存中扣减，保持了极高的内聚性。
+* **模型授权白名单**：用户及租户可访问模型集合的获取（`GetUserModels` / `GetTenantModels`）同样被抽象在接口中，使多维度策略评估的优先级合并算法在两套后端下完全对齐。
+
+```go
 func (pm *PolicyMatcher) Match(userID, model string, policies []*Policy) (*Policy, error)
 ```
 
-#### 7.2.5 染色与路由正交设计 (Tagging & Route Policy)
+#### 7.2.7 染色与路由正交设计 (Tagging & Route Policy)
 
 在网关的多通道动态路由与精细化运营场景中，网关引入了**染色打标 (Tagging)**与**过滤路由 (Routing)**的正交解耦设计。
 

@@ -46,6 +46,11 @@ TokenLive is tailored for large-scale language model ecosystems and high-concurr
    - **Graceful Shutdown**: Core components are sequentially shut down in structural order (cancelling active contexts -> flushing compensation tasks -> closing StateStore -> unregistering Discovery) to facilitate smooth rolling deployments.
    - **GatewayContext Pooling**: Pools and recycles the core pipeline context `GatewayContext` via `sync.Pool`, eliminating frequent heap allocations and minimizing GC latency.
 
+6. **Flexible Multi-Backend & No-Redis Performance (Multi-Backend & No-Redis Mode)**
+   - **Complete Configuration Decoupling**: Explicitly supports `config_source` (local/redis/http) and `state_store` (memory/redis) independent configurations, removing the hard dependency on Redis.
+   - **Granular HTTP Polling (1:1 Granularity Alignment)**: In No-Redis deployments, the gateway synchronizes incrementally with the admin console through three independent, granular HTTP channels (/config, /policies, /apikeys), drastically reducing bandwidth and parsing overhead.
+   - **On-Demand Dynamic Fallback**: If an API Key is not found in the local cache, the gateway dynamically queries the admin console via a single-key HTTP request and processes quota deductions in memory, delivering an instant "add-and-use" high-availability experience.
+
 ---
 
 ## Admin Console Screenshot

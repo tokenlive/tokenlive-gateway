@@ -43,7 +43,7 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 	rdb, logger := setupTestRedis(t)
 	defer rdb.Close()
 
-	svc := NewApiKeyService(rdb, logger)
+	svc := NewApiKeyService(config.NewRedisGatewayProvider(rdb), logger)
 	ctx := context.Background()
 
 	testKey := "sk-test-mock-enterprise-apikey-888"

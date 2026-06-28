@@ -2,20 +2,19 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
+	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
-	"github.com/redis/go-redis/v9"
 )
 
 // PolicyService 负责按租户/用户维度懒加载、二级缓存管理，并调用 policy.PolicyMatcher 进行内存匹配合并
 type PolicyService struct {
-	rdb           *redis.Client
+	provider      config.GatewayProvider
 	logger        *log.Logger
 	localPolicies []*policy.Policy                       // 本地 YAML 兜底规则（冷启动容灾）
 	priorityChain []string                               // 自定义合并优先级链条
@@ -23,7 +22,7 @@ type PolicyService struct {
 	invalidCache  *expirable.LRU[string, string]         // 10秒过期二级负向缓存
 }
 
-func NewPolicyService(rdb *redis.Client, localPolicies []*policy.Policy, priorityChain []string, logger *log.Logger) *PolicyService {
+func NewPolicyService(provider config.GatewayProvider, localPolicies []*policy.Policy, priorityChain []string, logger *log.Logger) *PolicyService {
 	if localPolicies == nil {
 		localPolicies = []*policy.Policy{}
 	}
@@ -44,7 +43,7 @@ func NewPolicyService(rdb *redis.Client, localPolicies []*policy.Policy, priorit
 	)
 
 	return &PolicyService{
-		rdb:           rdb,
+		provider:      provider,
 		logger:        logger,
 		localPolicies: localPolicies,
 		priorityChain: priorityChain,
@@ -69,69 +68,29 @@ func (s *PolicyService) GetPolicy(ctx context.Context, tenantCode, userID, model
 
 	var p0, p1, p2, p3, p4, p5 *policy.Policy
 
-	// 3. 动态回源：如果 Redis 启用，则从中聚合检索
-	if s.rdb != nil {
-		// (a) 如果有 userID，一次性查出 p5 (user_model) 和 p2 (user)
-		if userID != "" {
-			userHashKey := "aigw:policies:user:" + userID
-			userFields, err := s.rdb.HGetAll(ctx, userHashKey).Result()
-			if err == nil && len(userFields) > 0 {
-				// 解析 Level 5: user_model
-				if p5Str, ok := userFields[model]; ok {
-					var temp policy.Policy
-					if json.Unmarshal([]byte(p5Str), &temp) == nil {
-						p5 = &temp
-					}
-				}
-				// 解析 Level 2: user
-				if p2Str, ok := userFields["*"]; ok {
-					var temp policy.Policy
-					if json.Unmarshal([]byte(p2Str), &temp) == nil {
-						p2 = &temp
-					}
-				}
-			}
-		}
+	// 3. 动态回源：通过统一的 provider 获取匹配的策略列表
+	items, err := s.provider.GetPolicies(ctx, model, userID, tenantCode)
+	if err != nil {
+		return nil, err
+	}
 
-		// (b) 如果有 tenantCode，一次性查出 p4 (tenant_model) 和 p1 (tenant)
-		if tenantCode != "" {
-			tenantHashKey := "aigw:policies:tenant:" + tenantCode
-			tenantFields, err := s.rdb.HGetAll(ctx, tenantHashKey).Result()
-			if err == nil && len(tenantFields) > 0 {
-				// 解析 Level 4: tenant_model
-				if p4Str, ok := tenantFields[model]; ok {
-					var temp policy.Policy
-					if json.Unmarshal([]byte(p4Str), &temp) == nil {
-						p4 = &temp
-					}
-				}
-				// 解析 Level 1: tenant
-				if p1Str, ok := tenantFields["*"]; ok {
-					var temp policy.Policy
-					if json.Unmarshal([]byte(p1Str), &temp) == nil {
-						p1 = &temp
-					}
-				}
-			}
+	for _, item := range items {
+		if item.Value == nil {
+			continue
 		}
-
-		// (c) 获取模型的公共通配规则（p3: model）
-		modelHashKey := "aigw:policies:model:" + model
-		p3Str, err := s.rdb.HGet(ctx, modelHashKey, "*").Result()
-		if err == nil && p3Str != "" {
-			var temp policy.Policy
-			if json.Unmarshal([]byte(p3Str), &temp) == nil {
-				p3 = &temp
-			}
-		}
-
-		// (d) 获取全局最终通配规则（p0: global）
-		p0Str, err := s.rdb.HGet(ctx, "aigw:policies:global", "*").Result()
-		if err == nil && p0Str != "" {
-			var temp policy.Policy
-			if json.Unmarshal([]byte(p0Str), &temp) == nil {
-				p0 = &temp
-			}
+		switch {
+		case userID != "" && item.Scope == "user:"+userID && item.Model == model:
+			p5 = item.Value
+		case userID != "" && item.Scope == "user:"+userID && item.Model == "*":
+			p2 = item.Value
+		case tenantCode != "" && item.Scope == "tenant:"+tenantCode && item.Model == model:
+			p4 = item.Value
+		case tenantCode != "" && item.Scope == "tenant:"+tenantCode && item.Model == "*":
+			p1 = item.Value
+		case item.Scope == "model:"+model && item.Model == "*":
+			p3 = item.Value
+		case item.Scope == "global" && item.Model == "*":
+			p0 = item.Value
 		}
 	}
 
@@ -152,7 +111,7 @@ func (s *PolicyService) GetPolicy(ctx context.Context, tenantCode, userID, model
 		}
 	}
 
-	// 如果没有在 Redis 里找到任何策略，则将本地静态列表全量作为候选进行 Match
+	// 如果没有在数据源里找到任何策略，则将本地静态列表全量作为候选进行 Match
 	if len(candidates) == 0 {
 		candidates = s.localPolicies
 	}
@@ -167,23 +126,33 @@ func (s *PolicyService) GetPolicy(ctx context.Context, tenantCode, userID, model
 
 	// 5.5. 补充授权模型列表到 Permissions 中，防止 AuthFilter 误阻断
 	if len(merged.Permissions) == 0 {
-		if s.rdb != nil {
-			var models []string
-			if userID != "" {
-				userKey := "aigw:user:" + userID + ":models"
-				models, _ = s.rdb.SMembers(ctx, userKey).Result()
-			}
-			if len(models) == 0 && tenantCode != "" {
-				tenantKey := "aigw:tenant:" + tenantCode + ":models"
-				models, _ = s.rdb.SMembers(ctx, tenantKey).Result()
-			}
-			if len(models) > 0 {
-				merged.Permissions = models
-			}
+		var models []string
+		if userID != "" {
+			models, _ = s.provider.GetUserModels(ctx, userID)
 		}
-		// 如果依然为空（如 ToC 模式，或者 Redis 不可用 / 未配置该租户模型集），则兜底为 "*"
+		if len(models) == 0 && tenantCode != "" {
+			models, _ = s.provider.GetTenantModels(ctx, tenantCode)
+		}
+		if len(models) > 0 {
+			merged.Permissions = models
+		}
+		// 如果依然为空（如 ToC 模式，或者数据源不可用 / 未配置该租户模型集），则兜底为 "*"
 		if len(merged.Permissions) == 0 {
 			merged.Permissions = []string{"*"}
+		}
+	}
+
+	// 5.8. 如果合并后没有配置 FallbackPolicy，尝试使用静态的全局 Fallbacks 配置
+	if merged.InvocationPolicy == nil {
+		merged.InvocationPolicy = &policy.InvocationPolicy{}
+	}
+	if merged.InvocationPolicy.FallbackPolicy == nil {
+		if cfg, err := s.provider.GetConfig(ctx, model); err == nil && cfg != nil {
+			if fbs, ok := cfg.Fallbacks[model]; ok && len(fbs) > 0 {
+				merged.InvocationPolicy.FallbackPolicy = &policy.FallbackPolicy{
+					Targets: fbs,
+				}
+			}
 		}
 	}
 
@@ -191,4 +160,10 @@ func (s *PolicyService) GetPolicy(ctx context.Context, tenantCode, userID, model
 	s.validCache.Add(cacheKey, merged)
 
 	return merged, nil
+}
+
+// PurgeCache 清空本地 LRU 缓存以立即使新配置生效
+func (s *PolicyService) PurgeCache() {
+	s.validCache.Purge()
+	s.invalidCache.Purge()
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
 
@@ -28,7 +29,7 @@ func TestPolicyService_GetPolicy_LocalFallback(t *testing.T) {
 		},
 	}
 
-	svc := NewPolicyService(rdb, localPolicies, nil, logger)
+	svc := NewPolicyService(config.NewRedisGatewayProvider(rdb), localPolicies, nil, logger)
 	ctx := context.Background()
 
 	rdb.Del(ctx, "aigw:policies:global", "aigw:policies:user:u1", "aigw:policies:model:m1")
@@ -50,7 +51,7 @@ func TestPolicyService_GetPolicy_RedisResolutionAndMerge(t *testing.T) {
 	rdb, logger := setupTestRedis(t)
 	defer rdb.Close()
 
-	svc := NewPolicyService(rdb, nil, nil, logger)
+	svc := NewPolicyService(config.NewRedisGatewayProvider(rdb), nil, nil, logger)
 	ctx := context.Background()
 
 	userID := "user_test_merge"
@@ -149,7 +150,7 @@ func TestPolicyService_Caching(t *testing.T) {
 	rdb, logger := setupTestRedis(t)
 	defer rdb.Close()
 
-	svc := NewPolicyService(rdb, nil, nil, logger)
+	svc := NewPolicyService(config.NewRedisGatewayProvider(rdb), nil, nil, logger)
 	ctx := context.Background()
 
 	userID := "user_caching"
@@ -207,7 +208,7 @@ func TestPolicyService_NegativeCaching(t *testing.T) {
 	rdb, logger := setupTestRedis(t)
 	defer rdb.Close()
 
-	svc := NewPolicyService(rdb, nil, nil, logger)
+	svc := NewPolicyService(config.NewRedisGatewayProvider(rdb), nil, nil, logger)
 	ctx := context.Background()
 
 	userID := "non_exist_user"
@@ -252,7 +253,7 @@ func TestPolicyService_LocalFallbackOnEmptyRedis(t *testing.T) {
 		},
 	}
 
-	svc := NewPolicyService(rdb, localPolicies, nil, logger)
+	svc := NewPolicyService(config.NewRedisGatewayProvider(rdb), localPolicies, nil, logger)
 	ctx := context.Background()
 
 	rdb.Del(ctx, "aigw:policies:global")
@@ -271,7 +272,7 @@ func TestPolicyService_GetPolicy_PermissionsAutoFill(t *testing.T) {
 	rdb, logger := setupTestRedis(t)
 	defer rdb.Close()
 
-	svc := NewPolicyService(rdb, nil, nil, logger)
+	svc := NewPolicyService(config.NewRedisGatewayProvider(rdb), nil, nil, logger)
 	ctx := context.Background()
 
 	tenant := "test-tenant-jd"

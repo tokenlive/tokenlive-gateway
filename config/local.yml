@@ -55,6 +55,15 @@ llm:
   enable_logging: true
   enable_active_health_check: false
 
+gateway:
+  # Mode to fetch config: "local" (default.yml only), "redis" (synced via Redis), "http" (polled from Admin)
+  config_source: ${GATEWAY_CONFIG_SOURCE:}
+  # Mode to store runtime state (rate limits, circuit breakers): "memory" or "redis"
+  state_store: ${GATEWAY_STATE_STORE:}
+  # Required when config_source is "http"
+  admin_url: ${ADMIN_SERVER_URL:}
+  sync_token: ${GATEWAY_SYNC_TOKEN:}
+
 # 运行指标上报配置
 otel:
   metrics:

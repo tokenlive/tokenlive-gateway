@@ -3,6 +3,7 @@ package wire
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -34,9 +35,18 @@ import (
 )
 
 // NewGatewayDataStores 创建 StateStore 和 CompensationQueue。
-// rdb 为 nil 时返回内存实现；非 nil 时共享同一个 *redis.Client。
-func NewGatewayDataStores(rdb *redis.Client) (core.StateStore, compensation.Queue, error) {
-	if rdb == nil {
+// 根据 state_store 配置或 Redis 状态确定是使用 Redis 实现还是内存实现。
+func NewGatewayDataStores(v *viper.Viper, rdb *redis.Client) (core.StateStore, compensation.Queue, error) {
+	stateStoreMode := v.GetString("gateway.state_store")
+	if stateStoreMode == "" {
+		if rdb != nil {
+			stateStoreMode = "redis"
+		} else {
+			stateStoreMode = "memory"
+		}
+	}
+
+	if stateStoreMode == "memory" || rdb == nil {
 		return store.NewMemoryStateStore(), nil, nil
 	}
 
@@ -70,12 +80,53 @@ func NewGatewayConfigManager(
 	}
 
 	var redisSrc *config.RedisConfigSource
-	if rdb != nil {
+	configSource := v.GetString("gateway.config_source")
+	if configSource == "" && rdb != nil {
+		configSource = "redis"
+	}
+	if configSource == "redis" && rdb != nil {
 		pollInterval := v.GetDuration("config_poll_interval")
 		redisSrc = config.NewRedisConfigSource(rdb, pollInterval, logger.Logger)
 	}
 
 	return config.NewConfigManager(gwCfg, redisSrc, logger.Logger), nil
+}
+
+// ProvideGatewayProvider 根据配置创建统一的 GatewayProvider
+func ProvideGatewayProvider(v *viper.Viper, rdb *redis.Client) (config.GatewayProvider, error) {
+	configSource := v.GetString("gateway.config_source")
+	// 自动探测以向下兼容
+	if configSource == "" {
+		if rdb != nil {
+			configSource = "redis"
+		} else {
+			configSource = "local"
+		}
+	}
+
+	switch configSource {
+	case "redis":
+		if rdb == nil {
+			return nil, fmt.Errorf("config_source is set to 'redis', but redis is not configured")
+		}
+		return config.NewRedisGatewayProvider(rdb), nil
+	case "http":
+		adminURL := v.GetString("gateway.admin_url")
+		if adminURL == "" {
+			adminURL = os.Getenv("ADMIN_SERVER_URL")
+		}
+		syncToken := v.GetString("gateway.sync_token")
+		if syncToken == "" {
+			syncToken = os.Getenv("GATEWAY_SYNC_TOKEN")
+		}
+		if adminURL == "" {
+			return nil, fmt.Errorf("config_source is set to 'http', but gateway.admin_url is empty")
+		}
+		return config.NewHTTPGatewayProvider(adminURL, syncToken), nil
+	default:
+		// 兜底为 RedisProvider (rdb 可以为 nil)
+		return config.NewRedisGatewayProvider(rdb), nil
+	}
 }
 
 // NewGatewayEngine 创建 Engine（直接从 viper 读取配置，使用共享的 Redis client，支持 ClickHouse 审计落库）
@@ -87,6 +138,7 @@ func NewGatewayEngine(
 	configMgr *config.ConfigManager,
 	rdb *redis.Client,
 	chConn clickhouse.Conn,
+	provider config.GatewayProvider,
 ) (*core.Engine, func(), error) {
 
 	otelCleanup, otelErr := telemetry.InitOTelMetrics(v, logger.Logger)
@@ -104,6 +156,51 @@ func NewGatewayEngine(
 	// 读取 auth 配置（可选）
 	validKeys := readAuthKeys(v)
 	enableAuth := v.GetBool("llm.enable_auth") || len(validKeys) > 0
+
+	configSource := v.GetString("gateway.config_source")
+	stateStoreMode := v.GetString("gateway.state_store")
+
+	// 自动探测以向下兼容
+	if configSource == "" {
+		if rdb != nil {
+			configSource = "redis"
+		} else {
+			configSource = "local"
+		}
+	}
+	if stateStoreMode == "" {
+		if rdb != nil {
+			stateStoreMode = "redis"
+		} else {
+			stateStoreMode = "memory"
+		}
+	}
+
+	// 快速失败校验 (Fail-Fast)
+	if configSource == "redis" && rdb == nil {
+		return nil, nil, fmt.Errorf("config_source is set to 'redis', but redis is not configured or failed to connect")
+	}
+	if stateStoreMode == "redis" && rdb == nil {
+		return nil, nil, fmt.Errorf("state_store is set to 'redis', but redis is not configured or failed to connect")
+	}
+
+	// 详细输出数据源及策略获取的配置信息
+	adminURL := v.GetString("gateway.admin_url")
+	if adminURL == "" {
+		adminURL = os.Getenv("ADMIN_SERVER_URL")
+	}
+	redisAddr := v.GetString("redis.addr")
+	if redisAddr == "" && rdb != nil {
+		redisAddr = "configured"
+	}
+
+	logger.Logger.Info("gateway policy and config source initialized",
+		zap.String("config_source", configSource),
+		zap.String("state_store", stateStoreMode),
+		zap.String("admin_url", adminURL),
+		zap.String("redis_addr", redisAddr),
+		zap.Bool("redis_connected", rdb != nil),
+	)
 
 	var gwCfg *config.GatewayConfig
 	var err error
@@ -144,7 +241,7 @@ func NewGatewayEngine(
 	gwDiscovery = core.NewAssemblingDiscovery(serviceDiscovery, registry)
 
 	// 创建状态存储和补偿队列（使用共享 client）
-	stateStore, compQueue, err := NewGatewayDataStores(rdb)
+	stateStore, compQueue, err := NewGatewayDataStores(v, rdb)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create data stores: %w", err)
 	}
@@ -164,8 +261,8 @@ func NewGatewayEngine(
 		priorityChain = []string{"global", "tenant", "user", "model", "tenant_model", "user_model"}
 	}
 
-	// 创建 PolicyService (使用共享 client)
-	policyService := service.NewPolicyService(rdb, localPolicies, priorityChain, logger)
+	// 创建 PolicyService，直接传入统一的 GatewayProvider
+	policyService := service.NewPolicyService(provider, localPolicies, priorityChain, logger)
 
 	// 创建 Engine，将 policyService 作为 core.PolicyProvider 接口注入
 	engine := core.NewEngine(engineConfig, gwDiscovery, stateStore, policyService, logger.Logger)
@@ -347,6 +444,38 @@ func NewGatewayEngine(
 	// 启动后台任务
 	engine.StartHealthCheck(engine.Context(), 30*time.Second, v.GetBool("llm.enable_active_health_check"))
 	engine.StartCircuitBreakerProbe(engine.Context(), 5*time.Second)
+
+	// 启动 HTTP 轮询同步（如果是 HTTPGatewayProvider）
+	if httpProv, ok := provider.(*config.HTTPGatewayProvider); ok {
+		pollInterval := v.GetDuration("config_poll_interval")
+		if pollInterval <= 0 {
+			pollInterval = 10 * time.Second
+		}
+		poller := config.NewHTTPConfigPoller(httpProv, pollInterval, logger.Logger)
+
+		go poller.Start(engine.Context(),
+			// 1) 路由配置更新回调
+			func(ctx context.Context, gwCfg *config.GatewayConfig) error {
+				engineConfig, providerImpls, _, _ := buildFromRelationalConfig(gwCfg, enableAuth)
+				if err := engine.UpdateConfig(engineConfig); err != nil {
+					return fmt.Errorf("engine update config: %w", err)
+				}
+				engine.SetProviders(providerImpls)
+				configMgr.UpdateYAMLConfig(gwCfg)
+				return nil
+			},
+			// 2) 策略配置更新回调
+			func(ctx context.Context) error {
+				policyService.PurgeCache()
+				return nil
+			},
+			// 3) API Key 更新回调
+			func(ctx context.Context) error {
+				apiKeyService.PurgeCache()
+				return nil
+			},
+		)
+	}
 
 	var compWorker *compensation.Worker
 	chEnabled := v.GetBool("access_log.clickhouse.enabled")

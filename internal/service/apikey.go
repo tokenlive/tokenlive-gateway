@@ -3,13 +3,12 @@ package service
 import (
 	"context"
 	"errors"
-	"strconv"
 	"time"
 
+	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"github.com/tokenlive/tokenlive-gateway/pkg/store"
 
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
@@ -25,22 +24,21 @@ type ApiKeyInfo struct {
 }
 
 type ApiKeyService struct {
-	rdb    *redis.Client
-	logger *log.Logger
-	cache  *store.ExpirableCache[string, *ApiKeyInfo]
+	provider config.GatewayProvider
+	logger   *log.Logger
+	cache    *store.ExpirableCache[string, *ApiKeyInfo]
 }
 
-func NewApiKeyService(rdb *redis.Client, logger *log.Logger) *ApiKeyService {
-	// 按照 loadbalance.go 的规范，使用 hashicorp 的 expirable LRU 本地缓存
+func NewApiKeyService(provider config.GatewayProvider, logger *log.Logger) *ApiKeyService {
 	cache := store.NewExpirableCache[string, *ApiKeyInfo](
 		10000, 30*time.Second,
 		5000, 10*time.Second,
 	)
 
 	return &ApiKeyService{
-		rdb:    rdb,
-		logger: logger,
-		cache:  cache,
+		provider: provider,
+		logger:   logger,
+		cache:    cache,
 	}
 }
 
@@ -54,42 +52,27 @@ func (s *ApiKeyService) ValidateKey(ctx context.Context, apiKey string) (*ApiKey
 		return info, nil
 	}
 
-	// 3. 查 Redis 缓存
-	redisKey := store.RedisKeyApiKey(apiKey)
-	fields, err := s.rdb.HGetAll(ctx, redisKey).Result()
+	// 2. 动态回源：通过统一的 provider 获取 API Key 详情
+	item, err := s.provider.GetApiKey(ctx, apiKey)
 	if err != nil {
-		s.logger.Logger.Error("failed to query api key from redis", zap.Error(err), zap.String("key", redisKey))
-		return nil, err
-	}
-
-	// 如果 fields 为空（或者 user_id 与 tenant 均为空），说明 Key 不存在
-	if len(fields) == 0 || (fields["user_id"] == "" && fields["tenant"] == "") {
+		s.logger.Logger.Error("failed to query api key from provider", zap.Error(err), zap.String("key", apiKey[:8]+"..."))
 		// 写入负向缓存，防止穿透
 		errMsg := "invalid API key"
 		s.cache.AddInvalid(apiKey, errMsg)
 		return nil, errors.New(errMsg)
 	}
 
-	// 4. 解析字段
-	userID := fields["user_id"]
-	tenant := fields["tenant"]
-	workspaceID := fields["workspace_id"]
-	userTenant := fields["user_tenant"]
-	status, _ := strconv.Atoi(fields["status"])
-	quota, _ := strconv.ParseInt(fields["quota"], 10, 64)
-	expiresAt, _ := strconv.ParseInt(fields["expires_at"], 10, 64)
-
 	info := &ApiKeyInfo{
-		UserID:      userID,
-		Tenant:      tenant,
-		WorkspaceID: workspaceID,
-		UserTenant:  userTenant,
-		Status:      status,
-		Quota:       quota,
-		ExpiresAt:   expiresAt,
+		UserID:      item.UserID,
+		Tenant:      item.Tenant,
+		WorkspaceID: item.WorkspaceID,
+		UserTenant:  item.UserTenant,
+		Status:      item.Status,
+		Quota:       item.Quota,
+		ExpiresAt:   item.ExpiresAt,
 	}
 
-	// 5. 校验状态、过期时间
+	// 3. 校验状态、过期时间
 	if info.Status != 1 {
 		errMsg := "API key has been disabled"
 		s.cache.AddInvalid(apiKey, errMsg)
@@ -102,7 +85,7 @@ func (s *ApiKeyService) ValidateKey(ctx context.Context, apiKey string) (*ApiKey
 		return nil, errors.New(errMsg)
 	}
 
-	// 6. 缓存结果到正向缓存中
+	// 4. 缓存结果到正向缓存中
 	s.cache.AddValid(apiKey, info)
 
 	return info, nil
@@ -125,17 +108,14 @@ func (s *ApiKeyService) CheckQuota(ctx context.Context, apiKey string) error {
 		return err
 	}
 
-	// 只对个人用户进行配额检查，租户跳过
 	if info.UserID == "" {
 		return nil
 	}
 
-	// -1 表示无限制配额
 	if info.Quota == -1 {
 		return nil
 	}
 
-	// 检查配额是否耗尽
 	if info.Quota <= 0 {
 		return errors.New("quota exceeded")
 	}
@@ -152,34 +132,30 @@ func (s *ApiKeyService) DeductQuota(ctx context.Context, apiKey string, tokens i
 		return 0, nil
 	}
 
-	// 先验证 API Key 并获取身份信息
 	info, err := s.ValidateKey(ctx, apiKey)
 	if err != nil {
 		return 0, err
 	}
 
-	// 只对个人用户进行配额扣减，租户跳过
 	if info.UserID == "" {
 		return 0, nil
 	}
 
-	// -1 表示无限制配额，跳过扣减
 	if info.Quota == -1 {
 		return -1, nil
 	}
 
-	// 使用 Redis HINCRBY 原子性扣减配额
-	redisKey := store.RedisKeyApiKey(apiKey)
-	newQuota, err := s.rdb.HIncrBy(ctx, redisKey, "quota", -tokens).Result()
+	// 调用统一的 provider 扣减配额
+	newQuota, err := s.provider.DeductQuota(ctx, apiKey, tokens)
 	if err != nil {
-		s.logger.Logger.Error("failed to deduct quota",
+		s.logger.Logger.Error("failed to deduct quota via provider",
 			zap.Error(err),
 			zap.String("api_key", apiKey[:8]+"..."),
 			zap.Int64("tokens", tokens))
 		return 0, err
 	}
 
-	// 扣减成功后，清除本地缓存，强制下次请求重新从 Redis 读取
+	// 扣减成功后，清除本地缓存，强制下次请求重新读取最新数据
 	s.cache.Remove(apiKey)
 
 	s.logger.Logger.Info("quota deducted",
@@ -188,4 +164,12 @@ func (s *ApiKeyService) DeductQuota(ctx context.Context, apiKey string, tokens i
 		zap.Int64("new_quota", newQuota))
 
 	return newQuota, nil
+}
+
+// PurgeCache 清空本地 LRU 缓存以立使新配置生效
+func (s *ApiKeyService) PurgeCache() {
+	s.cache = store.NewExpirableCache[string, *ApiKeyInfo](
+		10000, 30*time.Second,
+		5000, 10*time.Second,
+	)
 }

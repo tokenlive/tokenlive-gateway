@@ -2,11 +2,13 @@ package config
 
 import (
 	"context"
+	"sync"
 
 	"go.uber.org/zap"
 )
 
 type ConfigManager struct {
+	mu            sync.RWMutex
 	yamlEndpoints map[string][]ResolvedEndpoint
 	fallbacks     map[string][]string
 	redisSrc      *RedisConfigSource
@@ -30,14 +32,18 @@ func (m *ConfigManager) GetEndpoints(ctx context.Context, modelCode string) []Re
 			return endpoints
 		}
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.yamlEndpoints[modelCode]
 }
 
 func (m *ConfigManager) AllKnownModels() map[string]bool {
+	m.mu.RLock()
 	known := make(map[string]bool, len(m.yamlEndpoints))
 	for name := range m.yamlEndpoints {
 		known[name] = true
 	}
+	m.mu.RUnlock()
 
 	if m.redisSrc != nil {
 		for name := range m.redisSrc.KnownModels() {
@@ -59,6 +65,8 @@ func (m *ConfigManager) OwnerOf(ctx context.Context, model string) string {
 }
 
 func (m *ConfigManager) GetFallbacks() map[string][]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.fallbacks
 }
 
@@ -68,3 +76,12 @@ func (m *ConfigManager) StartRedisPolling(ctx context.Context) {
 	}
 	m.redisSrc.StartPolling(ctx)
 }
+
+// UpdateYAMLConfig 热更新内存中的静态 YAML 配置
+func (m *ConfigManager) UpdateYAMLConfig(yamlCfg *GatewayConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.yamlEndpoints = Resolve(yamlCfg)
+	m.fallbacks = yamlCfg.Fallbacks
+}
+

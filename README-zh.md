@@ -46,6 +46,11 @@ TokenLive 专为大模型算力生态及高并发生产环境打造，具备以�
    - **优雅关闭与资源释放**：`Engine.Close()` 遵循严格的拓扑关系按序优雅关闭（先 cancel context 拒绝新请求 -> 刷新补偿队列 -> 停止 StateStore -> 关闭服务发现），确保平滑滚动升级。
    - **对象池化降 GC 压力**：贯穿管线的核心上下文 `GatewayContext` 采用 `sync.Pool` 进行高度池化复用，杜绝高并发下的堆内存频繁分配。
 
+6. **灵活的多后端适配与无 Redis 性能保障 (Multi-Backend & No-Redis Mode)**
+   - **完全配置解耦**：显式支持 `config_source` (local/redis/http) 与 `state_store` (memory/redis) 独立配置，摆脱对 Redis 的强依赖。
+   - **细粒度 HTTP 轮询 (1:1 粒度对齐)**：在无 Redis 部署下，网关通过三个独立的细粒度 HTTP 同步通道（/config, /policies, /apikeys）与管理后台进行增量同步，大大降低带宽与解析开销。
+   - **动态回源 fallback (On-Demand Fallback)**：本地内存未命中 API Key 时，网关同步向管理后台发起单条 HTTP 查询，并在内存中完成配额扣减，实现“即加即用”的高可用单机体验。
+
 ---
 
 ## 管理控制台截图
