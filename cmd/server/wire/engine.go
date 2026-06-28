@@ -26,13 +26,12 @@ import (
 	// 空导入触发 provider init() 注册
 	_ "github.com/tokenlive/tokenlive-gateway/pkg/llm/providers"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
-	"github.com/ClickHouse/clickhouse-go/v2"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 )
-
 
 // NewGatewayDataStores 创建 StateStore 和 CompensationQueue。
 // rdb 为 nil 时返回内存实现；非 nil 时共享同一个 *redis.Client。
@@ -321,9 +320,12 @@ func NewGatewayEngine(
 			// 如果是实例级熔断，我们将 EndpointID 设为 key
 			if !strings.Contains(evt.Key, ":") {
 				evtOps.EndpointID = evt.Key
+				evtOps.EndpointCode = evt.EndpointCode
 				// 尝试从 StaticDiscovery 查找 endpoint code
-				if ep := findEndpointByID(staticDiscovery, evt.Key); ep != nil {
-					evtOps.EndpointCode = ep.Code
+				if evtOps.EndpointCode == "" {
+					if ep := findEndpointByID(staticDiscovery, evt.Key); ep != nil {
+						evtOps.EndpointCode = ep.Code
+					}
 				}
 			}
 
@@ -332,7 +334,6 @@ func NewGatewayEngine(
 			}
 		}()
 	})
-
 
 	// 初始化引擎
 	if err := engine.Init(); err != nil {

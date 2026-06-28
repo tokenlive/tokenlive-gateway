@@ -120,13 +120,6 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		rp = ci.retryStrategy
 	}
 
-	// 请求结束后按策略条件判断是否发出 invocation_fail 事件（defer 统一覆盖所有错误出口）
-	defer func() {
-		if lastErr != nil && !gctx.PolicyEventEmitted {
-			ci.emitPolicyErrorEvents(gctx, rp, lastErr)
-		}
-	}()
-
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			var backoff time.Duration
@@ -260,6 +253,9 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		// 执行调用
 		err = invoker.Invoke(gctx)
+		if err != nil && gctx.UpstreamError == nil {
+			gctx.UpstreamError = err
+		}
 		gctx.RecordAttempt(err == nil)
 
 		lastInvoker = gctx.SelectedInvoker
@@ -375,87 +371,6 @@ func getStatusCode(resp *http.Response) int {
 		return resp.StatusCode
 	}
 	return 0
-}
-
-// emitPolicyErrorEvents 在请求结束后按重试策略和熔断策略的错误条件判断是否发出 invocation_fail 事件。
-// 两个策略独立判断，都命中时发两条事件；Message 前缀区分来源。
-func (ci *ClusterInvoker) emitPolicyErrorEvents(gctx *core.GatewayContext, rp *policy.RetryPolicy, invokeErr error) {
-	if ci.publisher == nil {
-		return
-	}
-
-	statusCode := getStatusCode(gctx.UpstreamResponse)
-	contentType := ""
-	if gctx.UpstreamResponse != nil {
-		contentType = gctx.UpstreamResponse.Header.Get("Content-Type")
-	}
-	errMsg := ""
-	if invokeErr != nil {
-		errMsg = invokeErr.Error()
-	}
-
-	traceID := ""
-	if gctx.Request != nil {
-		traceID = gctx.Request.Header.Get("X-Trace-ID")
-	}
-	if traceID == "" && gctx.ResponseWriter != nil {
-		traceID = gctx.ResponseWriter.Header().Get("X-Trace-Id")
-	}
-	requestID := ""
-	if gctx.Request != nil {
-		requestID = gctx.Request.Header.Get("X-Request-ID")
-	}
-	if requestID == "" {
-		requestID = traceID
-	}
-
-	base := events.OpsEvent{
-		EventType:  events.EventTypeInvocationFail,
-		TenantCode: gctx.Tenant,
-		ModelCode:  gctx.OriginalModel,
-		RequestID:  requestID,
-		TraceID:    traceID,
-		Timestamp:  time.Now().Unix(),
-	}
-	if gctx.SelectedEndpoint != nil {
-		base.EndpointID = gctx.SelectedEndpoint.ID
-		base.ProviderName = gctx.SelectedEndpoint.Provider
-	} else if ci.discovery != nil && gctx.Model != "" {
-		// SelectedEndpoint 为空时（如 Discovery 失败、Router 过滤后无可用端点），
-		// 尝试通过服务发现推断默认供应商，补全事件中的供应商字段
-		if eps, err := ci.discovery.List(gctx.Ctx, gctx.Model); err == nil && len(eps) > 0 {
-			base.EndpointID = eps[0].ID
-			base.ProviderName = eps[0].Provider
-		}
-	}
-
-	// 1. 重试策略匹配
-	if rp != nil && rp.Retry > 0 {
-		if matched, reason := rp.MatchErrorWithReason(statusCode, contentType, errMsg, gctx.UpstreamBody); matched {
-			evt := base
-			evt.Message = fmt.Sprintf("retry policy matched: %s", reason)
-			if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
-				evt.PolicyID = gctx.Policy.InvocationPolicy.ID
-				evt.PolicyName = gctx.Policy.InvocationPolicy.Name
-			}
-			_ = ci.publisher.Publish(gctx.Ctx, &evt)
-			gctx.PolicyEventEmitted = true
-		}
-	}
-
-	// 2. 熔断策略匹配（独立调用，不改 RecordFailure）
-	if gctx.Policy != nil {
-		for _, cbPolicy := range gctx.Policy.CircuitBreakPolicies {
-			if matched, reason := cbPolicy.MatchErrorWithReason(statusCode, contentType, errMsg, gctx.UpstreamBody); matched {
-				evt := base
-				evt.Message = fmt.Sprintf("circuit breaker policy matched: %s", reason)
-				evt.PolicyID = cbPolicy.ID
-				evt.PolicyName = cbPolicy.Name
-				_ = ci.publisher.Publish(gctx.Ctx, &evt)
-				gctx.PolicyEventEmitted = true
-			}
-		}
-	}
 }
 
 func (ci *ClusterInvoker) Endpoint() *core.Endpoint {

@@ -108,56 +108,6 @@ Engine 内部通过清晰定义的三层执行语义来保障请求的高效路�
 
 ---
 
-## 项目结构
-
-```text
-tokenlive-gateway/
-├── cmd/                               # 入口点
-│   └── server/                        # HTTP API 服务启动入口（Wire 依赖注入）
-├── pkg/
-│   ├── core/                          # 网关引擎核心
-│   │   ├── engine.go                  # Engine 管线编排与请求入口
-│   │   ├── engine_builder.go          # Pipeline 与 Invoker 静态构建
-│   │   ├── engine_request.go          # 请求协议轻量解析与 Pipeline 匹配
-│   │   ├── context.go                 # GatewayContext 池化与生命周期
-│   │   └── types.go                   # 核心结构体定义（Endpoint, Attempt 等）
-│   ├── policy/                        # 动态治理策略配置与归并匹配包
-│   │   ├── policy.go                  # Policy 核心定义与 PolicyMatcher/MergePolicies 归并算法
-│   │   ├── load_balance.go            # 负载均衡策略配置定义
-│   │   ├── invoke.go                  # 调用与重试策略配置定义
-│   │   ├── limit.go                   # 限流策略配置定义
-│   │   ├── route.go                   # 路由匹配规则配置定义
-│   │   └── circuit_break.go           # 熔断治理规则配置定义
-│   ├── limiter/                       # 令牌桶限流执行器实现
-│   │   ├── types.go                   # 限流自定义 HTTPError 定义
-│   │   ├── request.go                 # 针对请求数 (QPS/RPM) 的限流执行器
-│   │   └── token.go                   # 针对 Token (TPM) 的限流执行器及估算逻辑
-│   ├── invoker/                       # 统一调用执行包
-│   │   ├── builder.go                 # Invoker 构建工厂
-│   │   ├── cluster.go                 # ClusterInvoker（基于策略动态选择 LB / 重试）
-│   │   ├── fallback.go                # FallbackInvoker（多模型级联降级）
-│   │   └── provider.go                # ProviderInvoker（具体协议调用叶子节点）
-│   ├── filters/                       # 内置 Filter 实现（Pipeline 执行机制）
-│   │   ├── auth.go                    # AuthFilter（模型访问权限授权 AuthZ）
-│   │   ├── limit.go                   # RateLimitFilter（令牌桶限流驱动器）
-│   │   ├── validate.go                # ValidateFilter（请求规范与模型合法性校验）
-│   │   └── token_settlement.go        # TokenSettlementFilter（动态扣费与差额退款结算）
-│   ├── lbs/                           # 负载均衡策略实现（RoundRobin, LeastConn 等，并发安全）
-│   ├── store/                         # 状态中心（Redis/Memory StateStore）
-│   ├── discovery/                     # 服务发现（Static / Kubernetes Discovery）
-│   ├── compensation/                  # 异常补偿队列（Redis Stream）
-│   └── config/                        # 配置中心（YAML 加载与 Redis 配置版本轮询热更新）
-├── internal/                          # Application 层（Gin 集成外壳）
-│   ├── middleware/                    # Gin 全局中间件，如 auth.go（API Key 身份校验 AuthN）
-│   ├── service/                       # 业务服务层
-│   │   ├── apikey.go                  # API Key 管理与双轨二级缓存
-│   │   ├── model.go                   # 用户模型校验与 YAML 兜底
-│   │   └── policy.go                  # 多级策略懒加载与 Redis 异步拉取
-│   ├── repository/                    # GORM 数据库访问
-│   └── router/                        # Gin 路由注册
-└── config/                            # 本地与生产配置文件
-```
-
 ## 快速开始
 
 ### 前置条件
@@ -319,11 +269,6 @@ func init() {
 ## 设计文档
 
 - **[架构设计文档](docs/architecture.md)** — 完整的架构决策（187 项）、接口定义、Mermaid 图和实现路线
-- **[架构概要](docs/architecture_summary.md)** — 快速概览
-- **[ADR-0001](docs/adr/0001-relational-model-provider-structure.md)** — 关系型三表结构（models / providers / model_providers）
-- **[ADR-0004](docs/adr/0004-layered-config-source.md)** — 分层配置源（YAML 默认 + Redis 覆盖）
-- **[ADR-0005](docs/adr/0005-redis-key-structure-lazy-loading.md)** — Redis Key 结构与懒加载机制
-- **[数据库 Schema](docs/schema.sql)** — 完整表结构定义
 
 ## Roadmap
 

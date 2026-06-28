@@ -51,6 +51,26 @@ func TestRedisSource_GetEndpoints_CacheHit(t *testing.T) {
 	assert.Equal(t, expected, endpoints)
 }
 
+func TestRedisSource_GetEndpoints_EndpointIDAndCodeAliases(t *testing.T) {
+	src, mr := newTestRedisSource(t)
+	ctx := context.Background()
+
+	raw := `[{
+		"endpoint_id": "endpoint-id-1",
+		"endpoint_code": "endpoint-code-1",
+		"real_model": "gpt-4",
+		"provider_name": "openai",
+		"request_types": ["chat_completion"]
+	}]`
+	require.NoError(t, mr.Set(store.RedisKeyConfigEndpoints("gpt-4"), raw))
+
+	endpoints, ok := src.GetEndpoints(ctx, "gpt-4")
+	require.True(t, ok)
+	require.Len(t, endpoints, 1)
+	assert.Equal(t, "endpoint-id-1", endpoints[0].ID)
+	assert.Equal(t, "endpoint-code-1", endpoints[0].Code)
+}
+
 func TestRedisSource_GetEndpoints_CacheMiss_RedisDown(t *testing.T) {
 	src, _ := newTestRedisSource(t)
 	ctx := context.Background()

@@ -17,6 +17,8 @@ import (
 
 var _ http.Flusher = (*bodyLogWriter)(nil)
 
+const maxLoggedBodySize = 4096
+
 func RequestLogMiddleware(logger *log.Logger) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		uuid, err := random.UUIdV4()
@@ -35,10 +37,10 @@ func RequestLogMiddleware(logger *log.Logger) gin.HandlerFunc {
 			zap.Any("request_headers", maskHeader(ctx.Request.Header)), // 使用 maskHeader 过滤敏感字段
 		}
 
-		if ctx.Request.Body != nil {
+		if ctx.Request.Body != nil && shouldLogRequestBody(ctx.Request.URL.Path) {
 			bodyBytes, _ := ctx.GetRawData()
 			ctx.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // 关键点
-			fields = append(fields, zap.String("request_params", string(bodyBytes)))
+			fields = append(fields, zap.String("request_params", truncateLogBody(string(bodyBytes))))
 		}
 
 		// 只在这里输出一次详细请求日志
@@ -49,7 +51,11 @@ func RequestLogMiddleware(logger *log.Logger) gin.HandlerFunc {
 
 func ResponseLogMiddleware(logger *log.Logger) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		blw := &bodyLogWriter{body: bytes.NewBufferString(""), ResponseWriter: ctx.Writer}
+		blw := &bodyLogWriter{
+			body:           bytes.NewBufferString(""),
+			ResponseWriter: ctx.Writer,
+			skipBody:       ctx.Request != nil && ctx.Request.URL.Path == "/metrics",
+		}
 		ctx.Writer = blw
 		startTime := time.Now()
 		ctx.Next()
@@ -57,10 +63,12 @@ func ResponseLogMiddleware(logger *log.Logger) gin.HandlerFunc {
 
 		respBody := ""
 		contentType := ctx.Writer.Header().Get("Content-Type")
-		if strings.Contains(contentType, "text/event-stream") {
+		if ctx.Request != nil && ctx.Request.URL.Path == "/metrics" {
+			respBody = "<omitted>"
+		} else if strings.Contains(contentType, "text/event-stream") {
 			respBody = "<Stream Response>"
 		} else {
-			respBody = blw.body.String()
+			respBody = truncateLogBody(blw.body.String())
 		}
 
 		logger.WithContext(ctx).Info("Response", zap.Any("response_body", respBody), zap.Any("time", duration))
@@ -69,12 +77,13 @@ func ResponseLogMiddleware(logger *log.Logger) gin.HandlerFunc {
 
 type bodyLogWriter struct {
 	gin.ResponseWriter
-	body *bytes.Buffer
+	body     *bytes.Buffer
+	skipBody bool
 }
 
 func (w *bodyLogWriter) Write(b []byte) (int, error) {
 	// 如果是流式响应，不写入内存以防内存泄露
-	if !strings.Contains(w.Header().Get("Content-Type"), "text/event-stream") {
+	if !w.skipBody && !strings.Contains(w.Header().Get("Content-Type"), "text/event-stream") {
 		w.body.Write(b)
 	}
 	return w.ResponseWriter.Write(b)
@@ -84,4 +93,18 @@ func (w *bodyLogWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+func shouldLogRequestBody(path string) bool {
+	if path == "/metrics" {
+		return false
+	}
+	return !strings.HasPrefix(path, "/v1/")
+}
+
+func truncateLogBody(body string) string {
+	if len(body) <= maxLoggedBodySize {
+		return body
+	}
+	return body[:maxLoggedBodySize] + "... (truncated)"
 }

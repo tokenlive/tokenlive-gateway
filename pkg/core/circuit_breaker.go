@@ -33,6 +33,7 @@ type circuitBreakerEntry struct {
 	policyID      string
 	policyName    string
 	providerName  string
+	endpointCode  string
 	lastTenant    string
 	lastTraceID   string
 	lastRequestID string
@@ -323,6 +324,7 @@ type CBEvent struct {
 	PolicyName   string
 	TenantCode   string
 	ProviderName string
+	EndpointCode string
 	RequestID    string
 	TraceID      string
 	Threshold    *float64
@@ -363,6 +365,7 @@ func (cbm *CircuitBreakerManager) onStateChange(key string, oldState, newState C
 	policyName := ""
 	tenantCode := ""
 	providerName := ""
+	endpointCode := ""
 	requestID := ""
 	traceID := ""
 	var thresholdVal *float64
@@ -378,6 +381,7 @@ func (cbm *CircuitBreakerManager) onStateChange(key string, oldState, newState C
 		policyName = e.policyName
 		tenantCode = e.lastTenant
 		providerName = e.providerName
+		endpointCode = e.endpointCode
 		requestID = e.lastRequestID
 		traceID = e.lastTraceID
 		tVal := e.threshold
@@ -407,6 +411,7 @@ func (cbm *CircuitBreakerManager) onStateChange(key string, oldState, newState C
 			PolicyName:   policyName,
 			TenantCode:   tenantCode,
 			ProviderName: providerName,
+			EndpointCode: endpointCode,
 			RequestID:    requestID,
 			TraceID:      traceID,
 			Threshold:    thresholdVal,
@@ -503,6 +508,7 @@ func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoi
 			entry.policyID = p.ID
 			entry.policyName = p.Name
 			entry.providerName = ep.Provider
+			entry.endpointCode = ep.Code
 			entry.lastTenant = gctx.Tenant
 			entry.lastTraceID = traceID
 			entry.lastRequestID = requestID
@@ -519,6 +525,7 @@ func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoi
 			entry.policyID = p.ID
 			entry.policyName = p.Name
 			entry.providerName = ep.Provider
+			entry.endpointCode = ep.Code
 			entry.lastTenant = gctx.Tenant
 			entry.lastTraceID = traceID
 			entry.lastRequestID = requestID
@@ -581,6 +588,7 @@ func (cbm *CircuitBreakerManager) RecordFailure(gctx *GatewayContext, ep *Endpoi
 			entry.policyID = p.ID
 			entry.policyName = p.Name
 			entry.providerName = ep.Provider
+			entry.endpointCode = ep.Code
 			entry.lastTenant = gctx.Tenant
 			entry.lastTraceID = traceID
 			entry.lastRequestID = requestID
@@ -597,6 +605,7 @@ func (cbm *CircuitBreakerManager) RecordFailure(gctx *GatewayContext, ep *Endpoi
 			entry.policyID = p.ID
 			entry.policyName = p.Name
 			entry.providerName = ep.Provider
+			entry.endpointCode = ep.Code
 			entry.lastTenant = gctx.Tenant
 			entry.lastTraceID = traceID
 			entry.lastRequestID = requestID

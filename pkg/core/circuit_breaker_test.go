@@ -1,8 +1,12 @@
 package core
 
 import (
+	"errors"
+	"net/http"
 	"testing"
 	"time"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
 
 func TestCircuitBreakerEntry_TimeWindowSliding(t *testing.T) {
@@ -58,5 +62,47 @@ func TestCircuitBreakerEntry_TimeWindowSliding(t *testing.T) {
 	e.computeState(future) // 触发过期
 	if len(e.buckets) != 0 {
 		t.Errorf("expected buckets to be expired and empty, got %d", len(e.buckets))
+	}
+}
+
+func TestCircuitBreakerManager_RecordFailure_EventIncludesEndpointCode(t *testing.T) {
+	cbm := NewCircuitBreakerManager()
+	var got CBEvent
+	cbm.SetEventHandler(func(evt CBEvent) {
+		got = evt
+	})
+
+	gctx := &GatewayContext{
+		Policy: &policy.Policy{
+			CircuitBreakPolicies: []*policy.CircuitBreakPolicy{
+				{
+					ID:                          "cb-instance",
+					Name:                        "instance breaker",
+					Level:                       "INSTANCE",
+					SlidingWindowSize:           1,
+					MinCallsThreshold:           1,
+					FailureRateThreshold:        1,
+					AllowedCallsInHalfOpenState: 1,
+					WaitDurationInOpenState:     1000,
+					ErrorCodes:                  []string{"500"},
+				},
+			},
+		},
+		UpstreamResponse: &http.Response{StatusCode: http.StatusInternalServerError},
+	}
+	ep := &Endpoint{
+		ID:       "ep-1",
+		Code:     "glm-primary",
+		Provider: "glm-provider",
+		Model:    "glm-5.2",
+	}
+
+	cbm.RecordFailure(gctx, ep, errors.New("upstream error: status 500"))
+
+	if got.Key != "ep-1" {
+		t.Fatalf("expected circuit break event for endpoint ep-1, got %q", got.Key)
+	}
+	if got.EndpointCode != "glm-primary" {
+		t.Fatalf("expected endpoint code %q, got %q", "glm-primary", got.EndpointCode)
 	}
 }

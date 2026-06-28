@@ -526,23 +526,47 @@ func TestOpenAIMessages_Stream_Empty(t *testing.T) {
 
 	invoker := &openaiMessagesInvoker{}
 	err := invoker.Invoke(gctx, p)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+	if err == nil {
+		t.Fatal("expected empty stream error, got nil")
 	}
-
-	respBody := w.Body.String()
-	expectedEvents := []string{
-		`event: message_start`,
-		`event: content_block_start`,
-		`"type":"text"`,
-		`"text":""`,
-		`event: content_block_stop`,
-		`event: message_stop`,
+	if !strings.Contains(err.Error(), "empty upstream stream") {
+		t.Fatalf("expected empty upstream stream error, got %v", err)
 	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected no downstream events for empty stream, got %q", body)
+	}
+}
 
-	for _, expected := range expectedEvents {
-		if !strings.Contains(respBody, expected) {
-			t.Errorf("expected response to contain %q, but got:\n%s", expected, respBody)
-		}
+func TestOpenAIMessages_Stream_DoneOnlyReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p := NewOpenAIProvider("test-openai", server.URL, "test-key", []string{"gpt-4"})
+
+	reqBody := `{"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}], "stream": true}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeMessages
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "gpt-4"
+	gctx.IsStream = true
+
+	invoker := &openaiMessagesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err == nil {
+		t.Fatal("expected empty stream error, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty upstream stream") {
+		t.Fatalf("expected empty upstream stream error, got %v", err)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected no downstream events for done-only stream, got %q", body)
 	}
 }

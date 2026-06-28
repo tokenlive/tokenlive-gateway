@@ -130,6 +130,28 @@ func TestResolve_Inheritance(t *testing.T) {
 	assert.Equal(t, 80, primary.Weight)
 }
 
+func TestResolve_PreservesEndpointIDAndCode(t *testing.T) {
+	v := newTestViper()
+	v.Set("models.gpt-4.endpoints", []map[string]interface{}{
+		{
+			"id":       "endpoint-id-1",
+			"code":     "endpoint-code-1",
+			"provider": "openai-official",
+			"url":      "https://api.openai.com/v1",
+			"priority": 1,
+			"weight":   80,
+		},
+	})
+
+	cfg, err := Load(v)
+	require.NoError(t, err)
+
+	resolved := Resolve(cfg)
+	require.Len(t, resolved["gpt-4"], 1)
+	assert.Equal(t, "endpoint-id-1", resolved["gpt-4"][0].ID)
+	assert.Equal(t, "endpoint-code-1", resolved["gpt-4"][0].Code)
+}
+
 func TestResolve_DefaultWeight(t *testing.T) {
 	v := newTestViper()
 	cfg, err := Load(v)

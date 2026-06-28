@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
@@ -22,6 +23,8 @@ type ProviderConfig struct {
 
 // EndpointConfig endpoint 配置（挂在 model 下，引用 provider）
 type EndpointConfig struct {
+	ID        string            `mapstructure:"id" yaml:"id"`                             // 可选，端点唯一 ID
+	Code      string            `mapstructure:"code" yaml:"code"`                         // 可选，端点业务编码
 	Provider  string            `mapstructure:"provider" yaml:"provider"`                 // 引用 provider name（必填）
 	URL       string            `mapstructure:"url" yaml:"url"`                           // 上游地址（必填）
 	RealModel string            `mapstructure:"real_model" yaml:"real_model"`             // 可选，覆盖 model 的 real_model
@@ -64,4 +67,36 @@ type ResolvedEndpoint struct {
 	OutputPrice        *float64          `json:"output_price,omitempty"`
 	CachedPrice        *float64          `json:"cached_price,omitempty"`
 	CacheCreationPrice *float64          `json:"cache_creation_price,omitempty"`
+}
+
+// UnmarshalJSON 兼容 Admin/Redis 侧不同命名风格的端点 ID 与编码字段。
+func (r *ResolvedEndpoint) UnmarshalJSON(data []byte) error {
+	type Alias ResolvedEndpoint
+	aux := &struct {
+		EndpointIDSnake   string `json:"endpoint_id"`
+		EndpointIDCamel   string `json:"endpointId"`
+		EndpointCodeSnake string `json:"endpoint_code"`
+		EndpointCodeCamel string `json:"endpointCode"`
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if r.ID == "" {
+		if aux.EndpointIDSnake != "" {
+			r.ID = aux.EndpointIDSnake
+		} else if aux.EndpointIDCamel != "" {
+			r.ID = aux.EndpointIDCamel
+		}
+	}
+	if r.Code == "" {
+		if aux.EndpointCodeSnake != "" {
+			r.Code = aux.EndpointCodeSnake
+		} else if aux.EndpointCodeCamel != "" {
+			r.Code = aux.EndpointCodeCamel
+		}
+	}
+	return nil
 }

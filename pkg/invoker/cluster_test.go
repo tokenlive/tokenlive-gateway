@@ -173,8 +173,8 @@ func TestClusterInvoker_Success(t *testing.T) {
 
 func TestClusterInvoker_Retry(t *testing.T) {
 	// 两个 endpoint：第一个会失败并被排除，第二个会成功
-	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4"}
-	ep2 := &core.Endpoint{ID: "ep-2", Provider: "openai", Model: "gpt-4"}
+	ep1 := &core.Endpoint{ID: "ep-1", Code: "endpoint-code-1", Provider: "openai", Model: "gpt-4"}
+	ep2 := &core.Endpoint{ID: "ep-2", Code: "endpoint-code-2", Provider: "openai", Model: "gpt-4"}
 
 	failingProvider := &countingProvider{
 		name:      "openai",
@@ -201,6 +201,25 @@ func TestClusterInvoker_Retry(t *testing.T) {
 	}
 	if gctx.AttemptCount != 2 {
 		t.Errorf("expected 2 attempts, got %d", gctx.AttemptCount)
+	}
+	if len(gctx.History) != 2 {
+		t.Fatalf("expected 2 history records, got %d", len(gctx.History))
+	}
+	firstAttempt := gctx.History[0]
+	if firstAttempt.Success {
+		t.Fatal("expected first attempt to be recorded as failed")
+	}
+	if firstAttempt.EndpointID != "ep-1" {
+		t.Errorf("expected first attempt endpoint ep-1, got %q", firstAttempt.EndpointID)
+	}
+	if firstAttempt.EndpointCode != "endpoint-code-1" {
+		t.Errorf("expected first attempt endpoint code endpoint-code-1, got %q", firstAttempt.EndpointCode)
+	}
+	if firstAttempt.StatusCode != 500 {
+		t.Errorf("expected first attempt status 500, got %d", firstAttempt.StatusCode)
+	}
+	if firstAttempt.Error != "upstream error: status 500" {
+		t.Errorf("expected first attempt error to be recorded, got %q", firstAttempt.Error)
 	}
 }
 

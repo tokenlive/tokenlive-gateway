@@ -122,14 +122,17 @@ func (ep *Endpoint) Protocol() ProtocolFamily {
 
 // AttemptRecord 单次尝试记录
 type AttemptRecord struct {
-	Model      string
-	EndpointID string
-	Provider   string
-	Latency    time.Duration
-	StatusCode int
-	Error      string
-	Success    bool
-	Timestamp  time.Time
+	Model        string
+	EndpointID   string
+	EndpointCode string
+	Provider     string
+	Latency      time.Duration
+	StatusCode   int
+	ContentType  string
+	Body         []byte
+	Error        string
+	Success      bool
+	Timestamp    time.Time
 }
 
 // CircuitState 熔断器状态

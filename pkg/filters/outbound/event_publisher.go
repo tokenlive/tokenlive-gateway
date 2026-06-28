@@ -64,7 +64,7 @@ func (f *EventPublishFilter) OnResponse(gctx *core.GatewayContext) error {
 // analyzeEvents examines the GatewayContext and returns all applicable policy events.
 // A single request may trigger multiple events (e.g. circuit_break + lb_switch).
 func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.OpsEvent {
-	if gctx.Err == nil && len(gctx.FallbackChain) <= 1 {
+	if gctx.Err == nil && len(gctx.FallbackChain) <= 1 && !hasFailedAttempts(gctx.History) {
 		return nil
 	}
 
@@ -84,11 +84,14 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 	}
 
 	base := events.OpsEvent{
-		TenantCode:   gctx.Tenant,
-		ModelCode:    gctx.OriginalModel, // use original model, not fallback target
-		RequestID:    requestID,
-		TraceID:      traceID,
-		Timestamp:    time.Now().Unix(),
+		TenantCode: gctx.Tenant,
+		ModelCode:  gctx.OriginalModel, // use original model, not fallback target
+		RequestID:  requestID,
+		TraceID:    traceID,
+		Timestamp:  time.Now().Unix(),
+	}
+	if base.ModelCode == "" {
+		base.ModelCode = gctx.Model
 	}
 
 	if gctx.SelectedEndpoint != nil {
@@ -116,7 +119,10 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 		result = append(result, cbEvent)
 	}
 
-	// 2. LB switch / fallback
+	// 2. Invocation failure for failed upstream attempts recorded in History.
+	result = append(result, f.detectInvocationFailuresFromHistory(gctx, base)...)
+
+	// 3. LB switch / fallback
 	if len(gctx.FallbackChain) > 1 {
 		evt := base
 		evt.EventType = events.EventTypeLBSwitch
@@ -129,7 +135,7 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 		result = append(result, &evt)
 	}
 
-	// 3. Rate limit (HTTP 429)
+	// 4. Rate limit (HTTP 429)
 	if gctx.Err != nil {
 		var httpErr *limiter.HTTPError
 		if errors.As(gctx.Err, &httpErr) && httpErr.Code == http.StatusTooManyRequests {
@@ -149,7 +155,7 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 		}
 	}
 
-	// 4. Invocation failure (generic, only if no circuit breaker already detected and no policy event emitted by ClusterInvoker)
+	// 5. Invocation failure (generic, only if no circuit breaker already detected and no policy event emitted by ClusterInvoker)
 	// 只在真正调用了上游服务时才发出 invocation_fail 事件（AttemptCount > 0 或 SelectedEndpoint != nil）
 	if gctx.Err != nil && len(result) == 0 && !gctx.PolicyEventEmitted {
 		// 判断是否真正到达了 Invoker 阶段并尝试调用上游
@@ -161,15 +167,83 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 			if gctx.OriginalModel != "" && evt.ModelCode != gctx.OriginalModel {
 				evt.Message = fmt.Sprintf("%s (original request model: %s)", evt.Message, gctx.OriginalModel)
 			}
-			if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
-				evt.PolicyID = gctx.Policy.InvocationPolicy.ID
-				evt.PolicyName = gctx.Policy.InvocationPolicy.Name
-			}
 			result = append(result, &evt)
 		}
 	}
 
 	return result
+}
+
+func hasFailedAttempts(history []core.AttemptRecord) bool {
+	for _, rec := range history {
+		if !rec.Success {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *EventPublishFilter) detectInvocationFailuresFromHistory(gctx *core.GatewayContext, base events.OpsEvent) []*events.OpsEvent {
+	if gctx.Policy == nil {
+		return nil
+	}
+
+	var result []*events.OpsEvent
+	for _, rec := range gctx.History {
+		if rec.Success {
+			continue
+		}
+		errMsg := rec.Error
+
+		if gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
+			rp := gctx.Policy.InvocationPolicy.RetryPolicy
+			if rp.Retry > 0 {
+				if matched, reason := rp.MatchErrorWithReason(rec.StatusCode, rec.ContentType, errMsg, rec.Body); matched {
+					evt := invocationFailEventFromAttempt(base, rec)
+					evt.Message = fmt.Sprintf("retry policy matched: %s", reason)
+					if errMsg != "" {
+						evt.Message = fmt.Sprintf("%s (attempt error: %s)", evt.Message, errMsg)
+					}
+					evt.PolicyID = gctx.Policy.InvocationPolicy.ID
+					evt.PolicyName = gctx.Policy.InvocationPolicy.Name
+					result = append(result, &evt)
+				}
+			}
+		}
+
+		for _, cbPolicy := range gctx.Policy.CircuitBreakPolicies {
+			if cbPolicy == nil {
+				continue
+			}
+			if matched, reason := cbPolicy.MatchErrorWithReason(rec.StatusCode, rec.ContentType, errMsg, rec.Body); matched {
+				evt := invocationFailEventFromAttempt(base, rec)
+				evt.Message = fmt.Sprintf("circuit breaker policy matched: %s", reason)
+				if errMsg != "" {
+					evt.Message = fmt.Sprintf("%s (attempt error: %s)", evt.Message, errMsg)
+				}
+				evt.PolicyID = cbPolicy.ID
+				evt.PolicyName = cbPolicy.Name
+				result = append(result, &evt)
+			}
+		}
+	}
+
+	return result
+}
+
+func invocationFailEventFromAttempt(base events.OpsEvent, rec core.AttemptRecord) events.OpsEvent {
+	evt := base
+	evt.EventType = events.EventTypeInvocationFail
+	if rec.Model != "" {
+		evt.ModelCode = rec.Model
+	}
+	evt.EndpointID = rec.EndpointID
+	evt.EndpointCode = rec.EndpointCode
+	evt.ProviderName = rec.Provider
+	if !rec.Timestamp.IsZero() {
+		evt.Timestamp = rec.Timestamp.Unix()
+	}
+	return evt
 }
 
 // detectCircuitBreaker checks if the request was blocked by the circuit breaker.

@@ -108,56 +108,6 @@ To simplify container scaling, TokenLive externalizes all persistent state:
 
 ---
 
-## Project Structure
-
-```text
-tokenlive-gateway/
-├── cmd/                               # Entry points
-│   └── server/                        # HTTP API server startup entry (Wire Dependency Injection)
-├── pkg/
-│   ├── core/                          # Gateway engine core
-│   │   ├── engine.go                  # Engine pipeline orchestration and request entry
-│   │   ├── engine_builder.go          # Pipeline and Invoker static building
-│   │   ├── engine_request.go          # Request protocol lightweight parsing and pipeline matching
-│   │   ├── context.go                 # GatewayContext pooling and lifecycle
-│   │   └── types.go                   # Core struct definitions (Endpoint, Attempt, etc.)
-│   ├── policy/                        # Dynamic governance policy configuration and merge-matching
-│   │   ├── policy.go                  # Policy definitions and PolicyMatcher/MergePolicies matching algorithms
-│   │   ├── load_balance.go            # Load balancing policy configuration
-│   │   ├── invoke.go                  # Calling and retry policy configuration
-│   │   ├── limit.go                   # Rate limiting policy configuration
-│   │   ├── route.go                   # Route matching rule configuration
-│   │   └── circuit_break.go           # Circuit breaker governance policy configuration
-│   ├── limiter/                       # Token bucket rate limiter implementation
-│   │   ├── types.go                   # Custom rate-limit HTTPError definitions
-│   │   ├── request.go                 # Rate limiter for requests (QPS/RPM)
-│   │   └── token.go                   # Rate limiter for Tokens (TPM) and estimation logic
-│   ├── invoker/                       # Unified invocation execution package
-│   │   ├── builder.go                 # Invoker construction factory
-│   │   ├── cluster.go                 # ClusterInvoker (dynamically selects LB/Retry based on policy)
-│   │   ├── fallback.go                # FallbackInvoker (multi-model cascade degradation)
-│   │   └── provider.go                # ProviderInvoker (leaf nodes invoking concrete protocols)
-│   ├── filters/                       # Built-in Filters (Pipeline execution mechanisms)
-│   │   ├── auth.go                    # AuthFilter (model access authorization, AuthZ)
-│   │   ├── limit.go                   # RateLimitFilter (token bucket rate limiter driver)
-│   │   ├── validate.go                # ValidateFilter (request schema and model validity validation)
-│   │   └── token_settlement.go        # TokenSettlementFilter (dynamic billing and differential refund settlement)
-│   ├── lbs/                           # Load balancing strategies (RoundRobin, LeastConn, etc., concurrency safe)
-│   ├── store/                         # State center (Redis/Memory StateStore)
-│   ├── discovery/                     # Service discovery (Static / Kubernetes Discovery)
-│   ├── compensation/                  # Exception compensation queue (Redis Stream)
-│   └── config/                        # Configuration center (YAML loading & version polling hot updates)
-├── internal/                          # Application layer (Gin integration shell)
-│   ├── middleware/                    # Gin global middlewares, e.g., auth.go (API Key verification, AuthN)
-│   ├── service/                       # Business service layer
-│   │   ├── apikey.go                  # API Key management with dual-track L2 caching
-│   │   ├── model.go                   # User model validation and YAML fallbacks
-│   │   └── policy.go                  # Multi-level policy lazy loading & Redis async pull
-│   ├── repository/                    # GORM data access
-│   └── router/                        # Route registration
-└── config/                            # Local and production configuration files
-```
-
 ## Quick Start
 
 ### Prerequisites
@@ -319,11 +269,6 @@ To add a new Provider:
 ## Design Documentation
 
 - **[Architecture Design Document](docs/architecture.md)** — Complete architectural decisions (187 decisions), interface definitions, Mermaid diagrams, and implementation roadmap.
-- **[Architecture Summary](docs/architecture_summary.md)** — Quick overview.
-- **[ADR-0001](docs/adr/0001-relational-model-provider-structure.md)** — Relational three-table structure (models / providers / model_providers).
-- **[ADR-0004](docs/adr/0004-layered-config-source.md)** — Layered configuration sources (YAML default + Redis override).
-- **[ADR-0005](docs/adr/0005-redis-key-structure-lazy-loading.md)** — Redis Key structure and lazy-loading mechanism.
-- **[Database Schema](docs/schema.sql)** — Complete table definitions.
 
 ## Roadmap
 

@@ -432,6 +432,40 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	oaiToAnthropicIndex := make(map[int]int)
 	nextBlockIndex := 0
 
+	startMessage := func() error {
+		if started {
+			return nil
+		}
+		started = true
+		msgID := lastMessageID
+		if msgID == "" {
+			msgID = "msg_mock"
+		}
+		modelName := lastModelName
+		if modelName == "" {
+			modelName = gctx.Model
+		}
+
+		var startEv messageStartEvent
+		startEv.Type = "message_start"
+		startEv.Message.ID = msgID
+		startEv.Message.Type = "message"
+		startEv.Message.Role = "assistant"
+		startEv.Message.Content = []string{}
+		startEv.Message.Model = modelName
+		startEv.Message.Usage.InputTokens = gctx.InputTokens
+		startEv.Message.Usage.OutputTokens = gctx.OutputTokens
+
+		if err := writeEvent(gctx.ResponseWriter, "message_start", startEv); err != nil {
+			return err
+		}
+
+		if hasFlusher {
+			flusher.Flush()
+		}
+		return nil
+	}
+
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
@@ -483,43 +517,15 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 					lastModelName = chunk.Model
 				}
 
-				if !started {
-					started = true
-					msgID := lastMessageID
-					if msgID == "" {
-						msgID = "msg_mock"
-					}
-					modelName := lastModelName
-					if modelName == "" {
-						modelName = gctx.Model
-					}
-
-					// 发送 message_start
-					var startEv messageStartEvent
-					startEv.Type = "message_start"
-					startEv.Message.ID = msgID
-					startEv.Message.Type = "message"
-					startEv.Message.Role = "assistant"
-					startEv.Message.Content = []string{}
-					startEv.Message.Model = modelName
-					startEv.Message.Usage.InputTokens = gctx.InputTokens
-					startEv.Message.Usage.OutputTokens = gctx.OutputTokens
-
-					if err := writeEvent(gctx.ResponseWriter, "message_start", startEv); err != nil {
-						return err
-					}
-
-					if hasFlusher {
-						flusher.Flush()
-					}
-				}
-
 				if len(chunk.Choices) > 0 {
 					choice := chunk.Choices[0]
 
 					// 1. 处理文本
 					txt := choice.Delta.Content
 					if txt != "" {
+						if err := startMessage(); err != nil {
+							return err
+						}
 						textIdx := 0 // 文本固定为 Anthropic 里的 index 0
 						if !activeBlocks[textIdx] {
 							activeBlocks[textIdx] = true
@@ -560,6 +566,9 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 
 					// 2. 处理工具调用
 					if len(choice.Delta.ToolCalls) > 0 {
+						if err := startMessage(); err != nil {
+							return err
+						}
 						for _, tc := range choice.Delta.ToolCalls {
 							anthropicIdx, mapped := oaiToAnthropicIndex[tc.Index]
 							if !mapped {
@@ -630,6 +639,10 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 			}
 			return fmt.Errorf("read upstream stream: %w", err)
 		}
+	}
+
+	if !started {
+		return fmt.Errorf("empty upstream stream: no content or tool calls received")
 	}
 
 	if started {

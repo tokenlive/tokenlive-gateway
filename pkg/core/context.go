@@ -15,7 +15,6 @@ import (
 // ErrGatewayFirstByteTimeout 表示由于网关超时策略（连接超时+首字节超时）导致的主动断开错误
 var ErrGatewayFirstByteTimeout = errors.New("gateway policy timeout: first byte timeout (connect timeout + ttft timeout exceeded)")
 
-
 // GatewayContext 贯穿整个管线的请求上下文
 // 不实现 context.Context 接口（强类型字段优先）
 type GatewayContext struct {
@@ -114,12 +113,17 @@ func (c *GatewayContext) RecordAttempt(success bool) {
 		Model:      c.Model,
 		Latency:    time.Since(c.UpstreamConnect),
 		StatusCode: getStatusCode(c.UpstreamResponse),
+		Body:       append([]byte(nil), c.UpstreamBody...),
 		Error:      getErrorString(c.UpstreamError),
 		Success:    success,
 		Timestamp:  time.Now(),
 	}
+	if c.UpstreamResponse != nil {
+		rec.ContentType = c.UpstreamResponse.Header.Get("Content-Type")
+	}
 	if c.SelectedEndpoint != nil {
 		rec.EndpointID = c.SelectedEndpoint.ID
+		rec.EndpointCode = c.SelectedEndpoint.Code
 		rec.Provider = c.SelectedEndpoint.Provider
 	}
 	c.History = append(c.History, rec)

@@ -5,12 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/events"
 	"github.com/tokenlive/tokenlive-gateway/pkg/limiter"
+	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
 
 type mockPublisher struct {
@@ -146,10 +148,10 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 		pub := &mockPublisher{}
 		f := NewEventPublishFilter(pub, nil)
 		gctx := &core.GatewayContext{
-			Ctx:     context.Background(),
-			Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-			Model:   "gpt-4",
-			Err:     errors.New("some network error"),
+			Ctx:          context.Background(),
+			Request:      httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+			Model:        "gpt-4",
+			Err:          errors.New("some network error"),
 			AttemptCount: 1, // 表示已经尝试过调用上游
 			SelectedEndpoint: &core.Endpoint{
 				ID:       "ep-test-1",
@@ -173,6 +175,59 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("Generic Invocation Failure event does not claim unmatched retry policy", func(t *testing.T) {
+		pub := &mockPublisher{}
+		f := NewEventPublishFilter(pub, nil)
+		gctx := &core.GatewayContext{
+			Ctx:           context.Background(),
+			Request:       httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+			OriginalModel: "claude-opus-5.2",
+			Model:         "glm-5.2",
+			Err:           errors.New("empty upstream stream: no content or tool calls received"),
+			AttemptCount:  1,
+			SelectedEndpoint: &core.Endpoint{
+				ID:       "ep-glm",
+				Code:     "glm-primary",
+				Provider: "Kimchi",
+				Model:    "glm-5.2",
+			},
+			Policy: &policy.Policy{
+				InvocationPolicy: &policy.InvocationPolicy{
+					ID:   "retry-rich",
+					Name: "rich retry policy",
+					RetryPolicy: &policy.RetryPolicy{
+						Retry:         3,
+						ErrorCodes:    []string{"429", "500", "502", "503", "504"},
+						ErrorMessages: []string{"rate limit", "timeout", "overloaded"},
+					},
+				},
+			},
+		}
+
+		err := f.OnResponse(gctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond) // Wait for async goroutine
+
+		if len(pub.published) != 1 {
+			t.Fatalf("expected 1 published event, got %d", len(pub.published))
+		}
+		evt := pub.published[0]
+		if evt.EventType != events.EventTypeInvocationFail {
+			t.Errorf("expected event type %q, got %q", events.EventTypeInvocationFail, evt.EventType)
+		}
+		if evt.PolicyID != "" || evt.PolicyName != "" {
+			t.Fatalf("expected no policy attribution for unmatched retry policy, got id=%q name=%q", evt.PolicyID, evt.PolicyName)
+		}
+		if strings.Contains(evt.Message, "retry policy matched") {
+			t.Fatalf("generic invocation failure should not claim retry match, got message %q", evt.Message)
+		}
+		if !strings.Contains(evt.Message, "original request model: claude-opus-5.2") {
+			t.Fatalf("expected original model context in message, got %q", evt.Message)
+		}
+	})
+
 	t.Run("No Invocation Failure event for Inbound validation error", func(t *testing.T) {
 		pub := &mockPublisher{}
 		f := NewEventPublishFilter(pub, nil)
@@ -192,6 +247,80 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 
 		if len(pub.published) != 0 {
 			t.Fatalf("expected 0 published events for inbound error, got %d", len(pub.published))
+		}
+	})
+
+	t.Run("Invocation Failure event for failed retry attempt from history", func(t *testing.T) {
+		pub := &mockPublisher{}
+		f := NewEventPublishFilter(pub, nil)
+		gctx := &core.GatewayContext{
+			Ctx:           context.Background(),
+			Request:       httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+			OriginalModel: "glm-5.2",
+			Model:         "glm-5.2",
+			Policy: &policy.Policy{
+				InvocationPolicy: &policy.InvocationPolicy{
+					ID:   "retry-402",
+					Name: "retry 402",
+					RetryPolicy: &policy.RetryPolicy{
+						Retry:      1,
+						ErrorCodes: []string{"402"},
+					},
+				},
+			},
+			AttemptCount: 2,
+			SelectedEndpoint: &core.Endpoint{
+				ID:       "healthy-endpoint",
+				Code:     "glm-healthy",
+				Provider: "glm-provider",
+				Model:    "glm-5.2",
+			},
+			History: []core.AttemptRecord{
+				{
+					Model:        "glm-5.2",
+					EndpointID:   "d90c177924mt69n7b0n0",
+					EndpointCode: "glm-primary",
+					Provider:     "glm-provider",
+					StatusCode:   402,
+					Error:        "upstream error: status 402, body: {\"error\": \"the provider for model glm-5.2-fp8 has exhausted its credits and cannot process requests\"}",
+					Success:      false,
+					Timestamp:    time.Now(),
+				},
+				{
+					Model:      "glm-5.2",
+					EndpointID: "healthy-endpoint",
+					Provider:   "glm-provider",
+					StatusCode: 200,
+					Success:    true,
+					Timestamp:  time.Now(),
+				},
+			},
+		}
+
+		err := f.OnResponse(gctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond) // Wait for async goroutine
+
+		if len(pub.published) != 1 {
+			t.Fatalf("expected 1 published event, got %d", len(pub.published))
+		}
+		evt := pub.published[0]
+		if evt.EventType != events.EventTypeInvocationFail {
+			t.Errorf("expected event type %q, got %q", events.EventTypeInvocationFail, evt.EventType)
+		}
+		if evt.EndpointID != "d90c177924mt69n7b0n0" {
+			t.Errorf("expected EndpointID to be failed endpoint, got %q", evt.EndpointID)
+		}
+		if evt.EndpointCode != "glm-primary" {
+			t.Errorf("expected EndpointCode to be failed endpoint code, got %q", evt.EndpointCode)
+		}
+		if evt.ModelCode != "glm-5.2" {
+			t.Errorf("expected ModelCode to be %q, got %q", "glm-5.2", evt.ModelCode)
+		}
+		if evt.PolicyID != "retry-402" {
+			t.Errorf("expected PolicyID to be %q, got %q", "retry-402", evt.PolicyID)
 		}
 	})
 
