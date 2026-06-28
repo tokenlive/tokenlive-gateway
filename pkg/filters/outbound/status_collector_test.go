@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 func TestStatusCollectorFilter_OnResponse(t *testing.T) {
@@ -22,7 +24,7 @@ func TestStatusCollectorFilter_OnResponse(t *testing.T) {
 	})
 	defer rdb.Close()
 
-	f := NewStatusCollectorFilter(rdb)
+	f := NewStatusCollectorFilter(rdb, nil, "", "", nil)
 
 	t.Run("Record success model and endpoints history", func(t *testing.T) {
 		gctx := &core.GatewayContext{
@@ -90,4 +92,66 @@ func TestStatusCollectorFilter_OnResponse(t *testing.T) {
 			t.Errorf("expected daily cost to be 0.05, got %q", val)
 		}
 	})
+}
+
+func TestStatusCollectorFilter_OnResponse_HTTP(t *testing.T) {
+	var receivedPayload struct {
+		Metrics       []RequestMetric `json:"metrics"`
+		OpenEndpoints []string        `json:"open_endpoints"`
+		OpenServices  []string        `json:"open_services"`
+	}
+	var receivedToken string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedToken = r.Header.Get("X-Sync-Token")
+		if r.URL.Path == "/api/v1/gateway/metrics" && r.Method == http.MethodPost {
+			_ = json.NewDecoder(r.Body).Decode(&receivedPayload)
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	logger := zap.NewNop()
+
+	f := NewStatusCollectorFilter(nil, nil, ts.URL, "test-token", logger)
+	defer f.cancel()
+
+	gctx := &core.GatewayContext{
+		Ctx:          context.Background(),
+		Request:      httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		Model:        "gpt-4",
+		Err:          nil,
+		InputTokens:  10,
+		OutputTokens: 20,
+		Cost:         0.05,
+		History: []core.AttemptRecord{
+			{
+				EndpointID: "ep-1",
+				Success:    true,
+			},
+		},
+	}
+
+	err := f.OnResponse(gctx)
+	if err != nil {
+		t.Fatalf("OnResponse failed: %v", err)
+	}
+
+	f.flush([]RequestMetric{
+		{
+			Time:        time.Now().Unix(),
+			Model:       gctx.Model,
+			Success:     true,
+			InputTokens: 10,
+		},
+	})
+
+	if receivedToken != "test-token" {
+		t.Errorf("expected token 'test-token', got %q", receivedToken)
+	}
+	if len(receivedPayload.Metrics) != 1 || receivedPayload.Metrics[0].Model != "gpt-4" {
+		t.Errorf("unexpected metrics payload: %+v", receivedPayload)
+	}
 }

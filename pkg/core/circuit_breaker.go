@@ -754,3 +754,25 @@ func (cbm *CircuitBreakerManager) GetOpenSince(key string) time.Time {
 	}
 	return entry.openSince
 }
+
+// GetOpenBreakers 返回所有当前处于 Open 状态的端点 ID 列表和模型服务 Key 列表
+func (cbm *CircuitBreakerManager) GetOpenBreakers() ([]string, []string) {
+	cbm.mu.RLock()
+	defer cbm.mu.RUnlock()
+
+	var openEndpoints []string
+	var openServices []string
+
+	now := time.Now()
+	for key, e := range cbm.entries {
+		_, state := e.stateVal(now)
+		if state == CircuitOpen {
+			if e.endpointCode != "" || e.providerName != "" {
+				openEndpoints = append(openEndpoints, key)
+			} else {
+				openServices = append(openServices, key)
+			}
+		}
+	}
+	return openEndpoints, openServices
+}

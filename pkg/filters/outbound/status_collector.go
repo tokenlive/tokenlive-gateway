@@ -1,25 +1,69 @@
 package outbound
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
+
+type AttemptMetric struct {
+	EndpointID string `json:"endpoint_id"`
+	Success    bool   `json:"success"`
+}
+
+type RequestMetric struct {
+	Time                int64           `json:"time"` // Unix timestamp
+	Model               string          `json:"model"`
+	Success             bool            `json:"success"`
+	InputTokens         int64           `json:"input_tokens"`
+	OutputTokens        int64           `json:"output_tokens"`
+	CachedTokens        int64           `json:"cached_tokens"`
+	CacheCreationTokens int64           `json:"cache_creation_tokens"`
+	Cost                float64         `json:"cost"`
+	Attempts            []AttemptMetric `json:"attempts"`
+}
 
 // StatusCollectorFilter 收集模型成功/失败的过滤器，用于最近状态显示
 type StatusCollectorFilter struct {
-	rdb *redis.Client
+	rdb        *redis.Client
+	cbManager  *core.CircuitBreakerManager
+	adminURL   string
+	syncToken  string
+	httpClient *http.Client
+	logger     *zap.Logger
+
+	// HTTP 异步上报通道
+	metricCh chan RequestMetric
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // NewStatusCollectorFilter 创建 StatusCollectorFilter
-func NewStatusCollectorFilter(rdb *redis.Client) *StatusCollectorFilter {
-	return &StatusCollectorFilter{
-		rdb: rdb,
+func NewStatusCollectorFilter(rdb *redis.Client, cbManager *core.CircuitBreakerManager, adminURL string, syncToken string, logger *zap.Logger) *StatusCollectorFilter {
+	f := &StatusCollectorFilter{
+		rdb:        rdb,
+		cbManager:  cbManager,
+		adminURL:   adminURL,
+		syncToken:  syncToken,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		logger:     logger,
 	}
+
+	if rdb == nil && adminURL != "" {
+		f.metricCh = make(chan RequestMetric, 5000)
+		f.ctx, f.cancel = context.WithCancel(context.Background())
+		go f.startWorker()
+	}
+
+	return f
 }
 
 func (f *StatusCollectorFilter) Name() string                        { return "status_collector" }
@@ -28,7 +72,7 @@ func (f *StatusCollectorFilter) Criticality() core.FilterCriticality { return co
 func (f *StatusCollectorFilter) InboundSafe()                        {}
 
 func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
-	if f.rdb == nil || gctx.Model == "" {
+	if gctx.Model == "" {
 		return nil
 	}
 
@@ -59,6 +103,36 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 				success:    rec.Success,
 			})
 		}
+	}
+
+	// HTTP 模式下，直接加入缓冲队列进行异步批量上报
+	if f.rdb == nil {
+		if f.metricCh != nil {
+			var attempts []AttemptMetric
+			for _, att := range epAttempts {
+				attempts = append(attempts, AttemptMetric{
+					EndpointID: att.endpointID,
+					Success:    att.success,
+				})
+			}
+			m := RequestMetric{
+				Time:                time.Now().Unix(),
+				Model:               model,
+				Success:             !hasErr,
+				InputTokens:         inputTokens,
+				OutputTokens:        outputTokens,
+				CachedTokens:        cachedTokens,
+				CacheCreationTokens: cacheCreationTokens,
+				Cost:                cost,
+				Attempts:            attempts,
+			}
+			select {
+			case f.metricCh <- m:
+			default:
+				// 队列满则安全丢弃，不阻塞请求主流程
+			}
+		}
+		return nil
 	}
 
 	go func() {
@@ -132,4 +206,72 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 	}()
 
 	return nil
+}
+
+func (f *StatusCollectorFilter) startWorker() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	var batch []RequestMetric
+
+	for {
+		select {
+		case <-f.ctx.Done():
+			return
+		case m := <-f.metricCh:
+			batch = append(batch, m)
+			if len(batch) >= 100 {
+				f.flush(batch)
+				batch = nil
+			}
+		case <-ticker.C:
+			// 即使无请求，也定期发送心跳（用于同步熔断器状态）
+			f.flush(batch)
+			batch = nil
+		}
+	}
+}
+
+func (f *StatusCollectorFilter) flush(batch []RequestMetric) {
+	var openEndpoints []string
+	var openServices []string
+	if f.cbManager != nil {
+		openEndpoints, openServices = f.cbManager.GetOpenBreakers()
+	}
+
+	payload := struct {
+		Metrics       []RequestMetric `json:"metrics"`
+		OpenEndpoints []string        `json:"open_endpoints"`
+		OpenServices  []string        `json:"open_services"`
+	}{
+		Metrics:       batch,
+		OpenEndpoints: openEndpoints,
+		OpenServices:  openServices,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		f.logger.Error("failed to marshal metrics payload", zap.Error(err))
+		return
+	}
+
+	urlStr := f.adminURL + "/api/v1/gateway/metrics"
+	req, err := http.NewRequestWithContext(f.ctx, "POST", urlStr, bytes.NewReader(jsonData))
+	if err != nil {
+		f.logger.Error("failed to create metrics request", zap.Error(err))
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Sync-Token", f.syncToken)
+
+	resp, err := f.httpClient.Do(req)
+	if err != nil {
+		f.logger.Warn("failed to send metrics to admin", zap.String("url", urlStr), zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		f.logger.Warn("admin returned non-ok status for metrics", zap.String("url", urlStr), zap.Int("status", resp.StatusCode))
+	}
 }

@@ -189,6 +189,10 @@ func NewGatewayEngine(
 	if adminURL == "" {
 		adminURL = os.Getenv("ADMIN_SERVER_URL")
 	}
+	syncToken := v.GetString("gateway.sync_token")
+	if syncToken == "" {
+		syncToken = os.Getenv("GATEWAY_SYNC_TOKEN")
+	}
 	redisAddr := v.GetString("redis.addr")
 	if redisAddr == "" && rdb != nil {
 		redisAddr = "configured"
@@ -362,14 +366,14 @@ func NewGatewayEngine(
 	))
 	engine.RegisterFilter("access_log", outbound.NewAccessLogFilter(logger.Logger, rdb, compQueue, chConn, v))
 
-	engine.RegisterFilter("status_collector", outbound.NewStatusCollectorFilter(rdb))
+	engine.RegisterFilter("status_collector", outbound.NewStatusCollectorFilter(rdb, engine.CircuitBreakerManager(), adminURL, syncToken, logger.Logger))
 
 	// 注册 Event Publisher 过滤器
 	var eventsCfg events.PublisherConfig
 	if v.IsSet("events") {
 		_ = v.UnmarshalKey("events", &eventsCfg)
 	}
-	eventPublisher := events.NewPublisher(eventsCfg, rdb)
+	eventPublisher := events.NewPublisher(eventsCfg, rdb, adminURL, syncToken)
 	eventPubFilter := outbound.NewEventPublishFilter(eventPublisher, logger.Logger)
 	eventPubFilter.SetDiscovery(engine.Discovery())
 	engine.RegisterFilter("event_publisher", eventPubFilter)

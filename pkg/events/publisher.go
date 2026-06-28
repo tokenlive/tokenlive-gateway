@@ -26,7 +26,7 @@ type PublisherConfig struct {
 }
 
 // NewPublisher creates the appropriate Publisher based on config.
-func NewPublisher(cfg PublisherConfig, redisClient *redis.Client) Publisher {
+func NewPublisher(cfg PublisherConfig, redisClient *redis.Client, adminURL string, syncToken string) Publisher {
 	if !cfg.Enabled {
 		return &noopPublisher{}
 	}
@@ -35,8 +35,16 @@ func NewPublisher(cfg PublisherConfig, redisClient *redis.Client) Publisher {
 	switch cfg.Type {
 	case "kafka":
 		delegate = NewKafkaPublisher(cfg.Kafka.Brokers, cfg.Topic)
+	case "http":
+		delegate = NewHTTPPublisher(adminURL, syncToken)
 	default: // "redis"
-		delegate = NewRedisPublisher(redisClient, cfg.Topic)
+		if redisClient != nil {
+			delegate = NewRedisPublisher(redisClient, cfg.Topic)
+		} else if adminURL != "" {
+			delegate = NewHTTPPublisher(adminURL, syncToken)
+		} else {
+			delegate = &noopPublisher{}
+		}
 	}
 
 	// 强制包装成 AsyncPublisher，保证高并发时绝不阻塞主流程，并在积压时安全丢弃
