@@ -86,11 +86,6 @@ func (ep *Endpoint) protocolSupportsRequestType(rt RequestType) bool {
 		}
 	case ProtocolAnthropic:
 		return rt == RequestTypeMessages
-	case ProtocolJoyCode:
-		switch rt {
-		case RequestTypeChatCompletion, RequestTypeResponses:
-			return true
-		}
 	case "":
 		return true
 	}

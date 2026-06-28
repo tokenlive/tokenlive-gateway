@@ -37,15 +37,6 @@ func TestEndpointSupportsRequestType_ProtocolAwareFallback(t *testing.T) {
 			request: RequestTypeMessages,
 			want:    true,
 		},
-		{
-			name:     "joycode endpoint does not implicitly serve messages",
-			protocol: string(ProtocolJoyCode),
-			declared: []RequestType{
-				RequestTypeChatCompletion,
-			},
-			request: RequestTypeMessages,
-			want:    false,
-		},
 	}
 
 	for _, tt := range tests {
