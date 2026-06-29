@@ -62,6 +62,8 @@ gateway:
   state_store: ${GATEWAY_STATE_STORE:}
   # Required when config_source is "http"
   admin_url: ${ADMIN_SERVER_URL:}
+  # 跳过 admin TLS 证书验证（本地回环 HTTPS + 域名证书场景，仅限开发环境）
+  admin_tls_skip_verify: ${ADMIN_TLS_SKIP_VERIFY:false}
   sync_token: ${GATEWAY_SYNC_TOKEN:}
 
 # 运行指标上报配置

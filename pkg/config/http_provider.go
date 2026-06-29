@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,12 +23,17 @@ type HTTPGatewayProvider struct {
 	cachedApiKeys  map[string]*HTTPApiKeyItem
 }
 
-func NewHTTPGatewayProvider(adminURL string, syncToken string) *HTTPGatewayProvider {
+func NewHTTPGatewayProvider(adminURL string, syncToken string, tlsSkipVerify bool) *HTTPGatewayProvider {
+	transport := &http.Transport{}
+	if tlsSkipVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 	return &HTTPGatewayProvider{
 		adminURL:      adminURL,
 		syncToken:     syncToken,
 		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout:   5 * time.Second,
+			Transport: transport,
 		},
 		cachedApiKeys: make(map[string]*HTTPApiKeyItem),
 	}

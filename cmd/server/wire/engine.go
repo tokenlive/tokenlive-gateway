@@ -122,7 +122,8 @@ func ProvideGatewayProvider(v *viper.Viper, rdb *redis.Client) (config.GatewayPr
 		if adminURL == "" {
 			return nil, fmt.Errorf("config_source is set to 'http', but gateway.admin_url is empty")
 		}
-		return config.NewHTTPGatewayProvider(adminURL, syncToken), nil
+		tlsSkipVerify := v.GetBool("gateway.admin_tls_skip_verify")
+		return config.NewHTTPGatewayProvider(adminURL, syncToken, tlsSkipVerify), nil
 	default:
 		// 兜底为 RedisProvider (rdb 可以为 nil)
 		return config.NewRedisGatewayProvider(rdb), nil
