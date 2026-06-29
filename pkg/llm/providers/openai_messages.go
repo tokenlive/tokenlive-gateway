@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
@@ -24,6 +25,61 @@ func (i *openaiMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provide
 	var payload map[string]interface{}
 	if err := json.Unmarshal(gctx.RawBody, &payload); err != nil {
 		return fmt.Errorf("parse raw body: %w", err)
+	}
+
+	// 检测是否为 Claude Code / Anthropic SDK 的连通性探测请求
+	// 特征：max_tokens == 1 且只有一个消息，内容为 "."
+	isProbe := false
+	if maxTokens, ok := payload["max_tokens"].(float64); ok && maxTokens == 1 {
+		if msgs, ok := payload["messages"].([]interface{}); ok && len(msgs) == 1 {
+			if firstMsg, ok := msgs[0].(map[string]interface{}); ok {
+				if content, ok := firstMsg["content"].(string); ok && content == "." {
+					isProbe = true
+				}
+			}
+		}
+	}
+
+	if isProbe {
+		if gctx.Request != nil {
+			if ver := gctx.Request.Header.Get("anthropic-version"); ver != "" {
+				gctx.ResponseWriter.Header().Set("anthropic-version", ver)
+			} else {
+				gctx.ResponseWriter.Header().Set("anthropic-version", "2023-06-01")
+			}
+		}
+		respModel := gctx.OriginalModel
+		if respModel == "" {
+			respModel = gctx.Model
+		}
+		mockResp := map[string]interface{}{
+			"id":            normalizeAnthropicID(fmt.Sprintf("probe%d", time.Now().UnixNano())),
+			"type":          "message",
+			"role":          "assistant",
+			"model":         respModel,
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "text",
+					"text": ".",
+				},
+			},
+			"stop_reason":   "max_tokens",
+			"stop_sequence": nil,
+			"usage": map[string]interface{}{
+				"input_tokens":  5,
+				"output_tokens": 1,
+			},
+		}
+		respBytes, err := json.Marshal(mockResp)
+		if err != nil {
+			return err
+		}
+		gctx.UpstreamBody = respBytes
+		gctx.Response = mockResp
+		gctx.InputTokens = 5
+		gctx.OutputTokens = 1
+		gctx.TriggerFirstByte()
+		return nil
 	}
 
 	// 处理 system prompt (支持 string 与 []interface{})
@@ -322,11 +378,18 @@ func translateNonStreamResponse(gctx *core.GatewayContext) error {
 		}
 	}
 
+	msgID := normalizeAnthropicID(oaiResp.ID)
+
+	respModel := gctx.OriginalModel
+	if respModel == "" {
+		respModel = gctx.Model
+	}
+
 	anthropicResp := map[string]interface{}{
-		"id":            oaiResp.ID,
+		"id":            msgID,
 		"type":          "message",
 		"role":          "assistant",
-		"model":         gctx.Model,
+		"model":         respModel,
 		"content":       anthropicContent,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
@@ -334,6 +397,12 @@ func translateNonStreamResponse(gctx *core.GatewayContext) error {
 			"input_tokens":  oaiResp.Usage.PromptTokens,
 			"output_tokens": oaiResp.Usage.CompletionTokens,
 		},
+	}
+
+	if gctx.Request != nil {
+		if ver := gctx.Request.Header.Get("anthropic-version"); ver != "" {
+			gctx.ResponseWriter.Header().Set("anthropic-version", ver)
+		}
 	}
 
 	translatedBody, err := json.Marshal(anthropicResp)
@@ -416,6 +485,11 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	gctx.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 	gctx.ResponseWriter.Header().Set("Cache-Control", "no-cache")
 	gctx.ResponseWriter.Header().Set("Connection", "keep-alive")
+	if gctx.Request != nil {
+		if ver := gctx.Request.Header.Get("anthropic-version"); ver != "" {
+			gctx.ResponseWriter.Header().Set("anthropic-version", ver)
+		}
+	}
 	gctx.ResponseWriter.WriteHeader(http.StatusOK)
 
 	flusher, hasFlusher := gctx.ResponseWriter.(http.Flusher)
@@ -425,7 +499,6 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	started := false
 
 	var lastMessageID string
-	var lastModelName string
 
 	activeBlocks := make(map[int]bool)
 	blockTypes := make(map[int]string) // index -> "text" or "tool_use"
@@ -437,13 +510,10 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 			return nil
 		}
 		started = true
-		msgID := lastMessageID
-		if msgID == "" {
-			msgID = "msg_mock"
-		}
-		modelName := lastModelName
-		if modelName == "" {
-			modelName = gctx.Model
+		msgID := normalizeAnthropicID(lastMessageID)
+		respModel := gctx.OriginalModel
+		if respModel == "" {
+			respModel = gctx.Model
 		}
 
 		var startEv messageStartEvent
@@ -452,7 +522,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 		startEv.Message.Type = "message"
 		startEv.Message.Role = "assistant"
 		startEv.Message.Content = []string{}
-		startEv.Message.Model = modelName
+		startEv.Message.Model = respModel
 		startEv.Message.Usage.InputTokens = gctx.InputTokens
 		startEv.Message.Usage.OutputTokens = gctx.OutputTokens
 
@@ -513,9 +583,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 				if chunk.ID != "" {
 					lastMessageID = chunk.ID
 				}
-				if chunk.Model != "" {
-					lastModelName = chunk.Model
-				}
+
 
 				if len(chunk.Choices) > 0 {
 					choice := chunk.Choices[0]
@@ -691,4 +759,28 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	}
 
 	return nil
+}
+
+func normalizeAnthropicID(id string) string {
+	if id == "" {
+		return "msg_mockprobe1234567890"
+	}
+	orig := id
+	if strings.HasPrefix(orig, "chatcmpl-") {
+		orig = orig[9:]
+	} else if strings.HasPrefix(orig, "msg_") {
+		orig = orig[4:]
+	}
+	var sb strings.Builder
+	sb.WriteString("msg_")
+	for _, ch := range orig {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') {
+			sb.WriteRune(ch)
+		}
+	}
+	res := sb.String()
+	if len(res) <= 4 {
+		return "msg_mockprobe1234567890"
+	}
+	return res
 }

@@ -133,8 +133,8 @@ func TestOpenAIMessages_NonStream(t *testing.T) {
 		t.Fatalf("failed to unmarshal translated response: %v", err)
 	}
 
-	if resp["id"] != "chatcmpl-123" {
-		t.Errorf("expected id=chatcmpl-123, got %v", resp["id"])
+	if resp["id"] != "msg_123" {
+		t.Errorf("expected id=msg_123, got %v", resp["id"])
 	}
 	if resp["type"] != "message" {
 		t.Errorf("expected type=message, got %v", resp["type"])
@@ -230,7 +230,7 @@ func TestOpenAIMessages_Stream(t *testing.T) {
 	expectedEvents := []string{
 		`event: message_start`,
 		`"type":"message_start"`,
-		`"id":"chatcmpl-123"`,
+		`"id":"msg_123"`,
 		`event: content_block_start`,
 		`"type":"content_block_start"`,
 		`event: content_block_delta`,
