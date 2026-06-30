@@ -1,14 +1,14 @@
 ARG REGISTRY=docker.io
-FROM ${REGISTRY}/golang:1.19-alpine AS builder
+FROM ${REGISTRY}/golang:1.25-alpine AS builder
 RUN set -eux && sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
 
 ARG APP_RELATIVE_PATH
 
-COPY .. /data/app
+COPY . /data/app
 WORKDIR /data/app
 
 RUN rm -rf /data/app/bin/
-RUN export GOPROXY=https://goproxy.cn,direct && go mod tidy && go build -ldflags="-s -w" -o ./bin/tokenlive-gateway ${APP_RELATIVE_PATH}
+RUN export GOPROXY=https://goproxy.cn,direct && go mod download && go build -ldflags="-s -w" -o ./bin/tokenlive-gateway ${APP_RELATIVE_PATH}
 RUN mv config /data/app/bin/
 
 

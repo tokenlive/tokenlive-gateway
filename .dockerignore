@@ -1,2 +1,11 @@
 .git
 .idea
+.vscode
+.claude
+.codegraph
+
+.DS_Store
+*.log
+
+bin/
+storage/
