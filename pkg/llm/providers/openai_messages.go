@@ -227,6 +227,16 @@ func (i *openaiMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provide
 		delete(payload, "max_tokens")
 	}
 
+	// 翻译 thinking (Anthropic -> OpenAI)
+	if thinking, ok := payload["thinking"].(map[string]interface{}); ok {
+		if t, ok := thinking["type"].(string); ok {
+			if t == "adaptive" {
+				thinking["type"] = "auto"
+			}
+		}
+	}
+
+
 	// 翻译 tools (Anthropic -> OpenAI)
 	if tools, ok := payload["tools"].([]interface{}); ok {
 		var oaiTools []interface{}

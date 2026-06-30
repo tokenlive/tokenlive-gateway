@@ -67,6 +67,18 @@ func TestOpenAIMessages_NonStream(t *testing.T) {
 			t.Errorf("expected temperature=0.7 to be preserved, got %v", req["temperature"])
 		}
 
+		// 验证 thinking 映射为 auto
+		thinking, ok := req["thinking"].(map[string]interface{})
+		if !ok {
+			t.Fatal("thinking field is not a map")
+		}
+		if thinking["type"] != "auto" {
+			t.Errorf("expected thinking type=auto, got %v", thinking["type"])
+		}
+		if thinking["budget_tokens"] != float64(1024) {
+			t.Errorf("expected thinking budget_tokens=1024, got %v", thinking["budget_tokens"])
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{
@@ -101,7 +113,11 @@ func TestOpenAIMessages_NonStream(t *testing.T) {
 		"system": "You are a helpful assistant",
 		"messages": [{"role": "user", "content": "hi"}],
 		"max_tokens": 100,
-		"temperature": 0.7
+		"temperature": 0.7,
+		"thinking": {
+			"type": "adaptive",
+			"budget_tokens": 1024
+		}
 	}`
 
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
