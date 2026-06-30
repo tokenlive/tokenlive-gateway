@@ -400,9 +400,7 @@ func NewGatewayEngine(
 
 			transitionStr := ""
 			if evt.OldState != "" && evt.NewState != "" {
-				oldState := strings.ReplaceAll(strings.ToUpper(evt.OldState), " ", "")
-				newState := strings.ReplaceAll(strings.ToUpper(evt.NewState), " ", "")
-				transitionStr = fmt.Sprintf("[%s->%s] ", oldState, newState)
+				transitionStr = fmt.Sprintf("[%s->%s] ", evt.OldState, evt.NewState)
 			}
 
 			evtOps := &events.OpsEvent{

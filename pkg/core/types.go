@@ -142,12 +142,12 @@ const (
 func (s CircuitState) String() string {
 	switch s {
 	case CircuitClosed:
-		return "Closed"
+		return "CLOSED"
 	case CircuitOpen:
-		return "Open"
+		return "OPEN"
 	case CircuitHalfOpen:
-		return "Half-Open"
+		return "HALF_OPEN"
 	default:
-		return "Unknown"
+		return "UNKNOWN"
 	}
 }
