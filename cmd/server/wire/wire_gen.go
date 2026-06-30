@@ -10,7 +10,6 @@ import (
 	"github.com/google/wire"
 	"github.com/spf13/viper"
 	"github.com/tokenlive/tokenlive-gateway/internal/handler"
-	"github.com/tokenlive/tokenlive-gateway/internal/job"
 	"github.com/tokenlive/tokenlive-gateway/internal/repository"
 	"github.com/tokenlive/tokenlive-gateway/internal/router"
 	"github.com/tokenlive/tokenlive-gateway/internal/server"
@@ -19,7 +18,6 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/jwt"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"github.com/tokenlive/tokenlive-gateway/pkg/server/http"
-	"github.com/tokenlive/tokenlive-gateway/pkg/sid"
 )
 
 import (
@@ -30,15 +28,6 @@ import (
 
 func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), error) {
 	jwtJWT := jwt.NewJwt(viperViper)
-	handlerHandler := handler.NewHandler(logger)
-	db := repository.NewDB(viperViper, logger)
-	repositoryRepository := repository.NewRepository(logger, db)
-	transaction := repository.NewTransaction(repositoryRepository)
-	sidSid := sid.NewSid()
-	serviceService := service.NewService(transaction, logger, sidSid, jwtJWT)
-	userRepository := repository.NewUserRepository(repositoryRepository)
-	userService := service.NewUserService(serviceService, userRepository)
-	userHandler := handler.NewUserHandler(handlerHandler, userService)
 	redisConfig := repository.LoadRedisConfig(viperViper)
 	client, cleanup, err := repository.NewRedis(redisConfig)
 	if err != nil {
@@ -73,14 +62,11 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 		Logger:        logger,
 		Config:        viperViper,
 		JWT:           jwtJWT,
-		UserHandler:   userHandler,
 		LLMHandler:    llmHandler,
 		ApiKeyService: apiKeyService,
 	}
 	httpServer := server.NewHTTPServer(routerDeps)
-	jobJob := job.NewJob(transaction, logger, sidSid)
-	userJob := job.NewUserJob(jobJob, userRepository)
-	jobServer := server.NewJobServer(logger, userJob)
+	jobServer := server.NewJobServer(logger)
 	appApp := newApp(httpServer, jobServer)
 	return appApp, func() {
 		cleanup3()
@@ -91,16 +77,14 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 
 // wire.go:
 
-var repositorySet = wire.NewSet(repository.NewDB, repository.LoadRedisConfig, repository.NewRedis, repository.NewClickHouse, repository.NewRepository, repository.NewTransaction, repository.NewUserRepository)
+var repositorySet = wire.NewSet(repository.NewDB, repository.LoadRedisConfig, repository.NewRedis, repository.NewClickHouse, repository.NewRepository, repository.NewTransaction)
 
-var serviceSet = wire.NewSet(service.NewService, service.NewUserService, service.NewApiKeyService, service.NewModelService, service.NewAliasService)
+var serviceSet = wire.NewSet(service.NewService, service.NewApiKeyService, service.NewModelService, service.NewAliasService)
 
-var handlerSet = wire.NewSet(handler.NewHandler, handler.NewUserHandler, handler.NewLLMHandler, NewGatewayConfigManager,
+var handlerSet = wire.NewSet(handler.NewHandler, handler.NewLLMHandler, NewGatewayConfigManager,
 	NewGatewayEngine,
 	ProvideGatewayProvider,
 )
-
-var jobSet = wire.NewSet(job.NewJob, job.NewUserJob)
 
 var serverSet = wire.NewSet(server.NewHTTPServer, server.NewJobServer)
 

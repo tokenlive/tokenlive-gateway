@@ -7,13 +7,12 @@
 package wire
 
 import (
+	"github.com/google/wire"
+	"github.com/spf13/viper"
 	"github.com/tokenlive/tokenlive-gateway/internal/repository"
 	"github.com/tokenlive/tokenlive-gateway/internal/server"
 	"github.com/tokenlive/tokenlive-gateway/pkg/app"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
-
-	"github.com/google/wire"
-	"github.com/spf13/viper"
 )
 
 // Injectors from wire.go:
@@ -28,7 +27,7 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 
 // wire.go:
 
-var repositorySet = wire.NewSet(repository.NewDB, repository.NewRepository, repository.NewUserRepository)
+var repositorySet = wire.NewSet(repository.NewDB, repository.NewRepository)
 
 var serverSet = wire.NewSet(server.NewMigrateServer)
 

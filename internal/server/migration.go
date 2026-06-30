@@ -4,10 +4,8 @@ import (
 	"context"
 	"os"
 
-	"github.com/tokenlive/tokenlive-gateway/internal/model"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 
-	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -23,12 +21,6 @@ func NewMigrateServer(db *gorm.DB, log *log.Logger) *MigrateServer {
 	}
 }
 func (m *MigrateServer) Start(ctx context.Context) error {
-	if err := m.db.AutoMigrate(
-		&model.User{},
-	); err != nil {
-		m.log.Error("user migrate error", zap.Error(err))
-		return err
-	}
 	m.log.Info("AutoMigrate success")
 	os.Exit(0)
 	return nil

@@ -17,7 +17,6 @@ import (
 	"github.com/spf13/viper"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -85,15 +84,13 @@ func NewDB(conf *viper.Viper, l *log.Logger) *gorm.DB {
 
 	// GORM doc: https://gorm.io/docs/connecting_to_the_database.html
 	switch driver {
-	case "mysql":
-		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
-			Logger: logger,
-		})
 	case "postgres":
 		db, err = gorm.Open(postgres.New(postgres.Config{
 			DSN:                  dsn,
 			PreferSimpleProtocol: true, // disables implicit prepared statement usage
-		}), &gorm.Config{})
+		}), &gorm.Config{
+			Logger: logger,
+		})
 	case "sqlite":
 		dbPath := strings.Split(dsn, "?")[0]
 		if dbPath != ":memory:" {
@@ -104,7 +101,9 @@ func NewDB(conf *viper.Viper, l *log.Logger) *gorm.DB {
 				}
 			}
 		}
-		db, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+		db, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{
+			Logger: logger,
+		})
 	default:
 		panic("unknown db driver")
 	}

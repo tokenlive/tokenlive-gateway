@@ -13,7 +13,6 @@ type RouterDeps struct {
 	Logger        *log.Logger
 	Config        *viper.Viper
 	JWT           *jwt.JWT
-	UserHandler   *handler.UserHandler
 	LLMHandler    *handler.LLMHandler
 	ApiKeyService *service.ApiKeyService
 }

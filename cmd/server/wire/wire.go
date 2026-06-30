@@ -5,7 +5,6 @@ package wire
 
 import (
 	"github.com/tokenlive/tokenlive-gateway/internal/handler"
-	"github.com/tokenlive/tokenlive-gateway/internal/job"
 	"github.com/tokenlive/tokenlive-gateway/internal/repository"
 	"github.com/tokenlive/tokenlive-gateway/internal/router"
 	"github.com/tokenlive/tokenlive-gateway/internal/server"
@@ -14,7 +13,6 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/jwt"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"github.com/tokenlive/tokenlive-gateway/pkg/server/http"
-	"github.com/tokenlive/tokenlive-gateway/pkg/sid"
 
 	"github.com/google/wire"
 	"github.com/spf13/viper"
@@ -28,13 +26,11 @@ var repositorySet = wire.NewSet(
 	//repository.NewMongo,
 	repository.NewRepository,
 	repository.NewTransaction,
-	repository.NewUserRepository,
 )
 
 
 var serviceSet = wire.NewSet(
 	service.NewService,
-	service.NewUserService,
 	service.NewApiKeyService,
 	service.NewModelService,
 	service.NewAliasService,
@@ -42,17 +38,12 @@ var serviceSet = wire.NewSet(
 
 var handlerSet = wire.NewSet(
 	handler.NewHandler,
-	handler.NewUserHandler,
 	handler.NewLLMHandler,
 	NewGatewayConfigManager,
 	NewGatewayEngine,
 	ProvideGatewayProvider,
 )
 
-var jobSet = wire.NewSet(
-	job.NewJob,
-	job.NewUserJob,
-)
 var serverSet = wire.NewSet(
 	server.NewHTTPServer,
 	server.NewJobServer,
@@ -75,10 +66,8 @@ func NewWire(*viper.Viper, *log.Logger) (*app.App, func(), error) {
 		repositorySet,
 		serviceSet,
 		handlerSet,
-		jobSet,
 		serverSet,
 		wire.Struct(new(router.RouterDeps), "*"),
-		sid.NewSid,
 		jwt.NewJwt,
 		newApp,
 	))
