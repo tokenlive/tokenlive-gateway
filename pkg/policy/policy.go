@@ -315,6 +315,11 @@ func mergeLimitPolicy(target, source *LimitPolicy) *LimitPolicy {
 	} else {
 		res.Conditions = target.Conditions
 	}
+	if len(source.LimitBy) > 0 {
+		res.LimitBy = source.LimitBy
+	} else {
+		res.LimitBy = target.LimitBy
+	}
 	return res
 }
 

@@ -27,15 +27,7 @@ func NewRequestLimitExecutor(ss core.StateStore) *RequestLimitExecutor {
 }
 
 func (e *RequestLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayContext, lp *policy.LimitPolicy) error {
-	id := gctx.UserID
-	if id == "" {
-		id = gctx.Tenant
-	}
-	policyKey := lp.ID
-	if policyKey == "" {
-		policyKey = lp.Name
-	}
-	limitKey := id + ":" + gctx.Model + ":" + policyKey
+	limitKey := getLimitKey(gctx, lp)
 	for i, sw := range lp.SlidingWindows {
 		window := time.Duration(sw.TimeWindowInMs) * time.Millisecond
 		if window <= 0 {
@@ -116,15 +108,7 @@ func (e *RequestLimitExecutor) rollback(ctx context.Context, limitKey string, wi
 }
 
 func (e *RequestLimitExecutor) Refund(ctx context.Context, gctx *core.GatewayContext, lp *policy.LimitPolicy) error {
-	id := gctx.UserID
-	if id == "" {
-		id = gctx.Tenant
-	}
-	policyKey := lp.ID
-	if policyKey == "" {
-		policyKey = lp.Name
-	}
-	limitKey := id + ":" + gctx.Model + ":" + policyKey
+	limitKey := getLimitKey(gctx, lp)
 	for _, sw := range lp.SlidingWindows {
 		window := time.Duration(sw.TimeWindowInMs) * time.Millisecond
 		if window <= 0 {

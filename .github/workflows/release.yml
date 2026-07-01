@@ -149,6 +149,19 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Extract version
+      id: version
+      run: |
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          VERSION_TMP="${GITHUB_REF#refs/tags/}"
+          if [[ "${VERSION_TMP}" == refs/heads/* ]] || [[ "${VERSION_TMP}" == refs/pull/* ]]; then
+            VERSION_TMP="v0.0.0-${GITHUB_SHA::7}"
+          fi
+          echo "VERSION=${VERSION_TMP}" >> $GITHUB_OUTPUT
+        fi
+
     - name: Download all binary artifacts
       uses: actions/download-artifact@v4
       with:
@@ -162,6 +175,7 @@ jobs:
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: ${{ steps.version.outputs.VERSION }}
         generate_release_notes: true
         files: |
           ${{ env.APP_NAME }}_linux_amd64.tar.gz

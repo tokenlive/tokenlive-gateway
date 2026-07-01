@@ -156,3 +156,62 @@ func TestRequestLimitExecutor_Execute(t *testing.T) {
 		}
 	})
 }
+
+func TestRequestLimitExecutor_LimitBy(t *testing.T) {
+	gctx := &core.GatewayContext{
+		Tenant: "tenant-ABC",
+		UserID: "user-456",
+		Model:  "gpt-3.5-turbo",
+	}
+
+	t.Run("LimitBy: tenant only", func(t *testing.T) {
+		lp := &policy.LimitPolicy{
+			Name:    "req-limit-policy",
+			Type:    "request",
+			LimitBy: []string{"tenant"},
+			SlidingWindows: []*policy.SlidingWindow{
+				{Threshold: 10, TimeWindowInMs: 60000},
+			},
+		}
+		mock := &mockRequestStore{incrVal: 1}
+		exec := NewRequestLimitExecutor(mock)
+		_ = exec.Execute(context.Background(), gctx, lp)
+		if mock.incrKey != "tenant-ABC:req-limit-policy:1m0s" {
+			t.Errorf("unexpected key for tenant limit: %s", mock.incrKey)
+		}
+	})
+
+	t.Run("LimitBy: model and tenant", func(t *testing.T) {
+		lp := &policy.LimitPolicy{
+			Name:    "req-limit-policy",
+			Type:    "request",
+			LimitBy: []string{"model", "tenant"},
+			SlidingWindows: []*policy.SlidingWindow{
+				{Threshold: 10, TimeWindowInMs: 60000},
+			},
+		}
+		mock := &mockRequestStore{incrVal: 1}
+		exec := NewRequestLimitExecutor(mock)
+		_ = exec.Execute(context.Background(), gctx, lp)
+		if mock.incrKey != "gpt-3.5-turbo:tenant-ABC:req-limit-policy:1m0s" {
+			t.Errorf("unexpected key for model+tenant limit: %s", mock.incrKey)
+		}
+	})
+
+	t.Run("LimitBy: global model only", func(t *testing.T) {
+		lp := &policy.LimitPolicy{
+			Name:    "req-limit-policy",
+			Type:    "request",
+			LimitBy: []string{"model"},
+			SlidingWindows: []*policy.SlidingWindow{
+				{Threshold: 10, TimeWindowInMs: 60000},
+			},
+		}
+		mock := &mockRequestStore{incrVal: 1}
+		exec := NewRequestLimitExecutor(mock)
+		_ = exec.Execute(context.Background(), gctx, lp)
+		if mock.incrKey != "gpt-3.5-turbo:req-limit-policy:1m0s" {
+			t.Errorf("unexpected key for model-only limit: %s", mock.incrKey)
+		}
+	})
+}

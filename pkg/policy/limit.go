@@ -15,6 +15,7 @@ type LimitPolicy struct {
 	RelationType   string                  `yaml:"relation_type" json:"relation_type"` // "AND", "OR"
 	Conditions     []*matcher.TagCondition `yaml:"conditions" json:"conditions"`
 	Estimator      *EstimatorConfig        `yaml:"estimator" json:"estimator"`
+	LimitBy        []string                `yaml:"limit_by" json:"limit_by"`
 }
 
 // EstimatorConfig 估算器配置

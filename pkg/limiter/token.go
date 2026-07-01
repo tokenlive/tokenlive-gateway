@@ -25,15 +25,7 @@ func NewTokenLimitExecutor(ss core.StateStore) *TokenLimitExecutor {
 }
 
 func (e *TokenLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayContext, lp *policy.LimitPolicy) error {
-	id := gctx.UserID
-	if id == "" {
-		id = gctx.Tenant
-	}
-	policyKey := lp.ID
-	if policyKey == "" {
-		policyKey = lp.Name
-	}
-	limitKey := id + ":" + gctx.Model + ":" + policyKey
+	limitKey := getLimitKey(gctx, lp)
 	estimate := EstimateInputTokens(gctx, lp) + EstimateOutputTokens(ctx, e.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
 	for i, sw := range lp.SlidingWindows {
 		window := time.Duration(sw.TimeWindowInMs) * time.Millisecond
@@ -116,15 +108,7 @@ func (e *TokenLimitExecutor) rollback(ctx context.Context, limitKey string, wind
 }
 
 func (e *TokenLimitExecutor) Refund(ctx context.Context, gctx *core.GatewayContext, lp *policy.LimitPolicy) error {
-	id := gctx.UserID
-	if id == "" {
-		id = gctx.Tenant
-	}
-	policyKey := lp.ID
-	if policyKey == "" {
-		policyKey = lp.Name
-	}
-	limitKey := id + ":" + gctx.Model + ":" + policyKey
+	limitKey := getLimitKey(gctx, lp)
 	estimate := EstimateInputTokens(gctx, lp) + EstimateOutputTokens(ctx, e.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
 	for _, sw := range lp.SlidingWindows {
 		window := time.Duration(sw.TimeWindowInMs) * time.Millisecond
