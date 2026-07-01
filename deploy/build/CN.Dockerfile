@@ -1,5 +1,6 @@
 ARG REGISTRY=docker.io
 FROM ${REGISTRY}/golang:1.25-alpine AS builder
+RUN set -eux && sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
 
 ARG APP_RELATIVE_PATH
 
@@ -7,11 +8,12 @@ COPY . /data/app
 WORKDIR /data/app
 
 RUN rm -rf /data/app/bin/
-RUN go mod download && go build -ldflags="-s -w" -o ./bin/tokenlive-gateway ${APP_RELATIVE_PATH}
+RUN export GOPROXY=https://goproxy.cn,direct && go mod download && go build -ldflags="-s -w" -o ./bin/tokenlive-gateway ${APP_RELATIVE_PATH}
 RUN mv config /data/app/bin/
 
 
 FROM ${REGISTRY}/alpine:3.16
+RUN set -eux && sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
 
 
 RUN apk add tzdata && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
@@ -21,7 +23,6 @@ RUN apk add tzdata && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
 
 ARG APP_ENV
 ENV APP_ENV=${APP_ENV}
-ENV APP_CONF=config/prod.yml
 
 WORKDIR /data/app
 COPY --from=builder /data/app/bin /data/app
