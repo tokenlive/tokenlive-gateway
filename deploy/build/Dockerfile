@@ -1,13 +1,17 @@
 ARG REGISTRY=docker.io
-FROM ${REGISTRY}/golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM ${REGISTRY}/golang:1.25-alpine AS builder
 
 ARG APP_RELATIVE_PATH
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /data/app
+COPY go.mod go.sum ./
+RUN go mod download
 
 COPY . /data/app
-WORKDIR /data/app
-
 RUN rm -rf /data/app/bin/
-RUN go mod download && go build -ldflags="-s -w" -o ./bin/tokenlive-gateway ${APP_RELATIVE_PATH}
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o ./bin/tokenlive-gateway ${APP_RELATIVE_PATH}
 RUN mv config /data/app/bin/
 
 
