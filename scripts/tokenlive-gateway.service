@@ -1,0 +1,15 @@
+[Unit]
+Description=TokenLive Gateway Service
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__HOME__/tokenlive-gateway
+ExecStart=__HOME__/tokenlive-gateway/tokenlive-gateway -conf config/prod.yml
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
