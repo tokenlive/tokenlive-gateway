@@ -18,13 +18,13 @@ data:
       driver: ${DB_DRIVER:sqlite}
       dsn: ${DB_DSN:storage/gateway.db?_busy_timeout=5000}
   redis:
-    addr: ${REDIS_ADDR:localhost:6379}
+    addr: ${REDIS_ADDR:}
     password: ${REDIS_PASSWORD:}
     db: ${REDIS_DB:0}
     read_timeout: 2s
     write_timeout: 2s
   clickhouse:
-    addr: ["${CLICKHOUSE_ADDR:127.0.0.1:9000}"]
+    addr: ["${CLICKHOUSE_ADDR:}"]
     database: "${CLICKHOUSE_DATABASE:tokenlive_gateway}"
     username: "${CLICKHOUSE_USERNAME:default}"
     password: "${CLICKHOUSE_PASSWORD:}"
@@ -57,8 +57,8 @@ gateway:
 # 运行指标上报配置
 otel:
   metrics:
-    enabled: ${OTEL_ENABLED:true}
-    endpoint: "${OTEL_ENDPOINT:192.168.68.6:4317}"
+    enabled: ${OTEL_ENABLED:false}
+    endpoint: "${OTEL_ENDPOINT:}"
     insecure: true
 
 # 策略触发事件发送配置

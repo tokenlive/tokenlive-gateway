@@ -173,10 +173,10 @@ func (c *RedisConfig) ToOptions() *redis.Options {
 }
 
 // NewRedis 创建共享的 *redis.Client 单例，带健康检查和 cleanup 函数。
-// cfg 为 nil 时返回 (nil, nil, nil)，调用方可据此做 graceful degradation。
+// cfg 为 nil 时返回 (nil, func() {}, nil)，调用方可据此做 graceful degradation。
 func NewRedis(cfg *RedisConfig) (*redis.Client, func(), error) {
 	if cfg == nil {
-		return nil, nil, nil
+		return nil, func() {}, nil
 	}
 
 	rdb := redis.NewClient(cfg.ToOptions())
@@ -185,7 +185,8 @@ func NewRedis(cfg *RedisConfig) (*redis.Client, func(), error) {
 	defer cancel()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		return nil, nil, fmt.Errorf("redis ping: %w", err)
+		fmt.Printf("Warning: redis ping failed: %v. Degrading to memory mode.\n", err)
+		return nil, func() {}, nil
 	}
 
 	cleanup := func() {
