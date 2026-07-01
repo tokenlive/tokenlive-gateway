@@ -25,7 +25,7 @@ jobs:
 
       - name: Compile Go Binary
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ./bin/server_linux_amd64 ./cmd/server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ./bin/tokenlive-gateway_linux_amd64 ./cmd/server
 
       - name: Setup SSH Key
         run: |
@@ -40,7 +40,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "rm -f ~/tokenlive-gateway/server"
           
           # 上传最新二进制和生产环境配置文件
-          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${{ secrets.SSH_PORT }} ./bin/server_linux_amd64 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/tokenlive-gateway/server
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${{ secrets.SSH_PORT }} ./bin/tokenlive-gateway_linux_amd64 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/tokenlive-gateway/server
           scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${{ secrets.SSH_PORT }} ./config/prod.yml ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/tokenlive-gateway/config/prod.yml
 
       - name: Restart Gateway Service

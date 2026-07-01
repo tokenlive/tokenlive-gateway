@@ -12,12 +12,18 @@ import (
 )
 
 type RedisGatewayProvider struct {
-	rdb *redis.Client
+	rdb          *redis.Client
+	apiKeyPepper string
 }
 
 func NewRedisGatewayProvider(rdb *redis.Client) *RedisGatewayProvider {
+	return NewRedisGatewayProviderWithAPIKeyPepper(rdb, "")
+}
+
+func NewRedisGatewayProviderWithAPIKeyPepper(rdb *redis.Client, apiKeyPepper string) *RedisGatewayProvider {
 	return &RedisGatewayProvider{
-		rdb: rdb,
+		rdb:          rdb,
+		apiKeyPepper: apiKeyPepper,
 	}
 }
 
@@ -97,14 +103,31 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 }
 
 func (p *RedisGatewayProvider) GetApiKey(ctx context.Context, apiKey string) (*HTTPApiKeyItem, error) {
-	redisKey := store.RedisKeyApiKey(apiKey)
-	fields, err := p.rdb.HGetAll(ctx, redisKey).Result()
-	if err != nil {
-		return nil, err
+	item, _, err := p.getApiKeyWithRedisKey(ctx, apiKey)
+	return item, err
+}
+
+func (p *RedisGatewayProvider) getApiKeyWithRedisKey(ctx context.Context, apiKey string) (*HTTPApiKeyItem, string, error) {
+	if p.apiKeyPepper == "" {
+		return nil, "", fmt.Errorf("llm.api_key_pepper is required for redis api key lookup")
 	}
 
-	if len(fields) == 0 || (fields["user_id"] == "" && fields["tenant"] == "") {
-		return nil, fmt.Errorf("api key not found in redis")
+	keyHash := HashAPIKey(apiKey, p.apiKeyPepper)
+	redisKey := store.RedisKeyApiKeyHash(keyHash)
+	fields, err := p.rdb.HGetAll(ctx, redisKey).Result()
+	if err != nil {
+		return nil, "", err
+	}
+	if item, ok := parseRedisApiKeyItem(apiKey, fields); ok {
+		return item, redisKey, nil
+	}
+
+	return nil, "", fmt.Errorf("api key not found in redis")
+}
+
+func parseRedisApiKeyItem(apiKey string, fields map[string]string) (*HTTPApiKeyItem, bool) {
+	if len(fields) == 0 || (fields["user_id"] == "" && fields["tenant"] == "" && fields["workspace_id"] == "") {
+		return nil, false
 	}
 
 	userID := fields["user_id"]
@@ -124,7 +147,7 @@ func (p *RedisGatewayProvider) GetApiKey(ctx context.Context, apiKey string) (*H
 		Status:      status,
 		Quota:       quota,
 		ExpiresAt:   expiresAt,
-	}, nil
+	}, true
 }
 
 func (p *RedisGatewayProvider) GetUserModels(ctx context.Context, userID string) ([]string, error) {
@@ -138,6 +161,9 @@ func (p *RedisGatewayProvider) GetTenantModels(ctx context.Context, tenantCode s
 }
 
 func (p *RedisGatewayProvider) DeductQuota(ctx context.Context, apiKey string, tokens int64) (int64, error) {
-	redisKey := store.RedisKeyApiKey(apiKey)
+	_, redisKey, err := p.getApiKeyWithRedisKey(ctx, apiKey)
+	if err != nil {
+		return 0, err
+	}
 	return p.rdb.HIncrBy(ctx, redisKey, "quota", -tokens).Result()
 }

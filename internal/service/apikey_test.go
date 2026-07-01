@@ -9,10 +9,17 @@ import (
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
+	"github.com/tokenlive/tokenlive-gateway/pkg/store"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
+
+const testAPIKeyPepper = "api-key-test-pepper"
+
+func testRedisAPIKeyHashKey(apiKey string) string {
+	return store.RedisKeyApiKeyHash(config.HashAPIKey(apiKey, testAPIKeyPepper))
+}
 
 func getProjectRoot() string {
 	_, b, _, _ := runtime.Caller(0)
@@ -43,11 +50,11 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 	rdb, logger := setupTestRedis(t)
 	defer rdb.Close()
 
-	svc := NewApiKeyService(config.NewRedisGatewayProvider(rdb), logger)
+	svc := NewApiKeyService(config.NewRedisGatewayProviderWithAPIKeyPepper(rdb, testAPIKeyPepper), logger)
 	ctx := context.Background()
 
 	testKey := "sk-test-mock-enterprise-apikey-888"
-	redisKey := "aigw:apikey:" + testKey
+	redisKey := testRedisAPIKeyHashKey(testKey)
 
 	// 1. 写入测试 Key 到 Redis
 	_, err := rdb.HSet(ctx, redisKey, map[string]interface{}{
@@ -111,11 +118,11 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 		}
 	})
 
-	// 4.1 测试 Portal API Key (同时包含 user_id, tenant 且包含 workspace_id)
-	t.Run("Portal API Key format with user, tenant and workspace_id", func(t *testing.T) {
-		portalKey := "sk-portal-mock-key-111"
-		portalRedisKey := "aigw:apikey:" + portalKey
-		_, err := rdb.HSet(ctx, portalRedisKey, map[string]interface{}{
+	// 4.1 测试 API Key 同时包含 user_id, tenant 且包含 workspace_id
+	t.Run("API Key format with user, tenant and workspace_id", func(t *testing.T) {
+		apiKey := "sk-api-key-mock-key-111"
+		apiKeyRedisKey := testRedisAPIKeyHashKey(apiKey)
+		_, err := rdb.HSet(ctx, apiKeyRedisKey, map[string]interface{}{
 			"user_id":      "usr-portal-user",
 			"tenant":       "company-a",
 			"workspace_id": "ws-portal-space",
@@ -124,13 +131,13 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 			"expires_at":   0,
 		}).Result()
 		if err != nil {
-			t.Fatalf("failed to set portal key in redis: %v", err)
+			t.Fatalf("failed to set api key in redis: %v", err)
 		}
-		defer rdb.Del(ctx, portalRedisKey)
+		defer rdb.Del(ctx, apiKeyRedisKey)
 
-		info, err := svc.ValidateKey(ctx, portalKey)
+		info, err := svc.ValidateKey(ctx, apiKey)
 		if err != nil {
-			t.Fatalf("ValidateKey failed for portal key: %v", err)
+			t.Fatalf("ValidateKey failed for api key: %v", err)
 		}
 		if info.UserID != "usr-portal-user" || info.Tenant != "company-a" || info.WorkspaceID != "ws-portal-space" {
 			t.Errorf("unexpected field mapping: %+v", info)
@@ -140,7 +147,7 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 	// 5. 测试 Key 被禁用
 	t.Run("Key Disabled check", func(t *testing.T) {
 		disabledKey := "sk-disabled-test-key-777"
-		dRedisKey := "aigw:apikey:" + disabledKey
+		dRedisKey := testRedisAPIKeyHashKey(disabledKey)
 		rdb.HSet(ctx, dRedisKey, map[string]interface{}{
 			"user_id": "disabled_usr",
 			"status":  2, // 禁用
@@ -160,7 +167,7 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 	// 6. 测试 Key 过期
 	t.Run("Key Expired check", func(t *testing.T) {
 		expiredKey := "sk-expired-test-key-666"
-		eRedisKey := "aigw:apikey:" + expiredKey
+		eRedisKey := testRedisAPIKeyHashKey(expiredKey)
 		rdb.HSet(ctx, eRedisKey, map[string]interface{}{
 			"user_id":    "expired_usr",
 			"status":     1,

@@ -109,7 +109,8 @@ func ProvideGatewayProvider(v *viper.Viper, rdb *redis.Client) (config.GatewayPr
 		if rdb == nil {
 			return nil, fmt.Errorf("config_source is set to 'redis', but redis is not configured")
 		}
-		return config.NewRedisGatewayProvider(rdb), nil
+		apiKeyPepper := v.GetString("llm.api_key_pepper")
+		return config.NewRedisGatewayProviderWithAPIKeyPepper(rdb, apiKeyPepper), nil
 	case "http":
 		adminURL := v.GetString("gateway.admin_url")
 		if adminURL == "" {
@@ -126,7 +127,8 @@ func ProvideGatewayProvider(v *viper.Viper, rdb *redis.Client) (config.GatewayPr
 		return config.NewHTTPGatewayProvider(adminURL, syncToken, tlsSkipVerify), nil
 	default:
 		// 兜底为 RedisProvider (rdb 可以为 nil)
-		return config.NewRedisGatewayProvider(rdb), nil
+		apiKeyPepper := v.GetString("llm.api_key_pepper")
+		return config.NewRedisGatewayProviderWithAPIKeyPepper(rdb, apiKeyPepper), nil
 	}
 }
 

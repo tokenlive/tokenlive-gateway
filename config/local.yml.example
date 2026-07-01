@@ -51,6 +51,9 @@ log:
 
 llm:
   enable_auth: true
+  # API Key HMAC pepper. Must match tokenlive-admin GATEWAY_API_KEY_PEPPER.
+  # Generate with: openssl rand -base64 32
+  api_key_pepper: ${GATEWAY_API_KEY_PEPPER:}
   enable_metrics: true
   enable_logging: true
   enable_active_health_check: false
@@ -247,5 +250,4 @@ access_log:
   batch:
     batch_size: 2000
     flush_interval: 2s
-
 

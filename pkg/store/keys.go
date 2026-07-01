@@ -11,8 +11,8 @@ func RedisKeyConfigEndpoints(modelCode string) string {
 	return "aigw:config:endpoints:" + modelCode
 }
 
-func RedisKeyApiKey(apiKey string) string {
-	return "aigw:apikey:" + apiKey
+func RedisKeyApiKeyHash(keyHash string) string {
+	return "aigw:apikey_hash:" + keyHash
 }
 
 func RedisKeyUserModels(userID string) string {
