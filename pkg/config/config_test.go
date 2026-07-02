@@ -39,14 +39,14 @@ func TestCustomExpandEnv(t *testing.T) {
 
 	// 1. 测试未设置环境变量时，返回默认值
 	input := `
-driver: ${DB_DRIVER:sqlite}
+driver: ${DB_DRIVER:sqlite3}
 dsn: ${DB_DSN:storage/gateway.db?_busy_timeout=5000}
 redis_pwd: ${REDIS_PASSWORD:}
 otel: "${OTEL_ENDPOINT:192.168.68.6:4317}"
 mongo: ${MONGO_URI:mongodb://root:123456@localhost:27017}
 `
 	expected := `
-driver: sqlite
+driver: sqlite3
 dsn: storage/gateway.db?_busy_timeout=5000
 redis_pwd: 
 otel: "192.168.68.6:4317"

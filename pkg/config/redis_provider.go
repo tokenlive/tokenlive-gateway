@@ -32,6 +32,9 @@ func (p *RedisGatewayProvider) GetConfig(ctx context.Context, modelCode string) 
 }
 
 func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userID, tenantCode string) ([]HTTPPolicyItem, error) {
+	if p.rdb == nil {
+		return nil, nil
+	}
 	var items []HTTPPolicyItem
 
 	// 1. 查询用户策略 (Level 5 & Level 2)
@@ -108,6 +111,9 @@ func (p *RedisGatewayProvider) GetApiKey(ctx context.Context, apiKey string) (*H
 }
 
 func (p *RedisGatewayProvider) getApiKeyWithRedisKey(ctx context.Context, apiKey string) (*HTTPApiKeyItem, string, error) {
+	if p.rdb == nil {
+		return nil, "", fmt.Errorf("redis client is not initialized")
+	}
 	if p.apiKeyPepper == "" {
 		return nil, "", fmt.Errorf("llm.api_key_pepper is required for redis api key lookup")
 	}
@@ -151,16 +157,25 @@ func parseRedisApiKeyItem(apiKey string, fields map[string]string) (*HTTPApiKeyI
 }
 
 func (p *RedisGatewayProvider) GetUserModels(ctx context.Context, userID string) ([]string, error) {
+	if p.rdb == nil {
+		return nil, nil
+	}
 	userKey := "aigw:user:" + userID + ":models"
 	return p.rdb.SMembers(ctx, userKey).Result()
 }
 
 func (p *RedisGatewayProvider) GetTenantModels(ctx context.Context, tenantCode string) ([]string, error) {
+	if p.rdb == nil {
+		return nil, nil
+	}
 	tenantKey := "aigw:tenant:" + tenantCode + ":models"
 	return p.rdb.SMembers(ctx, tenantKey).Result()
 }
 
 func (p *RedisGatewayProvider) DeductQuota(ctx context.Context, apiKey string, tokens int64) (int64, error) {
+	if p.rdb == nil {
+		return 0, fmt.Errorf("redis client is not initialized")
+	}
 	_, redisKey, err := p.getApiKeyWithRedisKey(ctx, apiKey)
 	if err != nil {
 		return 0, err

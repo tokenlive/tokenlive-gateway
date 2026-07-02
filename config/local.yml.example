@@ -16,7 +16,7 @@ security:
 data:
   db:
     user:
-      driver: ${DB_DRIVER:sqlite}
+      driver: ${DB_DRIVER:sqlite3}
       dsn: ${DB_DSN:storage/gateway.db?_busy_timeout=5000}
 #     user:
 #       driver: mysql

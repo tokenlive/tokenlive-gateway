@@ -91,13 +91,13 @@ func NewDB(conf *viper.Viper, l *log.Logger) *gorm.DB {
 		}), &gorm.Config{
 			Logger: logger,
 		})
-	case "sqlite":
+	case "sqlite3":
 		dbPath := strings.Split(dsn, "?")[0]
 		if dbPath != ":memory:" {
 			dir := filepath.Dir(dbPath)
 			if dir != "." && dir != "/" && dir != "" {
 				if err := os.MkdirAll(dir, 0755); err != nil {
-					panic(fmt.Errorf("create sqlite db dir %s failed: %w", dir, err))
+					panic(fmt.Errorf("create sqlite3 db dir %s failed: %w", dir, err))
 				}
 			}
 		}
