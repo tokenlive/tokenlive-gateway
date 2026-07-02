@@ -14,6 +14,12 @@ English | [中文版](./README-zh.md)
 
 TokenLive is a high-performance and extensible LLM API gateway implemented in Go, drawing inspiration from the Gin Shell + Engine Pipeline architectural concepts of [joylive-agent](https://github.com/jd-opensource/joylive-agent). Designed as an enterprise-grade gateway for large language model (LLM) computing ecosystems, it is built on a mature microservice governance model. It features a rich set of built-in intelligent routing and traffic governance policies, inherently supporting massive concurrent traffic and flexible horizontal scaling. By deeply optimizing the request pipeline, the gateway significantly reduces LLM invocation failure rates, delivering rock-solid stability for high-concurrency, high-availability AI application scenarios.
 
+### Online Demo
+
+- **Demo URL**: [https://tokenlive.store](https://tokenlive.store)
+- **Username**: `admin`
+- **Password**: `tokenlive`
+
 ### Core requestTypes
 
 TokenLive is tailored for large-scale language model ecosystems and high-concurrency production environments, offering five core requestTypes:

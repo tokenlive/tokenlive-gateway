@@ -14,6 +14,12 @@
 
 TokenLive 是一个高性能、可扩展的LLM API网关，借鉴[joylive-agent](https://github.com/jd-opensource/joylive-agent)的Gin Shell + Engine Pipeline架构理念，使用Go实现。是一款专为大模型（LLM）算力生态打造的高性能、企业级大模型网关。网关基于成熟的微服务治理模型设计，内置丰富的智能路由与流量治理策略，天然支持海量并发流量与弹性横向扩容。通过深度优化请求链路，网关能够极大降低LLM调用失败率，为高并发、高可用的AI应用场景提供坚如磐石的稳定性保障。
 
+### 在线体验
+
+- **体验地址**：[https://tokenlive.store](https://tokenlive.store)
+- **演示账号**：`admin`
+- **演示密码**：`tokenlive`
+
 ### 核心能力
 
 TokenLive 专为大模型算力生态及高并发生产环境打造，具备以下五大核心能力：
