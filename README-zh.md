@@ -144,6 +144,10 @@ make build
 ./bin/tokenlive-gateway
 ```
 
+### 生产部署
+
+对于生产环境，强烈推荐使用统一的部署项目 [tokenlive-deploy](https://github.com/tokenlive/tokenlive-deploy) 来一键部署 TokenLive 全家桶（包含 Admin 控制台、Gateway 网关、Redis、Prometheus 以及 Caddy 反向代理）。
+
 ### 调用 API
 
 ```bash

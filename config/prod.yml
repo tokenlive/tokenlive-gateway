@@ -21,8 +21,8 @@ data:
     addr: ${REDIS_ADDR:}
     password: ${REDIS_PASSWORD:}
     db: ${REDIS_DB:0}
-    read_timeout: 2s
-    write_timeout: 2s
+    read_timeout: 10s
+    write_timeout: 10s
   clickhouse:
     addr: ["${CLICKHOUSE_ADDR:}"]
     database: "${CLICKHOUSE_DATABASE:tokenlive_gateway}"

@@ -144,6 +144,10 @@ make build
 ./bin/tokenlive-gateway
 ```
 
+### Production Deployment
+
+For production environments, we highly recommend using the unified deploy project: [tokenlive-deploy](https://github.com/tokenlive/tokenlive-deploy) to deploy the entire TokenLive stack (including Admin Console, Gateway, Redis, Prometheus, and Caddy reverse proxy) with a single command.
+
 ### Call API
 
 ```bash
