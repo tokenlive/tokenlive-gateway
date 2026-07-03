@@ -198,12 +198,33 @@ func (s *RedisStateStore) StickySet(ctx context.Context, sessionKey string, endp
 // 使用时间戳（毫秒）作为 score，latency（纳秒）编码在 member 中："<latency_ns>:<rand>"。
 // 原子性地完成：添加样本、设置 TTL、清理旧样本。
 func (s *RedisStateStore) RecordLatency(ctx context.Context, endpointID string, latency time.Duration) error {
-	redisKey := s.key("latency", endpointID)
+	return s.recordLatencyTo(ctx, s.key("latency", endpointID), latency)
+}
+
+// GetAvgLatency 返回 endpointID 在 window 时间窗口内的平均延迟。
+// 若没有样本则返回 0。
+func (s *RedisStateStore) GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
+	return s.getAvgLatencyFrom(ctx, s.key("latency", endpointID), window)
+}
+
+// RecordTTFT 记录一次首包耗时（TTFT）采样，使用独立 key 与整单耗时分离。
+func (s *RedisStateStore) RecordTTFT(ctx context.Context, endpointID string, ttft time.Duration) error {
+	return s.recordLatencyTo(ctx, s.key("latency_ttft", endpointID), ttft)
+}
+
+// GetAvgTTFT 返回 endpointID 在 window 时间窗口内的平均首包耗时。
+// 若没有样本则返回 0。
+func (s *RedisStateStore) GetAvgTTFT(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
+	return s.getAvgLatencyFrom(ctx, s.key("latency_ttft", endpointID), window)
+}
+
+// recordLatencyTo 向指定 Redis key 记录一次延迟采样。
+// member 格式 "<latency_ns>:<rand>"，score 为毫秒时间戳；Lua 脚本原子完成 ZADD + PEXPIRE + ZREMRANGEBYRANK。
+func (s *RedisStateStore) recordLatencyTo(ctx context.Context, redisKey string, latency time.Duration) error {
 	now := float64(s.nowFunc().UnixMilli())
 	member := fmt.Sprintf("%d:%d", latency.Nanoseconds(), rand.Int63())
 	ttlMs := redisLatencyKeyTTL.Milliseconds()
 
-	// 使用 Lua 脚本原子性地完成：ZADD + PEXPIRE + ZREMRANGEBYRANK
 	_, err := s.recordLatencyScript.Eval(ctx, s.client,
 		[]string{redisKey},
 		now, member, s.latencyMax, ttlMs,
@@ -211,15 +232,11 @@ func (s *RedisStateStore) RecordLatency(ctx context.Context, endpointID string, 
 	if err != nil {
 		return fmt.Errorf("redis record latency: %w", err)
 	}
-
 	return nil
 }
 
-// GetAvgLatency 返回 endpointID 在 window 时间窗口内的平均延迟。
-// 若没有样本则返回 0。
-func (s *RedisStateStore) GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
-	redisKey := s.key("latency", endpointID)
-
+// getAvgLatencyFrom 从指定 Redis key 读取 window 时间窗口内的平均延迟。
+func (s *RedisStateStore) getAvgLatencyFrom(ctx context.Context, redisKey string, window time.Duration) (time.Duration, error) {
 	now := s.nowFunc()
 	since := float64(now.Add(-window).UnixMilli())
 	to := float64(now.UnixMilli())

@@ -170,6 +170,7 @@ type MemoryStateStore struct {
 	tokenBuckets map[string]*tokenBucketEntry
 	sticky       map[string]*stickyEntry
 	latencies    map[string]*latencyRing
+	ttfts        map[string]*latencyRing // 首包耗时（TTFT）独立序列，与整单耗时分离
 	emas         map[string]*emaEntry
 }
 
@@ -180,6 +181,7 @@ func NewMemoryStateStore() *MemoryStateStore {
 		tokenBuckets: make(map[string]*tokenBucketEntry),
 		sticky:       make(map[string]*stickyEntry),
 		latencies:    make(map[string]*latencyRing),
+		ttfts:        make(map[string]*latencyRing),
 		emas:         make(map[string]*emaEntry),
 	}
 }
@@ -283,9 +285,11 @@ func (s *MemoryStateStore) StickySet(ctx context.Context, sessionKey string, end
 
 // --- 延迟统计 ---
 
-func (s *MemoryStateStore) getOrCreateLatencyRing(endpointID string) *latencyRing {
+// getOrCreateLatencyRing 从指定 ring map 中获取或创建 endpointID 对应的延迟环形缓冲。
+// m 由调用方提供，可指向 latencies（整单耗时）或 ttfts（首包耗时），实现两套序列共享底层逻辑。
+func (s *MemoryStateStore) getOrCreateLatencyRing(m map[string]*latencyRing, endpointID string) *latencyRing {
 	s.mu.RLock()
-	if r, ok := s.latencies[endpointID]; ok {
+	if r, ok := m[endpointID]; ok {
 		s.mu.RUnlock()
 		return r
 	}
@@ -294,17 +298,17 @@ func (s *MemoryStateStore) getOrCreateLatencyRing(endpointID string) *latencyRin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if r, ok := s.latencies[endpointID]; ok {
+	if r, ok := m[endpointID]; ok {
 		return r
 	}
 	r := newLatencyRing(latencyRingCapacity)
-	s.latencies[endpointID] = r
+	m[endpointID] = r
 	return r
 }
 
 // RecordLatency 记录一次延迟采样。
 func (s *MemoryStateStore) RecordLatency(ctx context.Context, endpointID string, latency time.Duration) error {
-	r := s.getOrCreateLatencyRing(endpointID)
+	r := s.getOrCreateLatencyRing(s.latencies, endpointID)
 	r.add(latency, time.Now())
 	return nil
 }
@@ -312,7 +316,25 @@ func (s *MemoryStateStore) RecordLatency(ctx context.Context, endpointID string,
 // GetAvgLatency 返回 endpointID 在 window 时间窗口内的平均延迟。
 // 若没有样本则返回 0 和 false。
 func (s *MemoryStateStore) GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
-	r := s.getOrCreateLatencyRing(endpointID)
+	r := s.getOrCreateLatencyRing(s.latencies, endpointID)
+	avg, ok := r.avg(window, time.Now())
+	if !ok {
+		return 0, nil
+	}
+	return avg, nil
+}
+
+// RecordTTFT 记录一次首包耗时（TTFT）采样，使用独立序列与整单耗时分离。
+func (s *MemoryStateStore) RecordTTFT(ctx context.Context, endpointID string, ttft time.Duration) error {
+	r := s.getOrCreateLatencyRing(s.ttfts, endpointID)
+	r.add(ttft, time.Now())
+	return nil
+}
+
+// GetAvgTTFT 返回 endpointID 在 window 时间窗口内的平均首包耗时。
+// 若没有样本则返回 0。
+func (s *MemoryStateStore) GetAvgTTFT(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
+	r := s.getOrCreateLatencyRing(s.ttfts, endpointID)
 	avg, ok := r.avg(window, time.Now())
 	if !ok {
 		return 0, nil

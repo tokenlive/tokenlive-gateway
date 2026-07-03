@@ -10,11 +10,13 @@ import (
 type mockStateStore struct {
 	mu      sync.Mutex
 	latency map[string]time.Duration
+	ttft    map[string]time.Duration
 }
 
 func newMockStateStore() *mockStateStore {
 	return &mockStateStore{
 		latency: make(map[string]time.Duration),
+		ttft:    make(map[string]time.Duration),
 	}
 }
 
@@ -38,6 +40,22 @@ func (m *mockStateStore) GetAvgLatency(ctx context.Context, endpointID string, w
 	defer m.mu.Unlock()
 	if lat, ok := m.latency[endpointID]; ok {
 		return lat, nil
+	}
+	return 0, nil
+}
+
+func (m *mockStateStore) RecordTTFT(ctx context.Context, endpointID string, ttft time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ttft[endpointID] = ttft
+	return nil
+}
+
+func (m *mockStateStore) GetAvgTTFT(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if v, ok := m.ttft[endpointID]; ok {
+		return v, nil
 	}
 	return 0, nil
 }

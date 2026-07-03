@@ -73,6 +73,145 @@ func (ci *ClusterInvoker) SetEnableActive(enable bool) {
 	ci.enableActive = enable
 }
 
+// 失败惩罚延迟的默认参数。
+const (
+	defaultFailurePenalty  = 3.0               // 历史平均 × 3
+	defaultFailureMax      = 30 * time.Second  // 惩罚上限
+	minFailurePenalty      = 1.0               // 倍数下限，>= 1 以免"奖赏"失败
+	defaultLatencyWindowLL = 5 * time.Minute   // 最低延迟策略默认窗口
+)
+
+// recordFailurePenalty 将失败请求作为"代理延迟"写入延迟统计序列。
+// 代理延迟 = 该端点历史平均 × 惩罚倍数（无样本用上限值），写入对应 metric 的序列
+// （total 写 RecordLatency，ttft 写 RecordTTFT）。可经 latency_failure_penalty=0 关闭。
+// 这样失败端点的 latency 统计不再虚低，避免恢复期被 least_latency 盲目选中。
+func (ci *ClusterInvoker) recordFailurePenalty(gctx *core.GatewayContext) {
+	if gctx == nil || gctx.SelectedEndpoint == nil {
+		return
+	}
+	params := lbParams(gctx)
+	multiplier, maxPenalty := resolveFailurePenaltyConfig(params)
+	if multiplier == 0 {
+		// 显式关闭失败计入
+		return
+	}
+	if multiplier < minFailurePenalty {
+		multiplier = minFailurePenalty
+	}
+
+	window, metric := resolveLatencyConfig(params)
+	epID := gctx.SelectedEndpoint.ID
+
+	// 历史平均读取：按 metric 选序列
+	histAvg := func() (time.Duration, error) {
+		if metric == "ttft" {
+			return ci.stateStore.GetAvgTTFT(gctx.Ctx, epID, window)
+		}
+		return ci.stateStore.GetAvgLatency(gctx.Ctx, epID, window)
+	}
+	avg, err := histAvg()
+	if err != nil || avg <= 0 {
+		// 无历史样本，用上限值作为惩罚
+		ci.writePenalty(gctx, metric, maxPenalty)
+		return
+	}
+	penalty := time.Duration(float64(avg) * multiplier)
+	if penalty > maxPenalty {
+		penalty = maxPenalty
+	}
+	ci.writePenalty(gctx, metric, penalty)
+}
+
+// writePenalty 按指标把惩罚延迟写入对应序列。
+func (ci *ClusterInvoker) writePenalty(gctx *core.GatewayContext, metric string, penalty time.Duration) {
+	epID := gctx.SelectedEndpoint.ID
+	if metric == "ttft" {
+		if err := ci.stateStore.RecordTTFT(gctx.Ctx, epID, penalty); err != nil {
+			gctx.Logger(ci.logger).Warn("record ttft penalty failed",
+				zap.String("endpoint", epID), zap.Error(err))
+		}
+		return
+	}
+	if err := ci.stateStore.RecordLatency(gctx.Ctx, epID, penalty); err != nil {
+		gctx.Logger(ci.logger).Warn("record latency penalty failed",
+			zap.String("endpoint", epID), zap.Error(err))
+	}
+}
+
+// lbParams 安全取出 LoadBalancePolicy.Params。
+func lbParams(gctx *core.GatewayContext) map[string]interface{} {
+	if gctx == nil || gctx.Policy == nil || gctx.Policy.LoadBalancePolicy == nil {
+		return nil
+	}
+	return gctx.Policy.LoadBalancePolicy.Params
+}
+
+// resolveLatencyConfig 从 Params 读取 latency_window（默认 5min）与 latency_metric（默认 total）。
+func resolveLatencyConfig(params map[string]interface{}) (window time.Duration, metric string) {
+	window = defaultLatencyWindowLL
+	metric = "total"
+	if params == nil {
+		return
+	}
+	if v, ok := params["latency_window"]; ok {
+		switch x := v.(type) {
+		case float64:
+			if x > 0 {
+				window = time.Duration(x) * time.Second
+			}
+		case int:
+			if x > 0 {
+				window = time.Duration(x) * time.Second
+			}
+		case string:
+			if d, err := time.ParseDuration(x); err == nil && d > 0 {
+				window = d
+			}
+		}
+	}
+	if v, ok := params["latency_metric"]; ok {
+		if s, ok := v.(string); ok && (s == "ttft" || s == "total") {
+			metric = s
+		}
+	}
+	return
+}
+
+// resolveFailurePenaltyConfig 从 Params 读取失败惩罚倍数与上限。
+// multiplier=0 表示显式关闭失败计入。
+func resolveFailurePenaltyConfig(params map[string]interface{}) (multiplier float64, maxPenalty time.Duration) {
+	multiplier = defaultFailurePenalty
+	maxPenalty = defaultFailureMax
+	if params == nil {
+		return
+	}
+	if v, ok := params["latency_failure_penalty"]; ok {
+		switch x := v.(type) {
+		case float64:
+			multiplier = x
+		case int:
+			multiplier = float64(x)
+		}
+	}
+	if v, ok := params["latency_failure_max"]; ok {
+		switch x := v.(type) {
+		case float64:
+			if x > 0 {
+				maxPenalty = time.Duration(x) * time.Second
+			}
+		case int:
+			if x > 0 {
+				maxPenalty = time.Duration(x) * time.Second
+			}
+		case string:
+			if d, err := time.ParseDuration(x); err == nil && d > 0 {
+				maxPenalty = d
+			}
+		}
+	}
+	return
+}
+
 // RouterChain 返回路由器链，用于测试断言
 func (ci *ClusterInvoker) RouterChain() []core.Router {
 	return ci.routerChain
@@ -296,6 +435,16 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 				ci.cbManager.RecordSuccess(gctx, gctx.SelectedEndpoint)
 			}
 			ci.stateStore.RecordLatency(gctx.Ctx, gctx.SelectedEndpoint.ID, time.Since(gctx.UpstreamConnect))
+			// 流式请求记录首包耗时到独立 TTFT 序列，供 latency_metric=ttft 的最低延迟策略查询。
+			// 非流式请求 TTFT 为 0，跳过。
+			if gctx.TTFT > 0 {
+				if err := ci.stateStore.RecordTTFT(gctx.Ctx, gctx.SelectedEndpoint.ID, gctx.TTFT); err != nil {
+					gctx.Logger(ci.logger).Warn("record ttft failed",
+						zap.String("endpoint", gctx.SelectedEndpoint.ID),
+						zap.Error(err),
+					)
+				}
+			}
 			return nil
 		}
 
@@ -310,6 +459,10 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		// 记录熔断失败 (不论后续是否可以重试，该 attempt 的失败都应当记录到熔断器中)
 		ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, err)
+
+		// 失败计入延迟统计：用"历史平均×惩罚倍数"作为代理延迟写入，
+		// 避免失败端点 latency 统计虚低、恢复期被盲目选中。可经 latency_failure_penalty=0 关闭。
+		ci.recordFailurePenalty(gctx)
 
 		// 流式已发首字节，不能重试
 		if gctx.TTFT > 0 {

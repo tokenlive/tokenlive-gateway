@@ -182,7 +182,7 @@ func TestLatency_WindowFiltering(t *testing.T) {
 	ctx := context.Background()
 
 	// 直接注入旧样本
-	r := s.getOrCreateLatencyRing("ep:1")
+	r := s.getOrCreateLatencyRing(s.latencies, "ep:1")
 	r.add(1*time.Second, time.Now().Add(-2*time.Hour))
 	r.add(100*time.Millisecond, time.Now())
 
@@ -335,4 +335,37 @@ func TestEMA_Concurrent(t *testing.T) {
 	finalVal, err := s.GetEMA(ctx, key)
 	require.NoError(t, err)
 	assert.Greater(t, finalVal, float64(0))
+}
+
+// ==================== TTFT 独立序列 ====================
+
+func TestTTFT_Basic(t *testing.T) {
+	s := NewMemoryStateStore()
+	ctx := context.Background()
+
+	epID := "ep:ttft"
+	s.RecordTTFT(ctx, epID, 100*time.Millisecond)
+	s.RecordTTFT(ctx, epID, 200*time.Millisecond)
+	s.RecordTTFT(ctx, epID, 300*time.Millisecond)
+
+	// TTFT 平均 200ms
+	avg, err := s.GetAvgTTFT(ctx, epID, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 200*time.Millisecond, avg)
+
+	// TTFT 序列与 total 序列独立:互不污染
+	s.RecordLatency(ctx, epID, 1*time.Second) // total 写入大值
+	avgTTFT, _ := s.GetAvgTTFT(ctx, epID, time.Hour)
+	avgTotal, _ := s.GetAvgLatency(ctx, epID, time.Hour)
+	assert.Equal(t, 200*time.Millisecond, avgTTFT) // TTFT 未变
+	assert.Equal(t, 1*time.Second, avgTotal) // total 独立
+}
+
+func TestTTFT_Empty(t *testing.T) {
+	s := NewMemoryStateStore()
+	ctx := context.Background()
+
+	avg, err := s.GetAvgTTFT(ctx, "ep:nonexistent", time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, time.Duration(0), avg)
 }

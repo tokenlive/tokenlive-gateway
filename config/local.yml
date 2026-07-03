@@ -260,3 +260,30 @@ access_log:
   batch:
     batch_size: 2000
     flush_interval: 2s
+
+# ==================== least_latency 负载均衡策略配置示例 ====================
+# 策略配置可以在 policy.Policies 数组或策略源 Redis 中配置
+# 其中 load_balance_policy.params 参数示例:
+#
+#   load_balance_policy:
+#     type: "least_latency"
+#     params:
+#       latency_window: 300            # 统计窗口,秒数或 Go Duration 字符串(例如 "5m"),默认 300
+#       latency_metric: "total"        # 选择指标: "total"(默认,整单耗时) 或 "ttft"(首包耗时,仅流式有意义)
+#       latency_failure_penalty: 3     # 失败惩罚倍数,默认 3;设为 0 可关闭失败计入延迟统计
+#       latency_failure_max: 30        # 失败惩罚上限,秒数或 Duration 字符串,默认 30
+#
+# pipeline 配置负载均衡器示例:
+#   pipelines:
+#     chat_completion:
+#       invoker:
+#         load_balancer: "least_latency"
+#
+# 指标说明:
+#  - total: 整端到端总耗时(请求开始→响应结束),适合非流式或对完成时间敏感的场景
+#  - ttft: Time To First Token,首包到达耗时(请求开始→第一个字节),仅流式请求有意义
+#
+# 失败计入说明:
+#  - 失败请求会被写入延迟统计,其值为该端点历史平均×惩罚倍数(或上限,无历史时)
+#  - 这样可以避免失败端点的延迟统计看起来"总是很快",导致恢复期被盲目选中
+#  - 可通过设置 latency_failure_penalty: 0 关闭

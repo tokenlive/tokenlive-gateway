@@ -163,6 +163,14 @@ func (s *chaosStateStore) GetAvgLatency(ctx context.Context, endpointID string, 
 	return 0, nil
 }
 
+func (s *chaosStateStore) RecordTTFT(ctx context.Context, endpointID string, ttft time.Duration) error {
+	return nil
+}
+
+func (s *chaosStateStore) GetAvgTTFT(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
+	return 0, nil
+}
+
 func (s *chaosStateStore) GetEMA(ctx context.Context, key string) (float64, error) {
 	return 0.0001, nil
 }

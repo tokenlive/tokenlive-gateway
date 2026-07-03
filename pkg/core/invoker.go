@@ -49,9 +49,13 @@ type StateStore interface {
 	StickyGet(ctx context.Context, sessionKey string) (endpointID string, err error)
 	StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error
 
-	// 延迟统计
+	// 延迟统计（整单耗时）
 	RecordLatency(ctx context.Context, endpointID string, latency time.Duration) error
 	GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error)
+
+	// 延迟统计（首包耗时 TTFT，独立序列，不与整单耗时混淆）
+	RecordTTFT(ctx context.Context, endpointID string, ttft time.Duration) error
+	GetAvgTTFT(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error)
 
 	// EMA (指数移动平均) 统计与获取
 	UpdateEMA(ctx context.Context, key string, actual int64, alpha float64) (float64, error)
