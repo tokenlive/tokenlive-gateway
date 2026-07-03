@@ -196,3 +196,64 @@ func TestValidateFilter_Messages_ValidWithOptional(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
+
+func TestValidateFilter_GeminiGenerateContent(t *testing.T) {
+	knownModels := map[string]bool{"gemini-2.5-flash": true}
+	validator := mockModelValidator(func(ctx context.Context, model string, tenant string, userID string) (bool, error) {
+		return knownModels[model], nil
+	})
+	f := NewValidateFilter(validator)
+
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name: "valid minimal native body",
+			body: `{"contents":[{"parts":[{"text":"hi"}]}]}`,
+		},
+		{
+			name:    "invalid JSON",
+			body:    `{broken`,
+			wantErr: "invalid JSON body",
+		},
+		{
+			name:    "missing contents",
+			body:    `{"generationConfig":{"temperature":0.2}}`,
+			wantErr: "contents is required",
+		},
+		{
+			name:    "empty contents",
+			body:    `{"contents":[]}`,
+			wantErr: "contents is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gctx := &core.GatewayContext{
+				Model:       "gemini-2.5-flash",
+				RequestType: core.RequestTypeGeminiGenerateContent,
+				RawBody:     []byte(tt.body),
+			}
+
+			err := f.OnRequest(gctx)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q", tt.wantErr)
+			}
+			if getHTTPErrorCode(err) != http.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d", getHTTPErrorCode(err))
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}

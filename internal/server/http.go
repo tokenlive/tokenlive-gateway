@@ -73,6 +73,8 @@ func NewHTTPServer(
 	// 注册 LLM 路由
 	if deps.LLMHandler != nil {
 		router.InitLLMRouter(deps, v1)
+		v1beta := s.Group("/v1beta")
+		router.InitGeminiRouter(deps, v1beta)
 	}
 
 	return s

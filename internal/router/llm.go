@@ -63,3 +63,37 @@ func InitLLMRouter(deps RouterDeps, r *gin.RouterGroup) {
 		llmGroup.GET("/models", deps.LLMHandler.ListModels)
 	}
 }
+
+// InitGeminiRouter 初始化 Gemini 原生协议路由。
+func InitGeminiRouter(deps RouterDeps, r *gin.RouterGroup) {
+	cfg := deps.Config
+	logger := deps.Logger.Logger
+
+	enableAuth := true
+	if cfg.IsSet("llm.enable_auth") {
+		enableAuth = cfg.GetBool("llm.enable_auth")
+	}
+
+	enableLogging := true
+	if cfg.IsSet("llm.enable_logging") {
+		enableLogging = cfg.GetBool("llm.enable_logging")
+	}
+
+	geminiGroup := r.Group("/")
+	if enableLogging {
+		geminiGroup.Use(middleware.NewLoggingMiddleware(&middleware.LoggingConfig{
+			Logger:      logger,
+			EnableBody:  true,
+			MaxBodySize: 4096,
+			SkipPaths:   []string{"/health", "/metrics"},
+		}))
+	}
+	if enableAuth {
+		geminiGroup.Use(middleware.NewAuthMiddleware(&middleware.AuthConfig{
+			Validator: deps.ApiKeyService,
+			Logger:    logger,
+		}))
+	}
+
+	geminiGroup.POST("/models/*modelMethod", deps.LLMHandler.GeminiGenerateContent)
+}

@@ -87,6 +87,21 @@ func AnthropicTokenExtractor(data string) (int, int, int, int) {
 	return in, out, cached, cacheCreated
 }
 
+// GeminiTokenExtractor 从 Gemini generateContent/streamGenerateContent 响应中提取 token。
+// 格式: {"usageMetadata":{"promptTokenCount":N,"candidatesTokenCount":N,"totalTokenCount":N}}
+func GeminiTokenExtractor(data string) (int, int, int, int) {
+	var payload struct {
+		UsageMetadata *struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if err := json.Unmarshal([]byte(data), &payload); err != nil || payload.UsageMetadata == nil {
+		return 0, 0, 0, 0
+	}
+	return payload.UsageMetadata.PromptTokenCount, payload.UsageMetadata.CandidatesTokenCount, 0, 0
+}
+
 // ExtractContentLength 提取增量响应文本字符长度（用于流式异常中断时进行 token 数估算）
 func ExtractContentLength(protocol string, data string) int {
 	if data == "" || data == "[DONE]" {
@@ -101,6 +116,25 @@ func ExtractContentLength(protocol string, data string) int {
 		}
 		if err := json.Unmarshal([]byte(data), &payload); err == nil && payload.Delta != nil {
 			return len(payload.Delta.Text)
+		}
+	case "gemini":
+		var payload struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err == nil {
+			total := 0
+			for _, c := range payload.Candidates {
+				for _, p := range c.Content.Parts {
+					total += len(p.Text)
+				}
+			}
+			return total
 		}
 	default: // 默认按 OpenAI 格式解析
 		var payload struct {

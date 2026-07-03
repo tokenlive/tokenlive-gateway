@@ -90,6 +90,11 @@ func (h *LLMHandler) Responses(c *gin.Context) {
 	h.engine.HandleRequest(c.Writer, c.Request)
 }
 
+// GeminiGenerateContent 处理 Gemini 原生 generateContent / streamGenerateContent 协议请求。
+func (h *LLMHandler) GeminiGenerateContent(c *gin.Context) {
+	h.engine.HandleRequest(c.Writer, c.Request)
+}
+
 // ListModels 返回当前 API Key 授权的模型列表（区分 ToB 与 ToC 逻辑，不再调用 Engine）。
 func (h *LLMHandler) ListModels(c *gin.Context) {
 	tenant := c.GetString("tenant")

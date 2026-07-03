@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 )
 
@@ -45,7 +46,11 @@ func (e *Engine) parseRequest(gctx *GatewayContext) error {
 	}
 
 	// 提取 model 和 stream
-	if len(gctx.RawBody) > 0 {
+	if gctx.RequestType == RequestTypeGeminiGenerateContent {
+		gctx.Model = extractGeminiModelFromPath(gctx.Request.URL.Path)
+		gctx.OriginalModel = gctx.Model
+		gctx.IsStream = isGeminiStreamPath(gctx.Request.URL.Path)
+	} else if len(gctx.RawBody) > 0 {
 		gctx.Model = e.extractModel(gctx.RawBody)
 		gctx.OriginalModel = gctx.Model
 		gctx.IsStream = e.extractStream(gctx.RawBody)
@@ -119,6 +124,8 @@ func (e *Engine) extractStream(body []byte) bool {
 // resolveRequestType URL path 映射到 RequestType
 func resolveRequestType(path string) RequestType {
 	switch {
+	case isGeminiGenerateContentPath(path):
+		return RequestTypeGeminiGenerateContent
 	case strings.HasSuffix(path, "/chat/completions"):
 		return RequestTypeChatCompletion
 	case strings.HasSuffix(path, "/messages"):
@@ -132,4 +139,35 @@ func resolveRequestType(path string) RequestType {
 	default:
 		return RequestTypeChatCompletion
 	}
+}
+
+func isGeminiGenerateContentPath(path string) bool {
+	return strings.Contains(path, "/models/") &&
+		(strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent"))
+}
+
+func isGeminiStreamPath(path string) bool {
+	return strings.Contains(path, "/models/") && strings.HasSuffix(path, ":streamGenerateContent")
+}
+
+func extractGeminiModelFromPath(path string) string {
+	const marker = "/models/"
+	idx := strings.LastIndex(path, marker)
+	if idx < 0 {
+		return ""
+	}
+	modelWithMethod := path[idx+len(marker):]
+	switch {
+	case strings.HasSuffix(modelWithMethod, ":generateContent"):
+		modelWithMethod = strings.TrimSuffix(modelWithMethod, ":generateContent")
+	case strings.HasSuffix(modelWithMethod, ":streamGenerateContent"):
+		modelWithMethod = strings.TrimSuffix(modelWithMethod, ":streamGenerateContent")
+	default:
+		return ""
+	}
+	model, err := url.PathUnescape(modelWithMethod)
+	if err != nil {
+		return modelWithMethod
+	}
+	return model
 }

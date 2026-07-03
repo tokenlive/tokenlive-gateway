@@ -37,6 +37,24 @@ func TestEndpointSupportsRequestType_ProtocolAwareFallback(t *testing.T) {
 			request: RequestTypeMessages,
 			want:    true,
 		},
+		{
+			name:     "gemini endpoint can serve native generate content",
+			protocol: string(ProtocolGemini),
+			declared: []RequestType{
+				RequestTypeGeminiGenerateContent,
+			},
+			request: RequestTypeGeminiGenerateContent,
+			want:    true,
+		},
+		{
+			name:     "gemini endpoint cannot serve chat completion before protocol conversion exists",
+			protocol: string(ProtocolGemini),
+			declared: []RequestType{
+				RequestTypeGeminiGenerateContent,
+			},
+			request: RequestTypeChatCompletion,
+			want:    false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -64,6 +64,8 @@ func (f *ValidateFilter) OnRequest(gctx *core.GatewayContext) error {
 			if err := json.Unmarshal(gctx.RawBody, &body); err != nil {
 				return &HTTPError{Code: http.StatusBadRequest, Message: "invalid JSON body"}
 			}
+		case core.RequestTypeGeminiGenerateContent:
+			return f.validateGeminiGenerateContent(gctx.RawBody)
 		}
 	}
 	return nil
@@ -85,6 +87,19 @@ func (f *ValidateFilter) validateAnthropicMessages(body []byte) error {
 	}
 	if *req.MaxTokens <= 0 {
 		return &HTTPError{Code: http.StatusBadRequest, Message: "max_tokens must be positive"}
+	}
+	return nil
+}
+
+func (f *ValidateFilter) validateGeminiGenerateContent(body []byte) error {
+	var req struct {
+		Contents []json.RawMessage `json:"contents"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return &HTTPError{Code: http.StatusBadRequest, Message: "invalid JSON body"}
+	}
+	if len(req.Contents) == 0 {
+		return &HTTPError{Code: http.StatusBadRequest, Message: "contents is required and must not be empty"}
 	}
 	return nil
 }

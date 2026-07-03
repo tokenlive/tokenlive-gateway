@@ -120,6 +120,14 @@ models:
         real_model: claude-3-opus-20240229
         priority: 2
         weight: 50
+  gemini-2.5-flash:
+    request_types: [ gemini_generate_content ]
+    endpoints:
+      - provider: google-ai-studio
+        url: https://generativelanguage.googleapis.com/v1beta
+        real_model: gemini-2.5-flash
+        priority: 1
+        weight: 100
 
 providers:
   openai-official:
@@ -139,6 +147,10 @@ providers:
   anthropic-proxy:
     protocol: anthropic
     api_key: ${ANTHROPIC_PROXY_KEY:sk-04a01ecdf6a3407f8b06e5b83dc1b5f4}
+    timeout: 60s
+  google-ai-studio:
+    protocol: gemini
+    api_key: ${GEMINI_API_KEY}
     timeout: 60s
 
 fallbacks:
@@ -226,6 +238,22 @@ pipelines:
         base_ms: 100
         error_codes: [ "500", "502", "503", "504", "429" ]
 
+  gemini_generate_content:
+    name: "gemini_generate_content"
+    request_types: [ "gemini_generate_content" ]
+    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
+    critical_outbound_filters: [ "token_settlement", "sticky_session" ]
+    invoker:
+      type: "cluster"
+      routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]
+      load_balancer: "round_robin"
+      retry:
+        retry: 0
+        backoff_type: "exponential"
+        base_ms: 100
+        error_codes: [ "500", "502", "503", "504", "429" ]
+
 # 静态兜底治理策略（当 Redis 中没有任何策略匹配时的冷启动防穿透/本地兜底规则）
 policies:
   - invocation_policy:
@@ -248,4 +276,3 @@ access_log:
   batch:
     batch_size: 2000
     flush_interval: 2s
-

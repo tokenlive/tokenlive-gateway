@@ -8,6 +8,7 @@ type ProviderType string
 const (
 	ProviderOpenAI    ProviderType = "openai"
 	ProviderAnthropic ProviderType = "anthropic"
+	ProviderGemini    ProviderType = "gemini"
 )
 
 // ProtocolFamily 端点协议簇,用于路由阶段匹配 RequestType
@@ -16,6 +17,7 @@ type ProtocolFamily string
 const (
 	ProtocolOpenAI    ProtocolFamily = "openai"
 	ProtocolAnthropic ProtocolFamily = "anthropic"
+	ProtocolGemini    ProtocolFamily = "gemini"
 )
 
 // Provider 协议适配层（Capability-based）

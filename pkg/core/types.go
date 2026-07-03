@@ -9,11 +9,12 @@ import (
 type RequestType string
 
 const (
-	RequestTypeChatCompletion  RequestType = "chat_completion"
-	RequestTypeEmbedding       RequestType = "embedding"
-	RequestTypeImageGeneration RequestType = "image_generation"
-	RequestTypeResponses       RequestType = "responses"
-	RequestTypeMessages        RequestType = "messages"
+	RequestTypeChatCompletion        RequestType = "chat_completion"
+	RequestTypeEmbedding             RequestType = "embedding"
+	RequestTypeImageGeneration       RequestType = "image_generation"
+	RequestTypeResponses             RequestType = "responses"
+	RequestTypeMessages              RequestType = "messages"
+	RequestTypeGeminiGenerateContent RequestType = "gemini_generate_content"
 )
 
 // Endpoint Gateway 层的端点视图
@@ -86,6 +87,8 @@ func (ep *Endpoint) protocolSupportsRequestType(rt RequestType) bool {
 		}
 	case ProtocolAnthropic:
 		return rt == RequestTypeMessages
+	case ProtocolGemini:
+		return rt == RequestTypeGeminiGenerateContent
 	case "":
 		return true
 	}

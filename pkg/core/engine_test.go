@@ -158,6 +158,8 @@ func TestResolveRequestType(t *testing.T) {
 		{"/v1/embeddings", RequestTypeEmbedding},
 		{"/v1/images/generations", RequestTypeImageGeneration},
 		{"/v1/responses", RequestTypeResponses},
+		{"/v1beta/models/gemini-2.5-flash:generateContent", RequestTypeGeminiGenerateContent},
+		{"/v1beta/models/gemini-2.5-flash:streamGenerateContent", RequestTypeGeminiGenerateContent},
 		{"/unknown/path", RequestTypeChatCompletion}, // default
 		{"", RequestTypeChatCompletion},              // empty path -> default
 	}
@@ -167,6 +169,56 @@ func TestResolveRequestType(t *testing.T) {
 			got := resolveRequestType(tt.path)
 			if got != tt.want {
 				t.Errorf("resolveRequestType(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseRequest_GeminiModelAndStreamFromPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantModel  string
+		wantStream bool
+	}{
+		{
+			name:       "generate content extracts model from URL and ignores body model",
+			path:       "/v1beta/models/gemini-2.5-flash:generateContent",
+			body:       `{"model":"ignored","contents":[{"parts":[{"text":"hi"}]}],"stream":true}`,
+			wantModel:  "gemini-2.5-flash",
+			wantStream: false,
+		},
+		{
+			name:       "stream generate content sets stream from URL suffix",
+			path:       "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+			body:       `{"contents":[{"parts":[{"text":"hi"}]}],"stream":false}`,
+			wantModel:  "gemini-2.5-flash",
+			wantStream: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &Engine{}
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			gctx := AcquireContext(httptest.NewRecorder(), req)
+			defer ReleaseContext(gctx)
+
+			if err := e.parseRequest(gctx); err != nil {
+				t.Fatalf("parseRequest returned error: %v", err)
+			}
+			if gctx.RequestType != RequestTypeGeminiGenerateContent {
+				t.Fatalf("RequestType=%s, want %s", gctx.RequestType, RequestTypeGeminiGenerateContent)
+			}
+			if gctx.Model != tt.wantModel {
+				t.Fatalf("Model=%q, want %q", gctx.Model, tt.wantModel)
+			}
+			if gctx.OriginalModel != tt.wantModel {
+				t.Fatalf("OriginalModel=%q, want %q", gctx.OriginalModel, tt.wantModel)
+			}
+			if gctx.IsStream != tt.wantStream {
+				t.Fatalf("IsStream=%v, want %v", gctx.IsStream, tt.wantStream)
 			}
 		})
 	}
