@@ -21,17 +21,40 @@ const maxLoggedBodySize = 4096
 
 func RequestLogMiddleware(logger *log.Logger) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		uuid, err := random.UUIdV4()
-		if err != nil {
-			return
+		// 1. 获取或生成 Trace ID
+		trace := ctx.Request.Header.Get("X-Trace-ID")
+		if trace == "" {
+			trace = ctx.Request.Header.Get("X-Trace-Id")
 		}
-		trace := cryptor.Md5String(uuid)
+		if trace == "" {
+			uuid, err := random.UUIdV4()
+			if err != nil {
+				return
+			}
+			trace = cryptor.Md5String(uuid)
+		}
+
+		// 2. 获取或生成 Request ID
+		requestID := ctx.Request.Header.Get("X-Request-ID")
+		if requestID == "" {
+			requestID = ctx.Request.Header.Get("X-Correlation-ID")
+		}
+		if requestID == "" {
+			requestID = trace
+		}
+
+		// 3. 回写到 Request Header 和 Response Header
+		ctx.Request.Header.Set("X-Trace-ID", trace)
+		ctx.Request.Header.Set("X-Request-ID", requestID)
+		ctx.Header("X-Trace-Id", trace)
+		ctx.Header("X-Request-Id", requestID)
+
 		// 仅固化全局追踪的 trace 字段
 		logger.WithValue(ctx, zap.String("trace", trace))
-		ctx.Header("X-Trace-Id", trace)
 
 		// 准备一次性日志字段，不使用 logger.WithValue 固化，防止后续调用链重复打印
 		fields := []zap.Field{
+			zap.String("request_id", requestID),
 			zap.String("request_method", ctx.Request.Method),
 			zap.String("request_url", ctx.Request.URL.String()),
 			zap.Any("request_headers", maskHeader(ctx.Request.Header)), // 使用 maskHeader 过滤敏感字段

@@ -195,6 +195,10 @@ func (f *AccessLogFilter) buildAccessLogItem(gctx *core.GatewayContext) AccessLo
 		requestID = reqIds[0]
 	} else if reqIds := gctx.GetHeader("X-Correlation-ID"); len(reqIds) > 0 {
 		requestID = reqIds[0]
+	} else if traceIds := gctx.GetHeader("X-Trace-ID"); len(traceIds) > 0 {
+		requestID = traceIds[0]
+	} else if gctx.ResponseWriter != nil && gctx.ResponseWriter.Header().Get("X-Trace-Id") != "" {
+		requestID = gctx.ResponseWriter.Header().Get("X-Trace-Id")
 	} else {
 		requestID = uuid.NewString()
 	}
