@@ -595,7 +595,7 @@ func buildFromRelationalConfig(
 	}
 
 	// 1. 创建通用的 chat_completion pipeline
-	inboundFilters := []string{"tagging", "session_reader", "quota_check", "validate"}
+	inboundFilters := []string{"tagging", "session_reader", "credits_check", "validate"}
 	if hasAuth {
 		inboundFilters = append([]string{"auth"}, inboundFilters...)
 	}

@@ -7,23 +7,11 @@ http:
     enabled: false                    # 设为 true 启用 HTTPS
     cert_file: "certs/server.crt"     # TLS 证书文件路径
     key_file: "certs/server.key"      # TLS 私钥文件路径
-security:
-  api_sign:
-    app_key: ${APP_KEY:123456}
-    app_security: ${APP_SECURITY:123456}
-  jwt:
-    key: ${JWT_KEY:QQYnRFerJTSEcrfB89fw8prOaObmrch8}
 data:
   db:
     user:
-      driver: ${DB_DRIVER:sqlite3}
-      dsn: ${DB_DSN:storage/gateway.db?_busy_timeout=5000}
-#     user:
-#       driver: mysql
-#       dsn: ${DB_USER:tpaas}:${DB_PASSWORD:aaa}@tcp(${DB_HOST:127.0.0.1}:${DB_PORT:32133})/${DB_NAME:jmsf}?charset=utf8mb4&parseTime=True&loc=Local # 381
-#      user:
-#        driver: postgres
-#        dsn: host=${DB_HOST:localhost} user=${DB_USER:gorm} password=${DB_PASSWORD:gorm} dbname=${DB_NAME:gorm} port=${DB_PORT:9920} sslmode=disable TimeZone=Asia/Shanghai
+      driver: sqlite3
+      dsn: storage/gateway.db?_busy_timeout=5000
   redis:
     addr: ${REDIS_ADDR:}
     password: ${REDIS_PASSWORD:}
@@ -32,7 +20,7 @@ data:
     write_timeout: 2s
   clickhouse:
     addr: ["${CLICKHOUSE_ADDR:}"]
-    database: "${CLICKHOUSE_DATABASE:tokenlive_gateway}"
+    database: "${CLICKHOUSE_DATABASE:tokenlive}"
     username: "${CLICKHOUSE_USERNAME:default}"
     password: "${CLICKHOUSE_PASSWORD:}"
 
@@ -146,7 +134,7 @@ providers:
     timeout: 60s
   anthropic-proxy:
     protocol: anthropic
-    api_key: ${ANTHROPIC_PROXY_KEY:sk-04a01ecdf6a3407f8b06e5b83dc1b5f4}
+    api_key: ${ANTHROPIC_PROXY_KEY}
     timeout: 60s
   google-ai-studio:
     protocol: gemini
@@ -176,7 +164,7 @@ pipelines:
   chat_completion:
     name: "chat_completion"
     request_types: [ "chat_completion" ]
-    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -192,7 +180,7 @@ pipelines:
   responses:
     name: "responses"
     request_types: [ "responses" ]
-    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -208,7 +196,7 @@ pipelines:
   embedding:
     name: "embedding"
     request_types: [ "embedding" ]
-    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -225,7 +213,7 @@ pipelines:
   messages:
     name: "messages"
     request_types: [ "messages" ]
-    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -241,7 +229,7 @@ pipelines:
   gemini_generate_content:
     name: "gemini_generate_content"
     request_types: [ "gemini_generate_content" ]
-    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:

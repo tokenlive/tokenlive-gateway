@@ -73,7 +73,7 @@ TokenLive is tailored for large-scale language model ecosystems and high-concurr
 
 TokenLive utilizes a decoupled "outer shell + inner core" architecture:
 
-- **Gin Shell**: Handles global outer-layer tasks like CORS, JWT validation, Swagger registry, user login/registration, and API Key authentication (AuthN).
+- **Gin Shell**: Handles global outer-layer tasks like CORS, Swagger registry, and API Key authentication (AuthN).
 - **Engine Pipeline**: Once LLM routing takes place, the request is detached and handed over to the core `Engine`. This execution pipeline has **zero Gin dependency** and is built on standard `net/http` components, making it highly testable and embeddable as an SDK.
 
 ### 2. Request Flow: Layered Filters & Nested Invocation Semantics

@@ -9,7 +9,6 @@ require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-co-op/gocron v1.37.0
-	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/wire v0.7.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/pkoukk/tiktoken-go v0.1.8

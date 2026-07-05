@@ -10,7 +10,6 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/internal/server"
 	"github.com/tokenlive/tokenlive-gateway/internal/service"
 	"github.com/tokenlive/tokenlive-gateway/pkg/app"
-	"github.com/tokenlive/tokenlive-gateway/pkg/jwt"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"github.com/tokenlive/tokenlive-gateway/pkg/server/http"
 
@@ -28,16 +27,13 @@ var repositorySet = wire.NewSet(
 	repository.NewTransaction,
 )
 
-
 var serviceSet = wire.NewSet(
-	service.NewService,
 	service.NewApiKeyService,
 	service.NewModelService,
 	service.NewAliasService,
 )
 
 var handlerSet = wire.NewSet(
-	handler.NewHandler,
 	handler.NewLLMHandler,
 	NewGatewayConfigManager,
 	NewGatewayEngine,
@@ -68,7 +64,6 @@ func NewWire(*viper.Viper, *log.Logger) (*app.App, func(), error) {
 		handlerSet,
 		serverSet,
 		wire.Struct(new(router.RouterDeps), "*"),
-		jwt.NewJwt,
 		newApp,
 	))
 }

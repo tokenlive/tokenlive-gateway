@@ -15,7 +15,6 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/internal/server"
 	"github.com/tokenlive/tokenlive-gateway/internal/service"
 	"github.com/tokenlive/tokenlive-gateway/pkg/app"
-	"github.com/tokenlive/tokenlive-gateway/pkg/jwt"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"github.com/tokenlive/tokenlive-gateway/pkg/server/http"
 )
@@ -27,7 +26,6 @@ import (
 // Injectors from wire.go:
 
 func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), error) {
-	jwtJWT := jwt.NewJwt(viperViper)
 	redisConfig := repository.LoadRedisConfig(viperViper)
 	client, cleanup, err := repository.NewRedis(redisConfig)
 	if err != nil {
@@ -61,7 +59,6 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 	routerDeps := router.RouterDeps{
 		Logger:        logger,
 		Config:        viperViper,
-		JWT:           jwtJWT,
 		LLMHandler:    llmHandler,
 		ApiKeyService: apiKeyService,
 	}
@@ -79,9 +76,9 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 
 var repositorySet = wire.NewSet(repository.NewDB, repository.LoadRedisConfig, repository.NewRedis, repository.NewClickHouse, repository.NewRepository, repository.NewTransaction)
 
-var serviceSet = wire.NewSet(service.NewService, service.NewApiKeyService, service.NewModelService, service.NewAliasService)
+var serviceSet = wire.NewSet(service.NewApiKeyService, service.NewModelService, service.NewAliasService)
 
-var handlerSet = wire.NewSet(handler.NewHandler, handler.NewLLMHandler, NewGatewayConfigManager,
+var handlerSet = wire.NewSet(handler.NewLLMHandler, NewGatewayConfigManager,
 	NewGatewayEngine,
 	ProvideGatewayProvider,
 )

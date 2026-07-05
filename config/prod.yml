@@ -6,17 +6,11 @@ http:
     enabled: true                     # 生产环境启用 HTTPS
     cert_file: "certs/fullchain.crt"     # TLS 证书文件路径
     key_file: "certs/tokenlive.net.key"      # TLS 私钥文件路径
-security:
-  api_sign:
-    app_key: 123456
-    app_security: 123456
-  jwt:
-    key: QQYnRFerJTSEcrfB89fw8prOaObmrch8
 data:
   db:
     user:
-      driver: ${DB_DRIVER:sqlite3}
-      dsn: ${DB_DSN:storage/gateway.db?_busy_timeout=5000}
+      driver: sqlite3
+      dsn: storage/gateway.db?_busy_timeout=5000
   redis:
     addr: ${REDIS_ADDR:}
     password: ${REDIS_PASSWORD:}
@@ -25,7 +19,7 @@ data:
     write_timeout: 10s
   clickhouse:
     addr: ["${CLICKHOUSE_ADDR:}"]
-    database: "${CLICKHOUSE_DATABASE:tokenlive_gateway}"
+    database: "${CLICKHOUSE_DATABASE:tokenlive}"
     username: "${CLICKHOUSE_USERNAME:default}"
     password: "${CLICKHOUSE_PASSWORD:}"
 log:
@@ -137,7 +131,7 @@ providers:
     timeout: 60s
   anthropic-proxy:
     protocol: anthropic
-    api_key: sk-04a01ecdf6a3407f8b06e5b83dc1b5f4
+    api_key: ${ANTHROPIC_PROXY_KEY}
     timeout: 60s
 
 fallbacks:
@@ -163,7 +157,7 @@ pipelines:
   chat_completion:
     name: "chat_completion"
     request_types: [ "chat_completion" ]
-    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -179,7 +173,7 @@ pipelines:
   responses:
     name: "responses"
     request_types: [ "responses" ]
-    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -195,7 +189,7 @@ pipelines:
   embedding:
     name: "embedding"
     request_types: [ "embedding" ]
-    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -212,7 +206,7 @@ pipelines:
   messages:
     name: "messages"
     request_types: [ "messages" ]
-    inbound_filters: [ "auth", "session_reader", "quota_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:

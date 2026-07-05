@@ -49,7 +49,6 @@ func NewHTTPServer(
 		middleware.CORSMiddleware(),
 		middleware.ResponseLogMiddleware(deps.Logger),
 		middleware.RequestLogMiddleware(deps.Logger),
-		//middleware.SignMiddleware(log),
 	)
 	s.GET("/", func(ctx *gin.Context) {
 		deps.Logger.WithContext(ctx).Info("hello")
@@ -68,7 +67,6 @@ func NewHTTPServer(
 	}
 
 	v1 := s.Group("/v1")
-	// router.InitUserRouter(deps, v1)
 
 	// 注册 LLM 路由
 	if deps.LLMHandler != nil {
