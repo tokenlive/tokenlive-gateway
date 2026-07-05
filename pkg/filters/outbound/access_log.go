@@ -16,7 +16,6 @@ import (
 	"go.uber.org/zap"
 )
 
-
 // redactKey 脱敏 API Key，只保留首尾各 4 个字符
 func redactKey(key string) string {
 	if len(key) <= 8 {
@@ -33,6 +32,9 @@ type AccessLogItem struct {
 	UserID              string    `json:"user_id"`
 	SessionID           string    `json:"session_id"`
 	APIKey              string    `json:"api_key"`
+	WorkspaceID         string    `json:"workspace_id"`
+	APIKeyID            string    `json:"api_key_id"`
+	APIKeyHash          string    `json:"api_key_hash"`
 	ClientIP            string    `json:"client_ip"`
 	OriginalModel       string    `json:"original_model"`
 	Model               string    `json:"model"`
@@ -107,7 +109,6 @@ func NewAccessLogFilter(
 		go f.startBatchLoop()
 	}
 
-
 	return f
 }
 
@@ -123,13 +124,6 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 	if gctx.SelectedEndpoint != nil {
 		provider = gctx.SelectedEndpoint.Provider
 		endpointID = gctx.SelectedEndpoint.ID
-	}
-
-	errMsg := ""
-	statusCode := int16(200)
-	if gctx.Err != nil {
-		errMsg = gctx.Err.Error()
-		statusCode = int16(500) // 默认错误状态码
 	}
 
 	// 1. 本地结构化日志输出
@@ -160,6 +154,37 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 	}
 
 	// 2. 构造 ClickHouse 访问日志实体
+	item := f.buildAccessLogItem(gctx)
+
+	// 3. 投递至内存 Batcher 队列
+	if f.chEnabled && f.chConn != nil {
+		select {
+		case f.logChan <- item:
+		default:
+			// 拥堵降级：Channel 满时直接序列化并投递进 Redis 补偿队列，保障网关绝对可用且计费数据零丢失
+			f.logger.Error("Access log channel buffer overflow, falling back to Redis compensation queue directly")
+			f.enqueueCompensation([]AccessLogItem{item}, fmt.Errorf("buffer channel overflow"))
+		}
+	}
+
+	return nil
+}
+
+func (f *AccessLogFilter) buildAccessLogItem(gctx *core.GatewayContext) AccessLogItem {
+	provider := ""
+	endpointID := ""
+	if gctx.SelectedEndpoint != nil {
+		provider = gctx.SelectedEndpoint.Provider
+		endpointID = gctx.SelectedEndpoint.ID
+	}
+
+	errMsg := ""
+	statusCode := int16(200)
+	if gctx.Err != nil {
+		errMsg = gctx.Err.Error()
+		statusCode = int16(500)
+	}
+
 	isStreamVal := uint8(0)
 	if gctx.IsStream {
 		isStreamVal = uint8(1)
@@ -195,6 +220,9 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 		UserID:              gctx.UserID,
 		SessionID:           gctx.SessionID,
 		APIKey:              redactKey(gctx.APIKey),
+		WorkspaceID:         gctx.WorkspaceID,
+		APIKeyID:            gctx.APIKeyID,
+		APIKeyHash:          gctx.APIKeyHash,
 		ClientIP:            clientIP,
 		OriginalModel:       gctx.OriginalModel,
 		Model:               gctx.Model,
@@ -213,20 +241,7 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 		CacheCreationTokens: uint32(gctx.CacheCreationTokens),
 		Cost:                gctx.Cost,
 	}
-
-
-	// 3. 投递至内存 Batcher 队列
-	if f.chEnabled && f.chConn != nil {
-		select {
-		case f.logChan <- item:
-		default:
-			// 拥堵降级：Channel 满时直接序列化并投递进 Redis 补偿队列，保障网关绝对可用且计费数据零丢失
-			f.logger.Error("Access log channel buffer overflow, falling back to Redis compensation queue directly")
-			f.enqueueCompensation([]AccessLogItem{item}, fmt.Errorf("buffer channel overflow"))
-		}
-	}
-
-	return nil
+	return item
 }
 
 // Close 优雅下线，排空当前 Channel 中积压的所有日志并批量刷入 ClickHouse (失败则投递 Redis 补偿)

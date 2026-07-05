@@ -353,7 +353,7 @@ func NewGatewayEngine(
 	// 注册 InboundFilter
 	engine.RegisterFilter("auth", inbound.NewAuthFilter())
 	engine.RegisterFilter("session_reader", inbound.NewSessionReaderFilter("X-Session-ID"))
-	engine.RegisterFilter("quota_check", inbound.NewQuotaCheckFilter(apiKeyService))
+	engine.RegisterFilter("credits_check", inbound.NewCreditsCheckFilter(apiKeyService))
 	engine.RegisterFilter("tagging", inbound.NewTaggingFilter())
 	rateLimitFilter := inbound.NewRateLimitFilter(stateStore)
 	engine.RegisterFilter("rate_limit", rateLimitFilter)

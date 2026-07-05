@@ -131,7 +131,7 @@ func (p *HTTPGatewayProvider) GetTenantModels(ctx context.Context, tenantCode st
 	return []string{"*"}, nil
 }
 
-func (p *HTTPGatewayProvider) DeductQuota(ctx context.Context, apiKey string, tokens int64) (int64, error) {
+func (p *HTTPGatewayProvider) DeductCredits(ctx context.Context, apiKey string, credits int64) (int64, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -140,14 +140,13 @@ func (p *HTTPGatewayProvider) DeductQuota(ctx context.Context, apiKey string, to
 		return 0, fmt.Errorf("api key not found in memory")
 	}
 
-	if item.Quota == -1 {
+	if item.Credits == -1 {
 		return -1, nil
 	}
 
-	item.Quota -= tokens
-	return item.Quota, nil
+	item.Credits -= credits
+	return item.Credits, nil
 }
-
 func (p *HTTPGatewayProvider) newRequest(ctx context.Context, path string) (*http.Request, error) {
 	targetURL := fmt.Sprintf("%s%s", p.adminURL, path)
 	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)

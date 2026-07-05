@@ -224,6 +224,28 @@ func TestParseRequest_GeminiModelAndStreamFromPath(t *testing.T) {
 	}
 }
 
+func TestParseRequestReadsAPIKeyIdentityHeaders(t *testing.T) {
+	e := &Engine{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`))
+	req.Header.Set("Authorization", "Bearer tl_live_test")
+	req.Header.Set("X-API-Key-ID", "ak_1")
+	req.Header.Set("X-API-Key-Hash", "hash_1")
+	req.Header.Set("X-Workspace-ID", "wsp_1")
+
+	gctx := AcquireContext(httptest.NewRecorder(), req)
+	defer ReleaseContext(gctx)
+
+	if err := e.parseRequest(gctx); err != nil {
+		t.Fatalf("parseRequest returned error: %v", err)
+	}
+	if gctx.APIKeyID != "ak_1" {
+		t.Fatalf("APIKeyID = %q, want ak_1", gctx.APIKeyID)
+	}
+	if gctx.APIKeyHash != "hash_1" {
+		t.Fatalf("APIKeyHash = %q, want hash_1", gctx.APIKeyHash)
+	}
+}
+
 // ===== TestExtractModel / TestExtractStream =====
 
 func TestExtractModel(t *testing.T) {

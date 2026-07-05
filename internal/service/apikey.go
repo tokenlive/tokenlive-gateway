@@ -14,12 +14,14 @@ import (
 
 // ApiKeyInfo 表示 API Key 的元数据
 type ApiKeyInfo struct {
+	KeyID       string `json:"key_id"`
+	KeyHash     string `json:"key_hash"`
 	UserID      string `json:"user_id"`
 	Tenant      string `json:"tenant"`       // 关联的租户唯一编码 (toB 场景)
-	WorkspaceID string `json:"workspace_id"`  // 关联的工作空间 ID (toC 场景)
+	WorkspaceID string `json:"workspace_id"` // 关联的工作空间 ID (toC 场景)
 	UserTenant  string `json:"user_tenant"`  // 用户所属租户 (toC 场景，用于模型过滤)
 	Status      int    `json:"status"`       // 1-正常, 2-禁用
-	Quota       int64  `json:"quota"`        // 剩余配额, -1表示无限制
+	Credits     int64  `json:"credits"`      // 可用余额, -1表示无限制
 	ExpiresAt   int64  `json:"expires_at"`   // 过期时间戳 (秒)，0表示永不过期
 }
 
@@ -63,12 +65,14 @@ func (s *ApiKeyService) ValidateKey(ctx context.Context, apiKey string) (*ApiKey
 	}
 
 	info := &ApiKeyInfo{
+		KeyID:       item.KeyID,
+		KeyHash:     item.KeyHash,
 		UserID:      item.UserID,
 		Tenant:      item.Tenant,
 		WorkspaceID: item.WorkspaceID,
 		UserTenant:  item.UserTenant,
 		Status:      item.Status,
-		Quota:       item.Quota,
+		Credits:     item.Credits,
 		ExpiresAt:   item.ExpiresAt,
 	}
 
@@ -92,17 +96,17 @@ func (s *ApiKeyService) ValidateKey(ctx context.Context, apiKey string) (*ApiKey
 }
 
 // VerifyKey 专为鉴权中间件提供，校验成功返回 User ID、Tenant Code、Workspace ID 和 User Tenant，失败返回 error
-func (s *ApiKeyService) VerifyKey(ctx context.Context, apiKey string) (string, string, string, string, error) {
+func (s *ApiKeyService) VerifyKey(ctx context.Context, apiKey string) (string, string, string, string, string, string, error) {
 	info, err := s.ValidateKey(ctx, apiKey)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", "", err
 	}
-	return info.UserID, info.Tenant, info.WorkspaceID, info.UserTenant, nil
+	return info.UserID, info.Tenant, info.WorkspaceID, info.UserTenant, info.KeyID, info.KeyHash, nil
 }
 
-// CheckQuota 检查 API Key 的配额是否充足（用于 InboundFilter 预检）
-// 仅对个人用户（UserID != ""）进行配额检查，租户跳过
-func (s *ApiKeyService) CheckQuota(ctx context.Context, apiKey string) error {
+// CheckCredits 检查 API Key 的余额是否充足（用于 InboundFilter 预检）
+// 仅对个人用户（UserID != ""）进行余额检查，租户跳过
+func (s *ApiKeyService) CheckCredits(ctx context.Context, apiKey string) error {
 	info, err := s.ValidateKey(ctx, apiKey)
 	if err != nil {
 		return err
@@ -112,23 +116,23 @@ func (s *ApiKeyService) CheckQuota(ctx context.Context, apiKey string) error {
 		return nil
 	}
 
-	if info.Quota == -1 {
+	if info.Credits == -1 {
 		return nil
 	}
 
-	if info.Quota <= 0 {
-		return errors.New("quota exceeded")
+	if info.Credits <= 0 {
+		return errors.New("credits exceeded")
 	}
 
 	return nil
 }
 
-// DeductQuota 扣减 API Key 的配额（用于 OutboundFilter 在请求完成后调用）
-// 仅对个人用户（UserID != ""）进行配额扣减，租户跳过
-// tokens: 要扣减的 token 数量（InputTokens + OutputTokens）
-// 返回扣减后的新配额值和错误
-func (s *ApiKeyService) DeductQuota(ctx context.Context, apiKey string, tokens int64) (int64, error) {
-	if tokens <= 0 {
+// DeductCredits 扣减 API Key 的余额（用于 OutboundFilter 在请求完成后调用）
+// 仅对个人用户（UserID != ""）进行余额扣减，租户跳过
+// credits: 要扣减的微元金额
+// 返回扣减后的新值和错误
+func (s *ApiKeyService) DeductCredits(ctx context.Context, apiKey string, credits int64) (int64, error) {
+	if credits <= 0 {
 		return 0, nil
 	}
 
@@ -141,29 +145,29 @@ func (s *ApiKeyService) DeductQuota(ctx context.Context, apiKey string, tokens i
 		return 0, nil
 	}
 
-	if info.Quota == -1 {
+	if info.Credits == -1 {
 		return -1, nil
 	}
 
-	// 调用统一的 provider 扣减配额
-	newQuota, err := s.provider.DeductQuota(ctx, apiKey, tokens)
+	// 调用统一的 provider 扣减余额
+	newCredits, err := s.provider.DeductCredits(ctx, apiKey, credits)
 	if err != nil {
-		s.logger.Logger.Error("failed to deduct quota via provider",
+		s.logger.Logger.Error("failed to deduct credits via provider",
 			zap.Error(err),
 			zap.String("api_key", apiKey[:8]+"..."),
-			zap.Int64("tokens", tokens))
+			zap.Int64("credits", credits))
 		return 0, err
 	}
 
 	// 扣减成功后，清除本地缓存，强制下次请求重新读取最新数据
 	s.cache.Remove(apiKey)
 
-	s.logger.Logger.Info("quota deducted",
+	s.logger.Logger.Info("credits deducted",
 		zap.String("user_id", info.UserID),
-		zap.Int64("tokens", tokens),
-		zap.Int64("new_quota", newQuota))
+		zap.Int64("credits", credits),
+		zap.Int64("new_credits", newCredits))
 
-	return newQuota, nil
+	return newCredits, nil
 }
 
 // PurgeCache 清空本地 LRU 缓存以立使新配置生效

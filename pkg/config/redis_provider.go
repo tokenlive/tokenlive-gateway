@@ -124,14 +124,14 @@ func (p *RedisGatewayProvider) getApiKeyWithRedisKey(ctx context.Context, apiKey
 	if err != nil {
 		return nil, "", err
 	}
-	if item, ok := parseRedisApiKeyItem(apiKey, fields); ok {
+	if item, ok := parseRedisApiKeyItem(apiKey, keyHash, fields); ok {
 		return item, redisKey, nil
 	}
 
 	return nil, "", fmt.Errorf("api key not found in redis")
 }
 
-func parseRedisApiKeyItem(apiKey string, fields map[string]string) (*HTTPApiKeyItem, bool) {
+func parseRedisApiKeyItem(apiKey, keyHash string, fields map[string]string) (*HTTPApiKeyItem, bool) {
 	if len(fields) == 0 || (fields["user_id"] == "" && fields["tenant"] == "" && fields["workspace_id"] == "") {
 		return nil, false
 	}
@@ -141,17 +141,19 @@ func parseRedisApiKeyItem(apiKey string, fields map[string]string) (*HTTPApiKeyI
 	workspaceID := fields["workspace_id"]
 	userTenant := fields["user_tenant"]
 	status, _ := strconv.Atoi(fields["status"])
-	quota, _ := strconv.ParseInt(fields["quota"], 10, 64)
+	credits, _ := strconv.ParseInt(fields["credits"], 10, 64)
 	expiresAt, _ := strconv.ParseInt(fields["expires_at"], 10, 64)
 
 	return &HTTPApiKeyItem{
 		APIKey:      apiKey,
+		KeyID:       fields["key_id"],
+		KeyHash:     keyHash,
 		UserID:      userID,
 		Tenant:      tenant,
 		WorkspaceID: workspaceID,
 		UserTenant:  userTenant,
 		Status:      status,
-		Quota:       quota,
+		Credits:     credits,
 		ExpiresAt:   expiresAt,
 	}, true
 }
@@ -172,7 +174,7 @@ func (p *RedisGatewayProvider) GetTenantModels(ctx context.Context, tenantCode s
 	return p.rdb.SMembers(ctx, tenantKey).Result()
 }
 
-func (p *RedisGatewayProvider) DeductQuota(ctx context.Context, apiKey string, tokens int64) (int64, error) {
+func (p *RedisGatewayProvider) DeductCredits(ctx context.Context, apiKey string, credits int64) (int64, error) {
 	if p.rdb == nil {
 		return 0, fmt.Errorf("redis client is not initialized")
 	}
@@ -180,5 +182,5 @@ func (p *RedisGatewayProvider) DeductQuota(ctx context.Context, apiKey string, t
 	if err != nil {
 		return 0, err
 	}
-	return p.rdb.HIncrBy(ctx, redisKey, "quota", -tokens).Result()
+	return p.rdb.HIncrBy(ctx, redisKey, "credits", -credits).Result()
 }

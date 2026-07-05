@@ -29,6 +29,8 @@ type GatewayContext struct {
 
 	// InboundFilter 填充
 	APIKey      string
+	APIKeyID    string
+	APIKeyHash  string
 	UserID      string
 	Tenant      string // Tenant identifier (for toB scenario)
 	WorkspaceID string // Workspace identifier (for Portal scenario)

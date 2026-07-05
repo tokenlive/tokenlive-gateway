@@ -342,26 +342,21 @@ func TestTokenSettlementFilter_AnthropicCacheBilling_Regression(t *testing.T) {
 	}
 }
 
-// mockQuotaDeductor 记录最后一次扣减的 token 数，用于断言配额扣减行为
-type mockQuotaDeductor struct {
+// mockCreditsDeductor 记录最后一次扣减的 credits，用于断言 Credits 扣减行为
+type mockCreditsDeductor struct {
 	deducted int64
 	calls    int
 }
 
-func (m *mockQuotaDeductor) DeductQuota(ctx context.Context, apiKey string, tokens int64) (int64, error) {
-	m.deducted += tokens
+func (m *mockCreditsDeductor) DeductCredits(ctx context.Context, apiKey string, credits int64) (int64, error) {
+	m.deducted += credits
 	m.calls++
-	return 1000 - tokens, nil
+	return 10000000 - credits, nil
 }
 
-// TestTokenSettlementFilter_QuotaCostWeighting_Regression 防止缺陷6回归。
-// 修复前：配额按原始 token 总数扣减，缓存命中 token 与未命中 token 扣同样的配额，对缓存用户不公平。
-// 修复后：配额按「等价于输入原价的 token 数」扣减，缓存命中部分按其折扣折算。
-// 场景：input=1000(未命中1000+缓存命中0) vs input=1000(未命中0+缓存命中1000)
-//   - 用户A: 全部未命中，等效 token ≈ 1000
-//   - 用户B: 全部命中(cachedPrice=0.2 远低于 inputPrice=2.0)，等效 token ≈ 100
-// 两者输出均为 100，输出单价 4.0。
-func TestTokenSettlementFilter_QuotaCostWeighting_Regression(t *testing.T) {
+// TestTokenSettlementFilter_CreditsBilling_Regression 验证积分扣减行为
+// 积分以微元为单位原子扣减（1 元 = 1,000,000 微元）
+func TestTokenSettlementFilter_CreditsBilling_Regression(t *testing.T) {
 	p := &policy.Policy{
 		Billing: &policy.BillingPolicy{
 			InputPrice:         2.0,
@@ -372,7 +367,9 @@ func TestTokenSettlementFilter_QuotaCostWeighting_Regression(t *testing.T) {
 	}
 
 	// 用户A：全部未命中缓存
-	qdA := &mockQuotaDeductor{}
+	// 费用计算：(1000 * 2.0 + 100 * 4.0) / 1_000_000 = 0.0024 元
+	// Credits 扣减 = 2400 微元
+	qdA := &mockCreditsDeductor{}
 	fA := NewTokenSettlementFilter(&mockSettlementStore{}, qdA, nil)
 	gctxA := &core.GatewayContext{
 		Ctx:          context.Background(),
@@ -389,7 +386,9 @@ func TestTokenSettlementFilter_QuotaCostWeighting_Regression(t *testing.T) {
 	}
 
 	// 用户B：输入全部命中缓存
-	qdB := &mockQuotaDeductor{}
+	// 费用计算：(0 * 2.0 + 1000 * 0.2 + 100 * 4.0) / 1_000_000 = 0.0006 元
+	// Credits 扣减 = 600 微元
+	qdB := &mockCreditsDeductor{}
 	fB := NewTokenSettlementFilter(&mockSettlementStore{}, qdB, nil)
 	gctxB := &core.GatewayContext{
 		Ctx:           context.Background(),
@@ -398,7 +397,7 @@ func TestTokenSettlementFilter_QuotaCostWeighting_Regression(t *testing.T) {
 		APIKey:        "key-b",
 		Model:         "gpt-4",
 		Policy:        p,
-		InputTokens:   1000, // 总输入 = 未命中0 + 命中1000
+		InputTokens:   1000,
 		OutputTokens:  100,
 		CachedTokens:  1000,
 	}
@@ -406,21 +405,17 @@ func TestTokenSettlementFilter_QuotaCostWeighting_Regression(t *testing.T) {
 		t.Fatalf("user B: expected no error, got %v", err)
 	}
 
-	// 用户B（重度缓存）扣减的配额应明显少于用户A
+	// 用户B（重度缓存）扣减的积分应明显少于用户A
 	if qdB.deducted >= qdA.deducted {
-		t.Errorf("cache-heavy user should deduct fewer equivalent tokens: A=%d, B=%d", qdA.deducted, qdB.deducted)
+		t.Errorf("cache-heavy user should deduct fewer credits: A=%d, B=%d", qdA.deducted, qdB.deducted)
 	}
 
-	// 验证用户A的等效 token 接近 1000（未命中1000*1.0 + 输出100*2.0=200 → 等效 = (1000*2.0+100*4.0)/2.0 = 1200）
-	// 实际等效 = cost/inputPrice*1e6 = (1000*2.0+100*4.0)/2.0 = 1200
-	if qdA.deducted != 1200 {
-		t.Errorf("user A expected 1200 equivalent tokens, got %d", qdA.deducted)
+	if qdA.deducted != 2400 {
+		t.Errorf("user A expected 2400 micro-credits, got %d", qdA.deducted)
 	}
 
-	// 用户B的等效 token：cost = (0*2.0 + 1000*0.2 + 100*4.0)/1e6 = 600/1e6
-	// 等效 = 600/2.0 = 300
-	if qdB.deducted != 300 {
-		t.Errorf("user B expected 300 equivalent tokens, got %d", qdB.deducted)
+	if qdB.deducted != 600 {
+		t.Errorf("user B expected 600 micro-credits, got %d", qdB.deducted)
 	}
 }
 

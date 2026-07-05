@@ -11,24 +11,24 @@ import (
 	"go.uber.org/zap"
 )
 
-// QuotaDeductor 配额扣减器接口（用于解耦和测试）
-type QuotaDeductor interface {
-	DeductQuota(ctx context.Context, apiKey string, tokens int64) (int64, error)
+// CreditsDeductor 积分扣减器接口（用于解耦和测试）
+type CreditsDeductor interface {
+	DeductCredits(ctx context.Context, apiKey string, credits int64) (int64, error)
 }
 
-// TokenSettlementFilter 在请求完成后结算预估 token 与实际 token 的差额
+// TokenSettlementFilter 在请求完成后结算预估 token 与实际 token 的差额，并扣减 Credits
 type TokenSettlementFilter struct {
-	stateStore    core.StateStore
-	quotaDeductor QuotaDeductor
-	logger        *zap.Logger
+	stateStore      core.StateStore
+	creditsDeductor CreditsDeductor
+	logger          *zap.Logger
 }
 
 // NewTokenSettlementFilter 创建 TokenSettlementFilter
-func NewTokenSettlementFilter(ss core.StateStore, qd QuotaDeductor, logger *zap.Logger) *TokenSettlementFilter {
+func NewTokenSettlementFilter(ss core.StateStore, cd CreditsDeductor, logger *zap.Logger) *TokenSettlementFilter {
 	return &TokenSettlementFilter{
-		stateStore:    ss,
-		quotaDeductor: qd,
-		logger:        logger,
+		stateStore:      ss,
+		creditsDeductor: cd,
+		logger:          logger,
 	}
 }
 
@@ -40,36 +40,34 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 	// 先解析费率，供配额扣减与费用结算共用
 	inputPrice, outputPrice, cachedPrice, cacheCreationPrice := resolvePrices(gctx)
 
-	// ===== 配额扣减逻辑 =====
-	// 只对个人用户（UserID != ""）且请求成功的场景进行配额扣减
-	if gctx.UserID != "" && gctx.Err == nil && f.quotaDeductor != nil {
-		// 按实际计费成本折算的「等效 token」扣减配额：
-		// 缓存读取/写入 token 按其相对输入原价的折扣等比折算为「原价输入等效 token」。
-		// 这样重度使用 prompt caching 的用户（实际成本更低）会被扣更少的配额，计费更公平，
-		// 同时保持配额存储仍为整数 token，无需改动 DeductQuota 接口与 Redis 结构。
-		quotaTokens := computeCostEquivalentTokens(gctx, inputPrice, outputPrice, cachedPrice, cacheCreationPrice)
+	// ===== Credits 扣减逻辑 =====
+	// 只对个人用户（UserID != ""）且请求成功的场景进行额度扣减
+	if gctx.UserID != "" && gctx.Err == nil && f.creditsDeductor != nil {
+		// 计算实际费用
+		costYuan := computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice)
+		creditsToDeduct := int64(costYuan*1_000_000.0 + 0.5) // 四舍五入转换为微元
 
-		if quotaTokens > 0 {
-			// 扣减配额
-			newQuota, err := f.quotaDeductor.DeductQuota(gctx.Ctx, gctx.APIKey, quotaTokens)
+		if creditsToDeduct > 0 {
+			// 扣减 Credits
+			newCredits, err := f.creditsDeductor.DeductCredits(gctx.Ctx, gctx.APIKey, creditsToDeduct)
 			if err != nil {
-				// 配额扣减失败，记录错误并返回（触发补偿机制）
+				// 扣减失败，记录错误并返回（触发补偿机制）
 				if f.logger != nil {
-					f.logger.Error("failed to deduct quota",
+					f.logger.Error("failed to deduct credits",
 						zap.String("user_id", gctx.UserID),
 						zap.String("api_key", gctx.APIKey[:8]+"..."),
-						zap.Int64("tokens", quotaTokens),
+						zap.Int64("credits", creditsToDeduct),
 						zap.Error(err))
 				}
 				return err
 			}
 
-			// 记录配额扣减成功
+			// 记录扣减成功
 			if f.logger != nil {
-				f.logger.Debug("quota deducted successfully",
+				f.logger.Debug("credits deducted successfully",
 					zap.String("user_id", gctx.UserID),
-					zap.Int64("tokens", quotaTokens),
-					zap.Int64("new_quota", newQuota))
+					zap.Int64("credits", creditsToDeduct),
+					zap.Int64("new_credits", newCredits))
 			}
 		}
 	}
@@ -258,28 +256,7 @@ func computeActualCost(gctx *core.GatewayContext, inputPrice, cachedPrice, cache
 		float64(output)*outputPrice) / 1_000_000.0
 }
 
-// computeCostEquivalentTokens 把本次请求的实际计费成本，折算为「按输入原价计费的等效 token 数」，
-// 用于配额扣减。这样缓存命中/写入 token（单价更低）会折算为更少的等效 token，
-// 使重度使用 prompt caching 的用户扣减更少的配额，与网关真实成本对齐。
-// 计算方式：总实际费用(元) / 输入单价(元/百万 token) * 1_000_000 = 等效 token。
-// 当 inputPrice <= 0 时回退为原始 token 总数，保证不会漏扣。
-func computeCostEquivalentTokens(gctx *core.GatewayContext, inputPrice, outputPrice, cachedPrice, cacheCreationPrice float64) int64 {
-	totalRaw := int64(gctx.InputTokens) + int64(gctx.OutputTokens)
-	if inputPrice <= 0 {
-		return totalRaw
-	}
-	costYuan := computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice)
-	equiv := costYuan / inputPrice * 1_000_000.0
-	if equiv < 0 {
-		equiv = 0
-	}
-	equivInt := int64(equiv + 0.5) // 四舍五入
-	if equivInt <= 0 {
-		// 至少扣 1 个 token，避免极端情况下漏扣
-		equivInt = 1
-	}
-	return equivInt
-}
+
 
 // clampAndSplitTokens 是 computeActualCost / computeCostEquivalentTokens 的公共子例程：
 // 对缓存 token 做防御性 clamp（不修改 gctx），并返回四段拆分后的 token 数。

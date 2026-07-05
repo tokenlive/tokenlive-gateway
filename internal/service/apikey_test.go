@@ -60,7 +60,7 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 	_, err := rdb.HSet(ctx, redisKey, map[string]interface{}{
 		"user_id":    "tenant_user_009",
 		"status":     1,
-		"quota":      5000,
+		"credits":    5000,
 		"rate_limit": `{"qps":10}`,
 		"expires_at": 0,
 	}).Result()
@@ -75,7 +75,7 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
-		if info.UserID != "tenant_user_009" || info.Status != 1 || info.Quota != 5000 {
+		if info.UserID != "tenant_user_009" || info.Status != 1 || info.Credits != 5000 {
 			t.Errorf("unexpected fields: %+v", info)
 		}
 	})
@@ -100,7 +100,7 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 
 	// 4. 测试 VerifyKey
 	t.Run("VerifyKey wrapper method", func(t *testing.T) {
-		userID, tenant, workspaceID, userTenant, err := svc.VerifyKey(ctx, testKey)
+		userID, tenant, workspaceID, userTenant, keyID, keyHash, err := svc.VerifyKey(ctx, testKey)
 		if err != nil {
 			t.Fatalf("VerifyKey failed: %v", err)
 		}
@@ -116,6 +116,12 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 		if userTenant != "" {
 			t.Errorf("expected empty UserTenant, got '%s'", userTenant)
 		}
+		if keyID != "" {
+			t.Errorf("expected empty KeyID, got '%s'", keyID)
+		}
+		if want := config.HashAPIKey(testKey, testAPIKeyPepper); keyHash != want {
+			t.Errorf("expected KeyHash '%s', got '%s'", want, keyHash)
+		}
 	})
 
 	// 4.1 测试 API Key 同时包含 user_id, tenant 且包含 workspace_id
@@ -127,7 +133,7 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 			"tenant":       "company-a",
 			"workspace_id": "ws-portal-space",
 			"status":       1,
-			"quota":        -1,
+			"credits":      -1,
 			"expires_at":   0,
 		}).Result()
 		if err != nil {

@@ -11,7 +11,7 @@ import (
 
 // ApiKeyValidator API Key 验证器接口（解耦）
 type ApiKeyValidator interface {
-	VerifyKey(ctx context.Context, apiKey string) (string, string, string, string, error)
+	VerifyKey(ctx context.Context, apiKey string) (userID, tenant, workspaceID, userTenant, keyID, keyHash string, err error)
 }
 
 // AuthConfig 认证配置
@@ -38,7 +38,7 @@ func NewAuthMiddleware(config *AuthConfig) gin.HandlerFunc {
 		}
 
 		// 验证 API Key 并获取 User ID、Tenant Code、Workspace ID 和 User Tenant
-		userID, tenant, workspaceID, userTenant, err := config.Validator.VerifyKey(c.Request.Context(), apiKey)
+		userID, tenant, workspaceID, userTenant, keyID, keyHash, err := config.Validator.VerifyKey(c.Request.Context(), apiKey)
 		if err != nil {
 			config.Logger.Warn("invalid API key", zap.String("key", maskAPIKey(apiKey)), zap.Error(err))
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -67,6 +67,14 @@ func NewAuthMiddleware(config *AuthConfig) gin.HandlerFunc {
 		if userTenant != "" {
 			c.Request.Header.Set("X-User-Tenant", userTenant)
 			c.Set("user_tenant", userTenant)
+		}
+		if keyID != "" {
+			c.Request.Header.Set("X-API-Key-ID", keyID)
+			c.Set("api_key_id", keyID)
+		}
+		if keyHash != "" {
+			c.Request.Header.Set("X-API-Key-Hash", keyHash)
+			c.Set("api_key_hash", keyHash)
 		}
 		c.Request.Header.Set("X-API-Key", apiKey)
 		c.Set("api_key", apiKey)

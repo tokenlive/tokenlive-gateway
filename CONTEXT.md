@@ -35,8 +35,12 @@ _Avoid_: resolved policy, strategy config
 Token 估算器。用于在请求进入网关时对 Prompt 进行 Token 数量预估，支持基于字符长度比例的简单估算 (`length_ratio`)，或引入具体模型的分词器（如 `tiktoken`、`llama-tokenizer`）进行精确预估。
 
 **Token Settlement (Token 最终结算)**:
-在 Outbound 过滤器阶段对实际 Token 消耗和额度进行扣减核销。若流式请求中途中断导致未能获取上游官方 `usage` 字段，系统将触发**字数估算降级（Length Estimation Fallback）**：利用 SSE 拦截器累计统计已发送至客户端的字符数，按模型预设比率估算 Completion Token，以此作为最终值进行指标上报与额度结算，规避网关计费漏扣风险。
+在 Outbound 过滤器阶段对实际 Token 消耗进行核销并扣减 Credits。若流式请求中途中断导致未能获取上游官方 `usage` 字段，系统将触发**字数估算降级（Length Estimation Fallback）**：利用 SSE 拦截器累计统计已发送至客户端的字符数，按模型预设比率估算 Completion Token，以此作为最终值进行指标上报与 Credits 余额扣减，规避网关计费漏扣风险。
 _【架构红线】监控指标（Metrics）仅用于实时大屏和运维告警展示，严禁将 Prometheus 指标（如 `gateway_cost_total` 等）用作计费对账和账单核销的真实依据。所有计费、扣费结算必须强一致地依赖写入 ClickHouse 的结构化访问日志（Access Log）核算，同时必须通过 Redis 补偿队列机制确保 ClickHouse 故障时数据的零丢失与最终一致性。_
+
+**Credits (积分/余额)**:
+个人 API Key 的充值可用额度余额。单位为微元（定点整数，1 元 = 1,000,000 微元），以规避浮点数并发计算的精度丢失。Credits 仅对个人用户（UserID != ""）生效，预检时若其值小于等于 0 则进行拦截。
+_Avoid_: quota, limit, token pool
 
 **Tenant Metrics Whitelist (租户指标白名单)**:
 用于防止 Prometheus 指标基数（Cardinality）爆炸的流量监控管理机制。网关通过去中心化的策略元数据驱动（Metadata Flag）：当解析得到的租户策略配置包含 `enable_metrics_reporting: true` 时，该请求在运行期被染色，并在 Outbound Filter 上报真实租户名（`tenant`）；未开启的租户请求指标统一合并标记为 `others`。以此实现满足重点客户监控与保护 Prometheus 稳定性之间的平衡。
@@ -46,6 +50,7 @@ _【架构红线】监控指标（Metrics）仅用于实时大屏和运维告警
 
 **Cost Limiter**:
 消费额度限制器。基于大模型调用计费价格（Billing Policy）以及实际扣减额度，进行单日或单月维度的最大消费限额（USD/CNY 厘维度）流量控制。
+
 
 **TTFT Slow Call**:
 首字慢调用。熔断检测的一种统计指标。指流式响应中从请求发出到收到第一个 Token 的延迟（TTFT）超过了配置阈值（如 3000ms），则被计为一次慢调用，用以规避常规大模型生成时间长导致的误熔断。

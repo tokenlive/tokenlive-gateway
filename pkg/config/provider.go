@@ -9,12 +9,14 @@ import (
 // HTTPApiKeyItem 代表统一契约下的 API Key 数据项
 type HTTPApiKeyItem struct {
 	APIKey      string `json:"api_key"`
+	KeyID       string `json:"key_id"`
+	KeyHash     string `json:"key_hash"`
 	UserID      string `json:"user_id"`
 	Tenant      string `json:"tenant"`
 	WorkspaceID string `json:"workspace_id"`
 	UserTenant  string `json:"user_tenant"`
 	Status      int    `json:"status"`
-	Quota       int64  `json:"quota"`
+	Credits     int64  `json:"credits"`
 	ExpiresAt   int64  `json:"expires_at"`
 }
 
@@ -43,6 +45,6 @@ type GatewayProvider interface {
 	// GetTenantModels 获取租户被授权访问的模型列表
 	GetTenantModels(ctx context.Context, tenantCode string) ([]string, error)
 
-	// DeductQuota 扣减指定 API Key 的配额，返回扣减后的新配额值。
-	DeductQuota(ctx context.Context, apiKey string, tokens int64) (int64, error)
+	// DeductCredits 扣减指定 API Key 的积分，返回扣减后的新值。
+	DeductCredits(ctx context.Context, apiKey string, credits int64) (int64, error)
 }

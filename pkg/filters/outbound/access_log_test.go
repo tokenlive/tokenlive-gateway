@@ -54,6 +54,31 @@ func TestAccessLogFilter_RedactsAPIKey(t *testing.T) {
 	}
 }
 
+func TestAccessLogFilterBuildsPortalIdentityFields(t *testing.T) {
+	f := NewAccessLogFilter(zap.NewNop(), nil, nil, nil, nil)
+	gctx := &core.GatewayContext{
+		StartTime:   time.Now().Add(-50 * time.Millisecond),
+		APIKey:      "tl_live_abcdefghijklmnopqrstuvwxyz123456",
+		APIKeyID:    "ak_1",
+		APIKeyHash:  "hash_1",
+		WorkspaceID: "wsp_1",
+		UserID:      "usr_1",
+		Model:       "gpt-4o",
+	}
+
+	item := f.buildAccessLogItem(gctx)
+
+	if item.WorkspaceID != "wsp_1" {
+		t.Fatalf("WorkspaceID = %q, want wsp_1", item.WorkspaceID)
+	}
+	if item.APIKeyID != "ak_1" {
+		t.Fatalf("APIKeyID = %q, want ak_1", item.APIKeyID)
+	}
+	if item.APIKeyHash != "hash_1" {
+		t.Fatalf("APIKeyHash = %q, want hash_1", item.APIKeyHash)
+	}
+}
+
 func TestRedactKey(t *testing.T) {
 	tests := []struct {
 		name string

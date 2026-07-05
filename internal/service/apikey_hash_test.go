@@ -23,6 +23,7 @@ func TestApiKeyServiceValidateAPIKeyHashKey(t *testing.T) {
 	pepper := "api-key-pepper"
 	keyHash := config.HashAPIKey(apiKey, pepper)
 	mr.HSet(store.RedisKeyApiKeyHash(keyHash),
+		"key_id", "ak_1",
 		"user_id", "usr_1",
 		"workspace_id", "wsp_1",
 		"tenant", "tenant_a",
@@ -40,5 +41,11 @@ func TestApiKeyServiceValidateAPIKeyHashKey(t *testing.T) {
 	}
 	if info.UserID != "usr_1" || info.WorkspaceID != "wsp_1" || info.Tenant != "tenant_a" || info.UserTenant != "tenant_a" {
 		t.Fatalf("ValidateKey() = %+v, want APIKey runtime identity", info)
+	}
+	if info.KeyID != "ak_1" {
+		t.Fatalf("KeyID = %q, want ak_1", info.KeyID)
+	}
+	if info.KeyHash != keyHash {
+		t.Fatalf("KeyHash = %q, want %q", info.KeyHash, keyHash)
 	}
 }

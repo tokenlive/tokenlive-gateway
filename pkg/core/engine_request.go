@@ -35,6 +35,8 @@ func (e *Engine) parseRequest(gctx *GatewayContext) error {
 		}
 	}
 	gctx.APIKey = apiKey
+	gctx.APIKeyID = gctx.Request.Header.Get("X-API-Key-ID")
+	gctx.APIKeyHash = gctx.Request.Header.Get("X-API-Key-Hash")
 	gctx.Tenant = gctx.Request.Header.Get("X-Tenant-ID")
 	gctx.UserID = gctx.Request.Header.Get("X-User-ID")
 	gctx.WorkspaceID = gctx.Request.Header.Get("X-Workspace-ID")

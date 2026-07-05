@@ -6,11 +6,10 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"github.com/spf13/viper"
+	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"go.uber.org/zap"
 )
-
 
 // NewClickHouse 初始化 ClickHouse 连接客户端，支持在没有配置时平滑降级（返回 nil）。
 func NewClickHouse(conf *viper.Viper, l *log.Logger) (clickhouse.Conn, func(), error) {
@@ -21,7 +20,6 @@ func NewClickHouse(conf *viper.Viper, l *log.Logger) (clickhouse.Conn, func(), e
 		zapLogger.Info("ClickHouse log writing is disabled (access_log.clickhouse.enabled is false), skipping connection initialization")
 		return nil, func() {}, nil
 	}
-
 
 	if !conf.IsSet("data.clickhouse") {
 
@@ -97,6 +95,9 @@ func AutoMigrateClickHouse(ctx context.Context, conn clickhouse.Conn) error {
 			user_id LowCardinality(String),
 			session_id String,
 			api_key String,
+			workspace_id LowCardinality(String),
+			api_key_id LowCardinality(String),
+			api_key_hash String,
 			client_ip String,
 			original_model LowCardinality(String),
 			model LowCardinality(String),
@@ -120,6 +121,10 @@ func AutoMigrateClickHouse(ctx context.Context, conn clickhouse.Conn) error {
 		PRIMARY KEY (tenant_id, model, request_id)
 		ORDER BY (tenant_id, model, request_id, time)
 		TTL time + INTERVAL 90 DAY;`,
+
+		`ALTER TABLE access_logs ADD COLUMN IF NOT EXISTS workspace_id LowCardinality(String) AFTER api_key;`,
+		`ALTER TABLE access_logs ADD COLUMN IF NOT EXISTS api_key_id LowCardinality(String) AFTER workspace_id;`,
+		`ALTER TABLE access_logs ADD COLUMN IF NOT EXISTS api_key_hash String AFTER api_key_id;`,
 
 		// 2. 租户账单小时表 tenant_billing_hourly
 		`CREATE TABLE IF NOT EXISTS tenant_billing_hourly (
