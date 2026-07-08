@@ -63,6 +63,65 @@ func TestRoundRobin_EvenDistribution(t *testing.T) {
 	assert.Equal(t, 100, counts["ep3"])
 }
 
+func TestRoundRobin_CounterIsolatedByModel(t *testing.T) {
+	lb := NewRoundRobin()
+
+	modelAEndpoints := []*core.Endpoint{
+		{ID: "a1", Model: "model-a"},
+		{ID: "a2", Model: "model-a"},
+	}
+	modelBEndpoints := []*core.Endpoint{
+		{ID: "b1", Model: "model-b"},
+		{ID: "b2", Model: "model-b"},
+	}
+
+	gctxA := newGatewayContext()
+	gctxA.Model = "model-a"
+	invokerA := lb.Select(gctxA, modelAEndpoints)
+	require.NotNil(t, invokerA)
+	assert.Equal(t, "a1", invokerA.Endpoint().ID)
+
+	gctxB := newGatewayContext()
+	gctxB.Model = "model-b"
+	invokerB := lb.Select(gctxB, modelBEndpoints)
+	require.NotNil(t, invokerB)
+	assert.Equal(t, "b1", invokerB.Endpoint().ID)
+
+	invokerA = lb.Select(gctxA, modelAEndpoints)
+	require.NotNil(t, invokerA)
+	assert.Equal(t, "a2", invokerA.Endpoint().ID)
+}
+
+func TestRoundRobin_CounterIsolatedByCandidatePool(t *testing.T) {
+	lb := NewRoundRobin()
+
+	fullPool := []*core.Endpoint{
+		{ID: "ep1", Model: "model-a"},
+		{ID: "ep2", Model: "model-a"},
+		{ID: "ep3", Model: "model-a"},
+		{ID: "ep4", Model: "model-a"},
+	}
+	filteredPool := fullPool[:3]
+
+	gctx := newGatewayContext()
+	gctx.Model = "model-a"
+
+	for i := 0; i < 3; i++ {
+		invoker := lb.Select(gctx, filteredPool)
+		require.NotNil(t, invoker)
+	}
+
+	invoker := lb.Select(gctx, fullPool)
+	require.NotNil(t, invoker)
+	assert.Equal(t, "ep1", invoker.Endpoint().ID)
+
+	for _, want := range []string{"ep2", "ep3", "ep4"} {
+		invoker = lb.Select(gctx, fullPool)
+		require.NotNil(t, invoker)
+		assert.Equal(t, want, invoker.Endpoint().ID)
+	}
+}
+
 func TestRoundRobin_EmptyEndpoints(t *testing.T) {
 	lb := NewRoundRobin()
 	gctx := newGatewayContext()

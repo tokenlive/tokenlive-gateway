@@ -380,6 +380,42 @@ func TestClusterInvoker_RetryLimitIsStrictEvenWhenMoreEndpointsExist(t *testing.
 	}
 }
 
+func TestClusterInvoker_RoundRobinRetriesWalkRemainingEndpointsInOrder(t *testing.T) {
+	provider := &countingProvider{
+		name:      "openai",
+		failCount: 10,
+	}
+	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4", ProviderImpl: provider}
+	ep2 := &core.Endpoint{ID: "ep-2", Provider: "openai", Model: "gpt-4", ProviderImpl: provider}
+	ep3 := &core.Endpoint{ID: "ep-3", Provider: "openai", Model: "gpt-4", ProviderImpl: provider}
+	ep4 := &core.Endpoint{ID: "ep-4", Provider: "openai", Model: "gpt-4", ProviderImpl: provider}
+
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{ep1, ep2, ep3, ep4}}
+	retry := &policy.RetryPolicy{
+		Retry:       2,
+		BackoffType: "fixed",
+		BaseMs:      1,
+		ErrorCodes:  []string{"500"},
+	}
+	ci := newTestClusterInvoker(discovery, &testRoundRobin{}, retry)
+
+	gctx1 := newTestGatewayContext()
+	defer core.ReleaseContext(gctx1)
+	err := ci.Invoke(gctx1)
+	if err == nil {
+		t.Fatal("expected first request to fail")
+	}
+	assertAttemptEndpoints(t, gctx1.History, []string{"ep-1", "ep-2", "ep-3"})
+
+	gctx2 := newTestGatewayContext()
+	defer core.ReleaseContext(gctx2)
+	err = ci.Invoke(gctx2)
+	if err == nil {
+		t.Fatal("expected second request to fail")
+	}
+	assertAttemptEndpoints(t, gctx2.History, []string{"ep-2", "ep-3", "ep-4"})
+}
+
 func TestClusterInvoker_ReturnsNoAvailableEndpointWhenEndpointsExhaustBeforeRetryLimit(t *testing.T) {
 	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4"}
 	ep2 := &core.Endpoint{ID: "ep-2", Provider: "openai", Model: "gpt-4"}
@@ -408,6 +444,18 @@ func TestClusterInvoker_ReturnsNoAvailableEndpointWhenEndpointsExhaustBeforeRetr
 	}
 	if gctx.AttemptCount != 2 {
 		t.Fatalf("expected only 2 physical attempts, got %d", gctx.AttemptCount)
+	}
+}
+
+func assertAttemptEndpoints(t *testing.T, history []core.AttemptRecord, want []string) {
+	t.Helper()
+	if len(history) != len(want) {
+		t.Fatalf("expected %d attempts, got %d: %+v", len(want), len(history), history)
+	}
+	for i, rec := range history {
+		if rec.EndpointID != want[i] {
+			t.Fatalf("attempt %d endpoint mismatch: got %q, want %q; history=%+v", i, rec.EndpointID, want[i], history)
+		}
 	}
 }
 
@@ -588,3 +636,78 @@ func TestBuildClusterInvoker_EndToEnd_CircuitBreakerFiltering(t *testing.T) {
 		t.Errorf("expected ep-2 to be selected (ep-1 is circuit-open), got %s", gctx.SelectedEndpoint.ID)
 	}
 }
+
+type testPriorityRouter struct{}
+
+func (r *testPriorityRouter) Name() string { return "priority" }
+func (r *testPriorityRouter) Route(gctx *core.GatewayContext, endpoints []*core.Endpoint) []*core.Endpoint {
+	if len(endpoints) == 0 {
+		return endpoints
+	}
+	minPriority := endpoints[0].Priority
+	for _, ep := range endpoints[1:] {
+		if ep.Priority < minPriority {
+			minPriority = ep.Priority
+		}
+	}
+	var result []*core.Endpoint
+	for _, ep := range endpoints {
+		if ep.Priority == minPriority {
+			result = append(result, ep)
+		}
+	}
+	return result
+}
+
+func TestClusterInvoker_PriorityFailover(t *testing.T) {
+	provider := &countingProvider{
+		name:      "openai",
+		failCount: 1, // 第一次调用失败
+	}
+
+	// ep-1 优先级高 (1)，ep-2 优先级低 (2)
+	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4", Priority: 1, ProviderImpl: provider}
+	ep2 := &core.Endpoint{ID: "ep-2", Provider: "openai", Model: "gpt-4", Priority: 2, ProviderImpl: provider}
+
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{ep1, ep2}}
+	logger, _ := zap.NewDevelopment()
+	stateStore := newMockStateStore()
+	cbManager := core.NewCircuitBreakerManager()
+
+	// 这里使用包含 testPriorityRouter 的路由链
+	ci := NewClusterInvoker(
+		discovery,
+		[]core.Router{&testPriorityRouter{}},
+		map[string]core.LoadBalancer{"round_robin": &testRoundRobin{}},
+		&policy.RetryPolicy{
+			Retry:       1,
+			BackoffType: "fixed",
+			BaseMs:      1,
+			ErrorCodes:  []string{"500"},
+		},
+		cbManager,
+		stateStore,
+		logger,
+		nil,
+	)
+
+	gctx := newTestGatewayContext()
+	defer core.ReleaseContext(gctx)
+
+	err := ci.Invoke(gctx)
+	if err != nil {
+		t.Fatalf("expected failover to succeed, got error: %v", err)
+	}
+
+	if gctx.AttemptCount != 2 {
+		t.Errorf("expected 2 attempts (first failed, second succeeded), got %d", gctx.AttemptCount)
+	}
+
+	if gctx.SelectedEndpoint == nil {
+		t.Fatal("expected selected endpoint, got nil")
+	}
+	if gctx.SelectedEndpoint.ID != "ep-2" {
+		t.Errorf("expected failover to backup endpoint ep-2 (Priority 2), got %s", gctx.SelectedEndpoint.ID)
+	}
+}
+

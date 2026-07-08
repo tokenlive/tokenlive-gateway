@@ -229,6 +229,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 	var lastBody []byte
 	var lastUpstreamErr error
 	var hasPhysicalCall bool
+	var lastSelectedEndpointID string
 
 	// 解析并应用 TotalTimeout (请求总超时，毫秒，默认非流式 60s，流式 10分钟)
 	totalTimeout := 60000
@@ -290,22 +291,35 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return lastErr
 		}
 
-		// Router chain
+		// 1. 优先过滤在此次调用历史中已经失败的局部排除端点 (excluded)
+		var filtered []*core.Endpoint
+		for _, ep := range endpoints {
+			if !excluded[ep.ID] {
+				filtered = append(filtered, ep)
+			}
+		}
+
+		if len(filtered) == 0 {
+			lastErr = core.ErrNoAvailableEndpoint
+			return lastErr
+		}
+
+		// 2. 运行 Router chain 过滤熔断、优先级等
 		gctx.Logger(ci.logger).Info("router chain: starting",
 			zap.String("model", gctx.Model),
-			zap.Int("discovery_count", len(endpoints)),
-			zap.Strings("discovery_endpoints", endpointIDs(endpoints)),
+			zap.Int("filtered_count", len(filtered)),
+			zap.Strings("filtered_endpoints", endpointIDs(filtered)),
 		)
 		for _, router := range ci.routerChain {
-			before := len(endpoints)
-			endpoints = router.Route(gctx, endpoints)
-			after := len(endpoints)
+			before := len(filtered)
+			filtered = router.Route(gctx, filtered)
+			after := len(filtered)
 			if before != after {
 				gctx.Logger(ci.logger).Info("router chain: router filtered endpoints",
 					zap.String("router", router.Name()),
 					zap.Int("before", before),
 					zap.Int("after", after),
-					zap.Strings("remaining", endpointIDs(endpoints)),
+					zap.Strings("remaining", endpointIDs(filtered)),
 				)
 			} else {
 				gctx.Logger(ci.logger).Debug("router chain: router passed through",
@@ -321,19 +335,6 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 				break
 			}
 		}
-		if len(endpoints) == 0 {
-			lastErr = core.ErrNoAvailableEndpoint
-			return lastErr
-		}
-
-		// 过滤已排除的
-		var filtered []*core.Endpoint
-		for _, ep := range endpoints {
-			if !excluded[ep.ID] {
-				filtered = append(filtered, ep)
-			}
-		}
-
 		if len(filtered) == 0 {
 			lastErr = core.ErrNoAvailableEndpoint
 			return lastErr
@@ -341,18 +342,23 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		// 动态选择 LoadBalancer
 		var lb core.LoadBalancer
+		lbStrategy := ci.defaultLBStrategy
 		if gctx.Policy != nil && gctx.Policy.LoadBalancePolicy != nil {
-			lb = ci.loadBalancers[gctx.Policy.LoadBalancePolicy.Type]
+			lbStrategy = gctx.Policy.LoadBalancePolicy.Type
+			lb = ci.loadBalancers[lbStrategy]
 		}
 		if lb == nil {
+			lbStrategy = ci.defaultLBStrategy
 			lb = ci.loadBalancers[ci.defaultLBStrategy]
 		}
 		if lb == nil {
+			lbStrategy = "round_robin"
 			lb = ci.loadBalancers["round_robin"]
 		}
 		if lb == nil {
 			// 防御性：若无 round_robin 则取 map 中任意一个
-			for _, v := range ci.loadBalancers {
+			for name, v := range ci.loadBalancers {
+				lbStrategy = name
 				lb = v
 				break
 			}
@@ -363,7 +369,21 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		}
 
 		// LoadBalancer 选择
-		invoker := lb.Select(gctx, filtered)
+		var invoker core.Invoker
+		if lbStrategy == "round_robin" && lastSelectedEndpointID != "" {
+			nextEp := nextEndpointAfter(endpoints, excluded, lastSelectedEndpointID)
+			if nextEp == nil {
+				lastErr = core.ErrNoAvailableEndpoint
+				return lastErr
+			}
+			if nextEp.ProviderImpl != nil {
+				invoker = NewProviderInvoker(nextEp.ProviderImpl, nextEp)
+			} else {
+				invoker = lb.Select(gctx, []*core.Endpoint{nextEp})
+			}
+		} else {
+			invoker = lb.Select(gctx, filtered)
+		}
 		if invoker == nil {
 			lastErr = core.ErrNoAvailableEndpoint
 			return lastErr
@@ -371,6 +391,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		selectedEp := invoker.Endpoint()
 		if selectedEp != nil {
+			lastSelectedEndpointID = selectedEp.ID
 			// 真正决定使用该 Endpoint 发送流量之前，先抢占可能需要的半开探路许可
 			serviceKey := selectedEp.Provider + ":" + selectedEp.Model
 			if !ci.cbManager.AcquireHalfOpenPermit(serviceKey, ci.enableActive) {
@@ -552,4 +573,25 @@ func hasRemainingEndpoint(endpoints []*core.Endpoint, excluded map[string]bool) 
 		}
 	}
 	return false
+}
+
+func nextEndpointAfter(endpoints []*core.Endpoint, excluded map[string]bool, previousID string) *core.Endpoint {
+	if len(endpoints) == 0 {
+		return nil
+	}
+
+	start := -1
+	for i, ep := range endpoints {
+		if ep.ID == previousID {
+			start = i
+			break
+		}
+	}
+	for step := 1; step <= len(endpoints); step++ {
+		ep := endpoints[(start+step)%len(endpoints)]
+		if !excluded[ep.ID] {
+			return ep
+		}
+	}
+	return nil
 }
