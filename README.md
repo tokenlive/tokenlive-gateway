@@ -111,6 +111,8 @@ The Engine governs request execution through clean, three-layered semantics:
  └─────────────────────────────────────────────────────────────────┘
 ```
 
+![Request Flow](./docs/images/request-flow-go.png)
+
 ### 3. State & Storage Design: Stateless Computing & Shared Redis
 
 To simplify container scaling, TokenLive externalizes all persistent state:
