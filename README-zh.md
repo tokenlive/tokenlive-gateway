@@ -59,14 +59,6 @@ TokenLive 专为大模型算力生态及高并发生产环境打造，具备以�
 
 ---
 
-## 管理控制台截图
-
-![管理控制台](./docs/images/dashboard.jpg)
-
-![运维监控](./docs/images/ops.jpg)
-
----
-
 ## 架构设计
 
 ### 1. 骨架设计：Gin Shell + Engine Pipeline
@@ -85,31 +77,6 @@ Engine 内部通过清晰定义的三层执行语义来保障请求的高效路�
 - **ClusterInvoker**（单模型路由重试）：编排 Discovery 获取端点 -> 跑 RouterChain 链式过滤节点 -> LoadBalancer 软选择端点 -> 调用 ProviderInvoker。如果失败且命中 `error_rules`，则执行 Attempt 级重试，更换端点。
 - **ProviderInvoker**（叶子适配器）：封装 Provider，透明包裹 ResponseWriter 拦截流式输出。
 - **OutboundFilter 链**（始终执行1次）：在 Invoke 结束后统一运行。包含 Token 差额结算、会话粘性保存、Prometheus 指标统计、Zap 审计日志记录。
-
-```
-                    ┌────────────────────────────┐
-                    │  Gin Shell (外壳中间件/CORS) │
-                    └─────────────┬──────────────┘
-                                  │ HandleRequest(w, r)
- ┌────────────────────────────────▼────────────────────────────────┐
- │ Gateway Engine (内核管线, 零 Gin 依赖)                             │
- │                                                                 │
- │  ┌─────────────────┐                                            │
- │  │ Inbound Filters │  → AuthFilter (AuthZ 授权控制)              │
- │  │ (执行 1 次)      │  → RateLimitFilter (限流预扣 Token)         │
- │  └────────┬────────┘  → ValidateFilter (参数格式校验)            │
- │           │                                                     │
- │  ┌────────▼────────┐                                            │
- │  │ FallbackInvoker │  → gpt-4 (首选模型 ClusterInvoker)           │
- │  │ (模型级级联降级)  │  ↳ gpt-3.5 (降级模型 ClusterInvoker)         │
- │  └────────┬────────┘                                            │
- │           │                                                     │
- │  ┌────────▼────────┐                                            │
- │  │ OutboundFilters │  → TokenSettlementFilter (高精度差额扣费/退款) │
- │  │ (始终执行 1 次)  │  → StickySaveFilter (会话粘性保存)            │
- │  └─────────────────┘  → MetricsFilter & AccessLogFilter         │
- └─────────────────────────────────────────────────────────────────┘
-```
 
 ![核心请求流程](./docs/images/request-flow-go.png)
 

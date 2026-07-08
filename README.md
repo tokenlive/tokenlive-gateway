@@ -59,14 +59,6 @@ TokenLive is tailored for large-scale language model ecosystems and high-concurr
 
 ---
 
-## Admin Console Screenshot
-
-![Admin Console Screenshot](./docs/images/dashboard.jpg)
-
-![OpsScreenshot](./docs/images/ops.jpg)
-
----
-
 ## Architecture Design
 
 ### 1. Architectural Bone: Gin Shell + Engine Pipeline
@@ -85,31 +77,6 @@ The Engine governs request execution through clean, three-layered semantics:
 - **ClusterInvoker** (single-model routing & retry): Resolves service endpoints via Discovery, applies linear Router filtering, selects an endpoint using LoadBalancer, and executes a ProviderInvoker. Performs retry attempts on subsequent nodes if errors match `error_rules`.
 - **ProviderInvoker** (leaf adapter): Connects to the upstream provider (e.g., OpenAI, Anthropic) and wraps response streams.
 - **Outbound Filter Chain** (always executed once): Runs after the invocation completes to process token settlement, sticky route updates, Prometheus metrics, and access auditing.
-
-```
-                    ┌────────────────────────────┐
-                    │  Gin Shell (Middlewares)   │
-                    └─────────────┬──────────────┘
-                                  │ HandleRequest(w, r)
- ┌────────────────────────────────▼────────────────────────────────┐
- │ Gateway Engine (Core Pipeline, Zero Gin Dependency)             │
- │                                                                 │
- │  ┌─────────────────┐                                            │
- │  │ Inbound Filters │  → AuthFilter (AuthZ Model Whitelist)       │
- │  │ (Executed once) │  → RateLimitFilter (Pre-allocate Tokens)    │
- │  └────────┬────────┘  → ValidateFilter (Payload Verification)   │
- │           │                                                     │
- │  ┌────────▼────────┐                                            │
- │  │ FallbackInvoker │  → gpt-4 (Primary model ClusterInvoker)     │
- │  │ (Model Fallback)│  ↳ gpt-3.5 (Degraded model ClusterInvoker)   │
- │  └────────┬────────┘                                            │
- │           │                                                     │
- │  ┌────────▼────────┐                                            │
- │  │ OutboundFilters │  → TokenSettlementFilter (High-Precision)   │
- │  │ (Always once)   │  → StickySaveFilter (Save Sticky Session)   │
- │  └─────────────────┘  → MetricsFilter & AccessLogFilter         │
- └─────────────────────────────────────────────────────────────────┘
-```
 
 ![Request Flow](./docs/images/request-flow-go.png)
 
