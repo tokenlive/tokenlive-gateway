@@ -116,8 +116,9 @@ func TestEndpointAffinity_FallbackOnMiss(t *testing.T) {
 			LoadBalancePolicy: &policy.LoadBalancePolicy{
 				Type: "endpoint_affinity",
 				Params: map[string]interface{}{
-					"source_type": "header",
-					"source_key":  "X-Endpoint-Code",
+					"source_type":   "header",
+					"source_key":    "X-Endpoint-Code",
+					"allow_degrade": true,
 				},
 			},
 		},
@@ -130,6 +131,36 @@ func TestEndpointAffinity_FallbackOnMiss(t *testing.T) {
 	invoker := lb.Select(gctx, endpoints)
 	require.NotNil(t, invoker)
 	assert.Equal(t, "ep1", invoker.Endpoint().ID)
+}
+
+func TestEndpointAffinity_DefaultNoDegradeOnMiss(t *testing.T) {
+	ss := store.NewMemoryStateStore()
+	lb := NewEndpointAffinityLoadBalancer(ss)
+
+	ep1 := &core.Endpoint{ID: "ep1", Code: "code1"}
+	ep2 := &core.Endpoint{ID: "ep2", Code: "code2"}
+	endpoints := []*core.Endpoint{ep1, ep2}
+
+	// 策略中不配置 allow_degrade 字段
+	gctx := &core.GatewayContext{
+		Ctx: context.Background(),
+		Policy: &policy.Policy{
+			LoadBalancePolicy: &policy.LoadBalancePolicy{
+				Type: "endpoint_affinity",
+				Params: map[string]interface{}{
+					"source_type": "header",
+					"source_key":  "X-Endpoint-Code",
+				},
+			},
+		},
+	}
+
+	req, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("X-Endpoint-Code", "non_existent")
+	gctx.Request = req
+
+	invoker := lb.Select(gctx, endpoints)
+	assert.Nil(t, invoker)
 }
 
 func TestEndpointAffinity_NoDegradeOnMiss(t *testing.T) {

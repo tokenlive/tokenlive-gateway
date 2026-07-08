@@ -29,7 +29,7 @@ func (lb *EndpointAffinityLoadBalancer) Select(gctx *core.GatewayContext, endpoi
 
 	sourceType := "header"
 	sourceKey := "X-Endpoint-Code"
-	allowDegrade := true
+	allowDegrade := false
 
 	// 1. 尝试从策略配置中提取 sourceType、sourceKey 和 allowDegrade
 	if gctx != nil && gctx.Policy != nil && gctx.Policy.LoadBalancePolicy != nil && gctx.Policy.LoadBalancePolicy.Params != nil {
