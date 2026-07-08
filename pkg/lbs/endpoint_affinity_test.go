@@ -131,3 +131,33 @@ func TestEndpointAffinity_FallbackOnMiss(t *testing.T) {
 	require.NotNil(t, invoker)
 	assert.Equal(t, "ep1", invoker.Endpoint().ID)
 }
+
+func TestEndpointAffinity_NoDegradeOnMiss(t *testing.T) {
+	ss := store.NewMemoryStateStore()
+	lb := NewEndpointAffinityLoadBalancer(ss)
+
+	ep1 := &core.Endpoint{ID: "ep1", Code: "code1"}
+	ep2 := &core.Endpoint{ID: "ep2", Code: "code2"}
+	endpoints := []*core.Endpoint{ep1, ep2}
+
+	gctx := &core.GatewayContext{
+		Ctx: context.Background(),
+		Policy: &policy.Policy{
+			LoadBalancePolicy: &policy.LoadBalancePolicy{
+				Type: "endpoint_affinity",
+				Params: map[string]interface{}{
+					"source_type":   "header",
+					"source_key":    "X-Endpoint-Code",
+					"allow_degrade": false,
+				},
+			},
+		},
+	}
+
+	req, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("X-Endpoint-Code", "non_existent")
+	gctx.Request = req
+
+	invoker := lb.Select(gctx, endpoints)
+	assert.Nil(t, invoker)
+}

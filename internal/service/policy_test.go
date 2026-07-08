@@ -57,18 +57,6 @@ func TestPolicyService_GetPolicy_RedisResolutionAndMerge(t *testing.T) {
 	userID := "user_test_merge"
 	modelName := "gpt-4"
 
-	// Level 0: Global * + *
-	p0 := &policy.Policy{
-		LimitPolicies: []*policy.LimitPolicy{
-			{
-				Name: "global-limit",
-				Type: "request",
-				SlidingWindows: []*policy.SlidingWindow{
-					{Threshold: 10, TimeWindowInMs: 1000},
-				},
-			},
-		},
-	}
 	// Level 1: User-wide * + user
 	p1 := &policy.Policy{
 		LimitPolicies: []*policy.LimitPolicy{
@@ -97,7 +85,7 @@ func TestPolicyService_GetPolicy_RedisResolutionAndMerge(t *testing.T) {
 	p3 := &policy.Policy{
 		LimitPolicies: []*policy.LimitPolicy{
 			{
-				Name: "global-limit", // Override level 0
+				Name: "user-limit", // Override level 1
 				Type: "request",
 				SlidingWindows: []*policy.SlidingWindow{
 					{Threshold: 40, TimeWindowInMs: 1000},
@@ -106,18 +94,15 @@ func TestPolicyService_GetPolicy_RedisResolutionAndMerge(t *testing.T) {
 		},
 	}
 
-	p0Bytes, _ := json.Marshal(p0)
 	p1Bytes, _ := json.Marshal(p1)
 	p2Bytes, _ := json.Marshal(p2)
 	p3Bytes, _ := json.Marshal(p3)
 
-	globalKey := "aigw:policies:global"
 	userKey := "aigw:policies:user:" + userID
 	modelKey := "aigw:policies:model:" + modelName
 
-	defer rdb.Del(ctx, globalKey, userKey, modelKey)
+	defer rdb.Del(ctx, userKey, modelKey)
 
-	rdb.HSet(ctx, globalKey, "*", p0Bytes)
 	rdb.HSet(ctx, userKey, "*", p1Bytes)
 	rdb.HSet(ctx, modelKey, "*", p2Bytes)
 	rdb.HSet(ctx, userKey, modelName, p3Bytes)
@@ -135,11 +120,8 @@ func TestPolicyService_GetPolicy_RedisResolutionAndMerge(t *testing.T) {
 		}
 	}
 
-	if limitMap["global-limit"] != 40 {
-		t.Errorf("expected global-limit threshold 40, got %d", limitMap["global-limit"])
-	}
-	if limitMap["user-limit"] != 20 {
-		t.Errorf("expected user-limit threshold 20, got %d", limitMap["user-limit"])
+	if limitMap["user-limit"] != 40 {
+		t.Errorf("expected user-limit threshold 40, got %d", limitMap["user-limit"])
 	}
 	if limitMap["model-limit"] != 30 {
 		t.Errorf("expected model-limit threshold 30, got %d", limitMap["model-limit"])
@@ -159,7 +141,7 @@ func TestPolicyService_Caching(t *testing.T) {
 	p0 := &policy.Policy{
 		LimitPolicies: []*policy.LimitPolicy{
 			{
-				Name: "global-limit",
+				Name: "model-limit",
 				Type: "request",
 				SlidingWindows: []*policy.SlidingWindow{
 					{Threshold: 10, TimeWindowInMs: 1000},
@@ -169,9 +151,9 @@ func TestPolicyService_Caching(t *testing.T) {
 	}
 	p0Bytes, _ := json.Marshal(p0)
 
-	globalKey := "aigw:policies:global"
-	defer rdb.Del(ctx, globalKey)
-	rdb.HSet(ctx, globalKey, "*", p0Bytes)
+	modelKey := "aigw:policies:model:" + modelName
+	defer rdb.Del(ctx, modelKey)
+	rdb.HSet(ctx, modelKey, "*", p0Bytes)
 
 	_, err := svc.GetPolicy(ctx, "", userID, modelName)
 	if err != nil {
@@ -180,7 +162,7 @@ func TestPolicyService_Caching(t *testing.T) {
 
 	p0.LimitPolicies[0].SlidingWindows[0].Threshold = 99
 	p0BytesNew, _ := json.Marshal(p0)
-	rdb.HSet(ctx, globalKey, "*", p0BytesNew)
+	rdb.HSet(ctx, modelKey, "*", p0BytesNew)
 
 	p2, err := svc.GetPolicy(ctx, "", userID, modelName)
 	if err != nil {
@@ -214,8 +196,8 @@ func TestPolicyService_NegativeCaching(t *testing.T) {
 	userID := "non_exist_user"
 	modelName := "non_exist_model"
 
-	globalKey := "aigw:policies:global"
-	rdb.Del(ctx, globalKey)
+	modelKey := "aigw:policies:model:" + modelName
+	rdb.Del(ctx, modelKey)
 
 	_, err1 := svc.GetPolicy(ctx, "", userID, modelName)
 	if err1 == nil {
@@ -256,7 +238,8 @@ func TestPolicyService_LocalFallbackOnEmptyRedis(t *testing.T) {
 	svc := NewPolicyService(config.NewRedisGatewayProvider(rdb), localPolicies, nil, logger)
 	ctx := context.Background()
 
-	rdb.Del(ctx, "aigw:policies:global")
+	modelKey := "aigw:policies:model:m"
+	rdb.Del(ctx, modelKey)
 
 	p, err := svc.GetPolicy(ctx, "", "u", "m")
 	if err != nil {

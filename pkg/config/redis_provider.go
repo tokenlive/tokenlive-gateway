@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
@@ -37,68 +38,274 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 	}
 	var items []HTTPPolicyItem
 
+	pipe := p.rdb.Pipeline()
+
+	var (
+		userHMGetCmd     *redis.SliceCmd
+		userHGetAllCmd   *redis.MapStringStringCmd
+		tenantHMGetCmd   *redis.SliceCmd
+		tenantHGetAllCmd *redis.MapStringStringCmd
+		modelHMGetCmd    *redis.SliceCmd
+	)
+
 	// 1. 查询用户策略 (Level 5 & Level 2)
 	if userID != "" {
 		userHashKey := "aigw:policies:user:" + userID
-		fields, err := p.rdb.HGetAll(ctx, userHashKey).Result()
-		if err == nil && len(fields) > 0 {
-			for m, val := range fields {
-				var temp policy.Policy
-				if json.Unmarshal([]byte(val), &temp) == nil {
-					items = append(items, HTTPPolicyItem{
-						Scope: "user:" + userID,
-						Model: m,
-						Value: &temp,
-					})
-				}
-			}
+		if modelCode != "" && modelCode != "*" {
+			// 一次性拉取用户针对当前模型的策略、计费配置，以及默认策略、默认计费配置
+			userHMGetCmd = pipe.HMGet(ctx, userHashKey, modelCode, modelCode+":billing", "*", "*:billing")
+		} else {
+			userHGetAllCmd = pipe.HGetAll(ctx, userHashKey)
 		}
 	}
 
 	// 2. 查询租户策略 (Level 4 & Level 1)
 	if tenantCode != "" {
 		tenantHashKey := "aigw:policies:tenant:" + tenantCode
-		fields, err := p.rdb.HGetAll(ctx, tenantHashKey).Result()
-		if err == nil && len(fields) > 0 {
-			for m, val := range fields {
-				var temp policy.Policy
-				if json.Unmarshal([]byte(val), &temp) == nil {
-					items = append(items, HTTPPolicyItem{
-						Scope: "tenant:" + tenantCode,
-						Model: m,
-						Value: &temp,
-					})
-				}
-			}
+		if modelCode != "" && modelCode != "*" {
+			tenantHMGetCmd = pipe.HMGet(ctx, tenantHashKey, modelCode, modelCode+":billing", "*", "*:billing")
+		} else {
+			tenantHGetAllCmd = pipe.HGetAll(ctx, tenantHashKey)
 		}
 	}
 
 	// 3. 查询模型策略 (Level 3)
 	if modelCode != "" {
 		modelHashKey := "aigw:policies:model:" + modelCode
-		val, err := p.rdb.HGet(ctx, modelHashKey, "*").Result()
-		if err == nil && val != "" {
-			var temp policy.Policy
-			if json.Unmarshal([]byte(val), &temp) == nil {
+		modelHMGetCmd = pipe.HMGet(ctx, modelHashKey, "*", "*:billing")
+	}
+
+	// 执行 Pipeline，忽略 Exec 返回的单个 error，我们会检查具体 command 的 error
+	_, _ = pipe.Exec(ctx)
+
+	// 5. 解析并反序列化用户策略
+	if userHMGetCmd != nil {
+		if vals, err := userHMGetCmd.Result(); err == nil && len(vals) == 4 {
+			// vals: [modelCode, modelCode+":billing", "*", "*:billing"]
+			var userPolicy *policy.Policy
+			var userDefaultPolicy *policy.Policy
+
+			// 5.1. 处理特定模型策略
+			if vals[0] != nil {
+				if valStr, ok := vals[0].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &userPolicy)
+				}
+			}
+			var modelBilling *policy.BillingPolicy
+			if vals[1] != nil {
+				if valStr, ok := vals[1].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &modelBilling)
+				}
+			}
+			if modelBilling != nil {
+				if userPolicy == nil {
+					userPolicy = &policy.Policy{}
+				}
+				userPolicy.Billing = modelBilling
+			}
+			if userPolicy != nil {
 				items = append(items, HTTPPolicyItem{
-					Scope: "model:" + modelCode,
+					Scope: "user:" + userID,
+					Model: modelCode,
+					Value: userPolicy,
+				})
+			}
+
+			// 5.2. 处理通配默认策略
+			if vals[2] != nil {
+				if valStr, ok := vals[2].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &userDefaultPolicy)
+				}
+			}
+			var defaultBilling *policy.BillingPolicy
+			if vals[3] != nil {
+				if valStr, ok := vals[3].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &defaultBilling)
+				}
+			}
+			if defaultBilling != nil {
+				if userDefaultPolicy == nil {
+					userDefaultPolicy = &policy.Policy{}
+				}
+				userDefaultPolicy.Billing = defaultBilling
+			}
+			if userDefaultPolicy != nil {
+				items = append(items, HTTPPolicyItem{
+					Scope: "user:" + userID,
 					Model: "*",
-					Value: &temp,
+					Value: userDefaultPolicy,
+				})
+			}
+		}
+	} else if userHGetAllCmd != nil {
+		if fields, err := userHGetAllCmd.Result(); err == nil && len(fields) > 0 {
+			policies := make(map[string]*policy.Policy)
+			billings := make(map[string]*policy.BillingPolicy)
+
+			for m, val := range fields {
+				if val == "" {
+					continue
+				}
+				if strings.HasSuffix(m, ":billing") {
+					mName := strings.TrimSuffix(m, ":billing")
+					var temp policy.BillingPolicy
+					if json.Unmarshal([]byte(val), &temp) == nil {
+						billings[mName] = &temp
+					}
+				} else {
+					var temp policy.Policy
+					if json.Unmarshal([]byte(val), &temp) == nil {
+						policies[m] = &temp
+					}
+				}
+			}
+
+			// 合并计费到对应策略中
+			for m, b := range billings {
+				if p, ok := policies[m]; ok {
+					p.Billing = b
+				} else {
+					policies[m] = &policy.Policy{Billing: b}
+				}
+			}
+
+			for m, p := range policies {
+				items = append(items, HTTPPolicyItem{
+					Scope: "user:" + userID,
+					Model: m,
+					Value: p,
 				})
 			}
 		}
 	}
 
-	// 4. 查询全局策略 (Level 0)
-	val, err := p.rdb.HGet(ctx, "aigw:policies:global", "*").Result()
-	if err == nil && val != "" {
-		var temp policy.Policy
-		if json.Unmarshal([]byte(val), &temp) == nil {
-			items = append(items, HTTPPolicyItem{
-				Scope: "global",
-				Model: "*",
-				Value: &temp,
-			})
+	// 6. 解析并反序列化租户策略
+	if tenantHMGetCmd != nil {
+		if vals, err := tenantHMGetCmd.Result(); err == nil && len(vals) == 4 {
+			var tenantPolicy *policy.Policy
+			var tenantDefaultPolicy *policy.Policy
+
+			// 6.1. 处理特定模型策略
+			if vals[0] != nil {
+				if valStr, ok := vals[0].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &tenantPolicy)
+				}
+			}
+			var modelBilling *policy.BillingPolicy
+			if vals[1] != nil {
+				if valStr, ok := vals[1].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &modelBilling)
+				}
+			}
+			if modelBilling != nil {
+				if tenantPolicy == nil {
+					tenantPolicy = &policy.Policy{}
+				}
+				tenantPolicy.Billing = modelBilling
+			}
+			if tenantPolicy != nil {
+				items = append(items, HTTPPolicyItem{
+					Scope: "tenant:" + tenantCode,
+					Model: modelCode,
+					Value: tenantPolicy,
+				})
+			}
+
+			// 6.2. 处理通配默认策略
+			if vals[2] != nil {
+				if valStr, ok := vals[2].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &tenantDefaultPolicy)
+				}
+			}
+			var defaultBilling *policy.BillingPolicy
+			if vals[3] != nil {
+				if valStr, ok := vals[3].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &defaultBilling)
+				}
+			}
+			if defaultBilling != nil {
+				if tenantDefaultPolicy == nil {
+					tenantDefaultPolicy = &policy.Policy{}
+				}
+				tenantDefaultPolicy.Billing = defaultBilling
+			}
+			if tenantDefaultPolicy != nil {
+				items = append(items, HTTPPolicyItem{
+					Scope: "tenant:" + tenantCode,
+					Model: "*",
+					Value: tenantDefaultPolicy,
+				})
+			}
+		}
+	} else if tenantHGetAllCmd != nil {
+		if fields, err := tenantHGetAllCmd.Result(); err == nil && len(fields) > 0 {
+			policies := make(map[string]*policy.Policy)
+			billings := make(map[string]*policy.BillingPolicy)
+
+			for m, val := range fields {
+				if val == "" {
+					continue
+				}
+				if strings.HasSuffix(m, ":billing") {
+					mName := strings.TrimSuffix(m, ":billing")
+					var temp policy.BillingPolicy
+					if json.Unmarshal([]byte(val), &temp) == nil {
+						billings[mName] = &temp
+					}
+				} else {
+					var temp policy.Policy
+					if json.Unmarshal([]byte(val), &temp) == nil {
+						policies[m] = &temp
+					}
+				}
+			}
+
+			for m, b := range billings {
+				if p, ok := policies[m]; ok {
+					p.Billing = b
+				} else {
+					policies[m] = &policy.Policy{Billing: b}
+				}
+			}
+
+			for m, p := range policies {
+				items = append(items, HTTPPolicyItem{
+					Scope: "tenant:" + tenantCode,
+					Model: m,
+					Value: p,
+				})
+			}
+		}
+	}
+
+	// 7. 解析模型策略
+	if modelHMGetCmd != nil {
+		if vals, err := modelHMGetCmd.Result(); err == nil && len(vals) == 2 {
+			var modelPolicy *policy.Policy
+			if vals[0] != nil {
+				if valStr, ok := vals[0].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &modelPolicy)
+				}
+			}
+			var modelBilling *policy.BillingPolicy
+			if vals[1] != nil {
+				if valStr, ok := vals[1].(string); ok && valStr != "" {
+					_ = json.Unmarshal([]byte(valStr), &modelBilling)
+				}
+			}
+			if modelBilling != nil {
+				if modelPolicy == nil {
+					modelPolicy = &policy.Policy{}
+				}
+				modelPolicy.Billing = modelBilling
+			}
+			if modelPolicy != nil {
+				items = append(items, HTTPPolicyItem{
+					Scope: "model:" + modelCode,
+					Model: "*",
+					Value: modelPolicy,
+				})
+			}
 		}
 	}
 

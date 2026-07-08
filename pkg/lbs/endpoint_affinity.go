@@ -1,6 +1,8 @@
 package lbs
 
 import (
+	"strconv"
+
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
@@ -27,8 +29,9 @@ func (lb *EndpointAffinityLoadBalancer) Select(gctx *core.GatewayContext, endpoi
 
 	sourceType := "header"
 	sourceKey := "X-Endpoint-Code"
+	allowDegrade := true
 
-	// 1. 尝试从策略配置中提取 sourceType 和 sourceKey
+	// 1. 尝试从策略配置中提取 sourceType、sourceKey 和 allowDegrade
 	if gctx != nil && gctx.Policy != nil && gctx.Policy.LoadBalancePolicy != nil && gctx.Policy.LoadBalancePolicy.Params != nil {
 		params := gctx.Policy.LoadBalancePolicy.Params
 		if st, ok := params["source_type"].(string); ok && st != "" {
@@ -36,6 +39,18 @@ func (lb *EndpointAffinityLoadBalancer) Select(gctx *core.GatewayContext, endpoi
 		}
 		if sk, ok := params["source_key"].(string); ok && sk != "" {
 			sourceKey = sk
+		}
+		if val, ok := params["allow_degrade"]; ok {
+			switch v := val.(type) {
+			case bool:
+				allowDegrade = v
+			case string:
+				if b, err := strconv.ParseBool(v); err == nil {
+					allowDegrade = b
+				}
+			case float64:
+				allowDegrade = v != 0
+			}
 		}
 	}
 
@@ -62,6 +77,11 @@ func (lb *EndpointAffinityLoadBalancer) Select(gctx *core.GatewayContext, endpoi
 			if ep.Code == targetVal || ep.ID == targetVal {
 				return invoker.NewProviderInvoker(ep.ProviderImpl, ep)
 			}
+		}
+
+		// 若指定了端点但未匹配到，根据 allowDegrade 开关决定是否降级
+		if !allowDegrade {
+			return nil
 		}
 	}
 
