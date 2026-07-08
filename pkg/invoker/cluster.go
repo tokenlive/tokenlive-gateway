@@ -75,10 +75,10 @@ func (ci *ClusterInvoker) SetEnableActive(enable bool) {
 
 // 失败惩罚延迟的默认参数。
 const (
-	defaultFailurePenalty  = 3.0               // 历史平均 × 3
-	defaultFailureMax      = 30 * time.Second  // 惩罚上限
-	minFailurePenalty      = 1.0               // 倍数下限，>= 1 以免"奖赏"失败
-	defaultLatencyWindowLL = 5 * time.Minute   // 最低延迟策略默认窗口
+	defaultFailurePenalty  = 3.0              // 历史平均 × 3
+	defaultFailureMax      = 30 * time.Second // 惩罚上限
+	minFailurePenalty      = 1.0              // 倍数下限，>= 1 以免"奖赏"失败
+	defaultLatencyWindowLL = 5 * time.Minute  // 最低延迟策略默认窗口
 )
 
 // recordFailurePenalty 将失败请求作为"代理延迟"写入延迟统计序列。
@@ -259,7 +259,12 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		rp = ci.retryStrategy
 	}
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	maxAttempts := maxRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			var backoff time.Duration
 			if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
@@ -277,14 +282,12 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		if err != nil {
 			gctx.Logger(ci.logger).Error("discovery failed", zap.Error(err))
 			lastErr = err
-			continue
+			return lastErr
 		}
 
 		if len(endpoints) == 0 {
-			if lastErr == nil {
-				lastErr = core.ErrNoAvailableEndpoint
-			}
-			continue
+			lastErr = core.ErrNoAvailableEndpoint
+			return lastErr
 		}
 
 		// Router chain
@@ -318,12 +321,9 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 				break
 			}
 		}
-
 		if len(endpoints) == 0 {
-			if lastErr == nil {
-				lastErr = core.ErrNoAvailableEndpoint
-			}
-			continue
+			lastErr = core.ErrNoAvailableEndpoint
+			return lastErr
 		}
 
 		// 过滤已排除的
@@ -335,10 +335,8 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		}
 
 		if len(filtered) == 0 {
-			if lastErr == nil {
-				lastErr = core.ErrNoAvailableEndpoint
-			}
-			continue
+			lastErr = core.ErrNoAvailableEndpoint
+			return lastErr
 		}
 
 		// 动态选择 LoadBalancer
@@ -367,10 +365,8 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		// LoadBalancer 选择
 		invoker := lb.Select(gctx, filtered)
 		if invoker == nil {
-			if lastErr == nil {
-				lastErr = core.ErrNoAvailableEndpoint
-			}
-			continue
+			lastErr = core.ErrNoAvailableEndpoint
+			return lastErr
 		}
 
 		selectedEp := invoker.Endpoint()
@@ -380,12 +376,18 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			if !ci.cbManager.AcquireHalfOpenPermit(serviceKey, ci.enableActive) {
 				excluded[selectedEp.ID] = true
 				lastErr = fmt.Errorf("service breaker half-open permit acquisition failed")
+				if attempt+1 >= maxAttempts {
+					return lastErr
+				}
 				continue
 			}
 			if !ci.cbManager.AcquireHalfOpenPermit(selectedEp.ID, ci.enableActive) {
 				ci.cbManager.ReleaseHalfOpenPermit(serviceKey)
 				excluded[selectedEp.ID] = true
 				lastErr = fmt.Errorf("instance breaker half-open permit acquisition failed")
+				if attempt+1 >= maxAttempts {
+					return lastErr
+				}
 				continue
 			}
 		}
@@ -469,10 +471,6 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return err
 		}
 
-		if attempt >= maxRetries {
-			return err
-		}
-
 		// 检查是否应该重试
 		shouldRetry := false
 		retryReason := ""
@@ -492,6 +490,16 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return err
 		}
 
+		excluded[gctx.SelectedEndpoint.ID] = true
+
+		if attempt+1 >= maxAttempts {
+			return err
+		}
+
+		if !hasRemainingEndpoint(endpoints, excluded) {
+			return core.ErrNoAvailableEndpoint
+		}
+
 		// 触发重试前打印详细日志
 		policyType := "static"
 		if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
@@ -503,8 +511,6 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			zap.Int("next_attempt", attempt+1),
 		)
 
-		// 排除该 endpoint
-		excluded[gctx.SelectedEndpoint.ID] = true
 	}
 
 	if hasPhysicalCall && (gctx.SelectedEndpoint == nil || (gctx.UpstreamResponse == nil && gctx.UpstreamError == nil)) {
@@ -537,4 +543,13 @@ func endpointIDs(endpoints []*core.Endpoint) []string {
 		ids[i] = ep.ID
 	}
 	return ids
+}
+
+func hasRemainingEndpoint(endpoints []*core.Endpoint, excluded map[string]bool) bool {
+	for _, ep := range endpoints {
+		if !excluded[ep.ID] {
+			return true
+		}
+	}
+	return false
 }

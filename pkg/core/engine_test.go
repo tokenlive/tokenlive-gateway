@@ -1664,26 +1664,24 @@ func TestShouldDynamicFallback(t *testing.T) {
 	// 1. 无错误时不降级
 	assert.False(t, shouldDynamicFallback(nil, nil))
 
-	// 2. 无 RetryPolicy 时不进行任何硬编码状态码拦截（允许所有错误降级）
+	// 2. 普通上游错误不触发模型级 fallback，即使没有 RetryPolicy。
 	{
 		gctx1 := &GatewayContext{
 			UpstreamResponse: &http.Response{StatusCode: 400},
 		}
-		// 无策略时 400 依然允许降级（完全由配置决定）
-		assert.True(t, shouldDynamicFallback(gctx1, errors.New("bad request")))
+		assert.False(t, shouldDynamicFallback(gctx1, errors.New("bad request")))
 
 		gctx2 := &GatewayContext{
 			UpstreamResponse: &http.Response{StatusCode: 401},
 		}
-		assert.True(t, shouldDynamicFallback(gctx2, errors.New("unauthorized")))
+		assert.False(t, shouldDynamicFallback(gctx2, errors.New("unauthorized")))
 
 		gctx3 := &GatewayContext{}
-		assert.True(t, shouldDynamicFallback(gctx3, errors.New("network error")))
+		assert.False(t, shouldDynamicFallback(gctx3, errors.New("network error")))
 	}
 
-	// 3. 配置了 RetryPolicy 时，根据 RetryPolicy 评判
+	// 3. RetryPolicy 只控制同模型重试，不触发跨模型 fallback。
 	{
-		// 3.1. 命中 RetryPolicy 配置 of error_codes
 		rp1 := &policy.Policy{
 			InvocationPolicy: &policy.InvocationPolicy{
 				RetryPolicy: &policy.RetryPolicy{
@@ -1695,17 +1693,14 @@ func TestShouldDynamicFallback(t *testing.T) {
 			Policy:           rp1,
 			UpstreamResponse: &http.Response{StatusCode: 502},
 		}
-		// 502 在列表中，允许降级
-		assert.True(t, shouldDynamicFallback(gctx1, errors.New("bad gateway")))
+		assert.False(t, shouldDynamicFallback(gctx1, errors.New("bad gateway")))
 
 		gctx2 := &GatewayContext{
 			Policy:           rp1,
 			UpstreamResponse: &http.Response{StatusCode: 500},
 		}
-		// 500 不在列表中，不降级
 		assert.False(t, shouldDynamicFallback(gctx2, errors.New("internal error")))
 
-		// 3.2. 命中 RetryPolicy 配置 of error_messages
 		rp2 := &policy.Policy{
 			InvocationPolicy: &policy.InvocationPolicy{
 				RetryPolicy: &policy.RetryPolicy{
@@ -1716,11 +1711,9 @@ func TestShouldDynamicFallback(t *testing.T) {
 		gctx3 := &GatewayContext{
 			Policy: rp2,
 		}
-		// 错误消息中包含 overloaded，允许降级
-		assert.True(t, shouldDynamicFallback(gctx3, errors.New("model is overloaded currently")))
+		assert.False(t, shouldDynamicFallback(gctx3, errors.New("model is overloaded currently")))
 
-		// 3.3. 特殊放行：无可用的端点 core.ErrNoAvailableEndpoint (强类型)
-		// 哪怕配置了与错误不符的 RetryPolicy 规则，也会无条件放行降级
+		// 3.1. 只有当前模型无可用端点才允许 fallback。
 		gctx4 := &GatewayContext{
 			Policy: &policy.Policy{
 				InvocationPolicy: &policy.InvocationPolicy{
@@ -1774,8 +1767,7 @@ func TestInspectDynamicFallback(t *testing.T) {
 	}
 	store := newMockStateStore()
 
-	// 配置动态降级策略：从 model-a 降级到 model-b，再降级到 model-c
-	// 并在 502 错误时允许重试/降级
+	// 配置动态降级策略：普通 502 只允许同模型重试，不允许跨模型 fallback。
 	testPolicy := &policy.Policy{
 		Permissions: []string{"*"},
 		InvocationPolicy: &policy.InvocationPolicy{
@@ -1801,8 +1793,8 @@ func TestInspectDynamicFallback(t *testing.T) {
 			invokerCalls[gctx.Model]++
 			if gctx.Model == "model-a" || gctx.Model == "model-b" {
 				gctx.UpstreamResponse = &http.Response{StatusCode: 502}
-				gctx.UpstreamError = fmt.Errorf("upstream error 502")
-				return fmt.Errorf("upstream error 502")
+				gctx.UpstreamError = fmt.Errorf("upstream error: status 502")
+				return fmt.Errorf("upstream error: status 502")
 			}
 			gctx.UpstreamResponse = &http.Response{StatusCode: 200}
 			return nil
@@ -1825,12 +1817,66 @@ func TestInspectDynamicFallback(t *testing.T) {
 	engine.HandleRequest(w, req)
 
 	// 3. 验证调用流程
-	// 我们期望：
-	// - model-a 应该被调用 1 次
-	// - model-b 应该被调用 1 次
-	// - model-c 应该被调用 1 次，并且成功返回 (状态码应该是 200)
-	assert.Equal(t, 200, w.Code)
+	// 普通上游错误不触发跨模型 fallback。
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	assert.Equal(t, 1, invokerCalls["model-a"])
+	assert.Equal(t, 0, invokerCalls["model-b"])
+	assert.Equal(t, 0, invokerCalls["model-c"])
+}
+
+func TestInspectDynamicFallbackOnlyWhenNoAvailableEndpoint(t *testing.T) {
+	engineConfig := &EngineConfig{}
+	discovery := &testInspectDiscovery{
+		endpoints: map[string][]*Endpoint{
+			"model-a": {{ID: "ep-a", Provider: "openai", Model: "model-a"}},
+			"model-b": {{ID: "ep-b", Provider: "openai", Model: "model-b"}},
+		},
+	}
+	store := newMockStateStore()
+	testPolicy := &policy.Policy{
+		Permissions: []string{"*"},
+		InvocationPolicy: &policy.InvocationPolicy{
+			Type: "cluster",
+			RetryPolicy: &policy.RetryPolicy{
+				Retry:      0,
+				ErrorCodes: []string{"502"},
+			},
+			FallbackPolicy: &policy.FallbackPolicy{
+				Targets: []string{"model-b"},
+			},
+		},
+	}
+
+	provider := &mockPolicyProvider{policy: testPolicy}
+	logger, _ := zap.NewDevelopment()
+	engine := NewEngine(engineConfig, discovery, store, provider, logger)
+
+	invokerCalls := make(map[string]int)
+	mockInv := &testInspectInvoker{
+		invokeFunc: func(gctx *GatewayContext) error {
+			invokerCalls[gctx.Model]++
+			if gctx.Model == "model-a" {
+				return ErrNoAvailableEndpoint
+			}
+			return nil
+		},
+	}
+	engine.pipelines = map[string]*Pipeline{
+		"chat_completion": {
+			Name:           "chat_completion",
+			InboundFilters: nil,
+			Invoker:        mockInv,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("X-User-ID", "test-user")
+	w := httptest.NewRecorder()
+
+	engine.HandleRequest(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, 1, invokerCalls["model-a"])
 	assert.Equal(t, 1, invokerCalls["model-b"])
-	assert.Equal(t, 1, invokerCalls["model-c"])
 }

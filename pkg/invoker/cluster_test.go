@@ -287,6 +287,27 @@ func TestClusterInvoker_NoEndpoints(t *testing.T) {
 	}
 }
 
+func TestClusterInvoker_NoEndpointsWithZeroRetryReturnsFallbackSignal(t *testing.T) {
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{}}
+	lb := &mockLoadBalancer{provider: &mockProvider{name: "openai"}}
+	retry := &policy.RetryPolicy{
+		Retry:  0,
+		BaseMs: 1,
+	}
+
+	ci := newTestClusterInvoker(discovery, lb, retry)
+	gctx := newTestGatewayContext()
+	defer core.ReleaseContext(gctx)
+
+	err := ci.Invoke(gctx)
+	if !errors.Is(err, core.ErrNoAvailableEndpoint) {
+		t.Fatalf("expected core.ErrNoAvailableEndpoint, got %v", err)
+	}
+	if gctx.AttemptCount != 0 {
+		t.Fatalf("expected no physical attempts when no endpoints exist, got %d", gctx.AttemptCount)
+	}
+}
+
 func TestClusterInvoker_AllRetriesFail(t *testing.T) {
 	// 三个 endpoint，全部失败后无可用 endpoint
 	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4"}
@@ -318,6 +339,75 @@ func TestClusterInvoker_AllRetriesFail(t *testing.T) {
 	// 3 endpoints available, 3 retries (attempt 0 + 2 retries) = 3 attempts
 	if gctx.AttemptCount != 3 {
 		t.Errorf("expected 3 attempts, got %d", gctx.AttemptCount)
+	}
+}
+
+func TestClusterInvoker_RetryLimitIsStrictEvenWhenMoreEndpointsExist(t *testing.T) {
+	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4"}
+	ep2 := &core.Endpoint{ID: "ep-2", Provider: "openai", Model: "gpt-4"}
+	ep3 := &core.Endpoint{ID: "ep-3", Provider: "openai", Model: "gpt-4"}
+	ep4 := &core.Endpoint{ID: "ep-4", Provider: "openai", Model: "gpt-4"}
+
+	provider := &countingProvider{
+		name:      "openai",
+		failCount: 10,
+	}
+
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{ep1, ep2, ep3, ep4}}
+	lb := &mockLoadBalancer{provider: provider}
+	retry := &policy.RetryPolicy{
+		Retry:       2,
+		BackoffType: "fixed",
+		BaseMs:      1,
+		ErrorCodes:  []string{"500"},
+	}
+
+	ci := newTestClusterInvoker(discovery, lb, retry)
+	gctx := newTestGatewayContext()
+	defer core.ReleaseContext(gctx)
+
+	err := ci.Invoke(gctx)
+	if err == nil {
+		t.Fatal("expected error after retry limit is reached")
+	}
+	if gctx.AttemptCount != 3 {
+		t.Fatalf("expected retry=2 to allow exactly 3 attempts, got %d", gctx.AttemptCount)
+	}
+	for _, rec := range gctx.History {
+		if rec.EndpointID == ep4.ID {
+			t.Fatalf("expected ep-4 not to be attempted after retry limit, history=%+v", gctx.History)
+		}
+	}
+}
+
+func TestClusterInvoker_ReturnsNoAvailableEndpointWhenEndpointsExhaustBeforeRetryLimit(t *testing.T) {
+	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4"}
+	ep2 := &core.Endpoint{ID: "ep-2", Provider: "openai", Model: "gpt-4"}
+
+	provider := &countingProvider{
+		name:      "openai",
+		failCount: 10,
+	}
+
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{ep1, ep2}}
+	lb := &mockLoadBalancer{provider: provider}
+	retry := &policy.RetryPolicy{
+		Retry:       3,
+		BackoffType: "fixed",
+		BaseMs:      1,
+		ErrorCodes:  []string{"500"},
+	}
+
+	ci := newTestClusterInvoker(discovery, lb, retry)
+	gctx := newTestGatewayContext()
+	defer core.ReleaseContext(gctx)
+
+	err := ci.Invoke(gctx)
+	if !errors.Is(err, core.ErrNoAvailableEndpoint) {
+		t.Fatalf("expected ErrNoAvailableEndpoint before retry limit, got %v", err)
+	}
+	if gctx.AttemptCount != 2 {
+		t.Fatalf("expected only 2 physical attempts, got %d", gctx.AttemptCount)
 	}
 }
 

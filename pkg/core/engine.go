@@ -487,39 +487,5 @@ func shouldDynamicFallback(gctx *GatewayContext, err error) bool {
 	if err == nil {
 		return false
 	}
-
-	if gctx == nil {
-		return true
-	}
-
-	// 特殊放行：如果是由于服务发现或熔断导致“无可用端点”，属于模型级灾难，无条件允许降级
-	if errors.Is(err, ErrNoAvailableEndpoint) {
-		return true
-	}
-
-	// 1. 获取当前合并策略中的重试策略
-	var rp *policy.RetryPolicy
-	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
-		rp = gctx.Policy.InvocationPolicy.RetryPolicy
-	}
-
-	// 2. 如果配置了重试策略，使用重试策略匹配机制进行评判
-	if rp != nil {
-		statusCode := 0
-		if gctx.UpstreamResponse != nil {
-			statusCode = gctx.UpstreamResponse.StatusCode
-		}
-		contentType := ""
-		if gctx.UpstreamResponse != nil {
-			contentType = gctx.UpstreamResponse.Header.Get("Content-Type")
-		}
-		errMsg := ""
-		if err != nil {
-			errMsg = err.Error()
-		}
-		return rp.MatchError(statusCode, contentType, errMsg, gctx.UpstreamBody)
-	}
-
-	// 3. 严格按照配置执行：若无显式重试策略，默认允许所有错误均能降级，防止产生硬编码误解
-	return true
+	return errors.Is(err, ErrNoAvailableEndpoint)
 }
