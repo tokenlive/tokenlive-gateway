@@ -134,8 +134,10 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 			evt.PolicyName = gctx.Policy.InvocationPolicy.Name
 		}
 		result = append(result, &evt)
-	} else if len(gctx.History) > 1 {
-		// 3.5. Endpoint-level failover (failover within the same model)
+	}
+
+	// 3.5. Endpoint-level failover (failover within the same model)
+	if len(gctx.History) > 1 {
 		lastAttempt := gctx.History[len(gctx.History)-1]
 		if lastAttempt.Success {
 			var steps []string

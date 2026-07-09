@@ -8,11 +8,13 @@ import (
 
 // EventsConfig defines the toggle switches for each event type.
 type EventsConfig struct {
-	CircuitBreak     *bool `yaml:"circuit_break" mapstructure:"circuit_break"`
-	RateLimit        *bool `yaml:"rate_limit" mapstructure:"rate_limit"`
-	InvocationFail   *bool `yaml:"invocation_fail" mapstructure:"invocation_fail"`
-	ModelFailover    *bool `yaml:"model_failover" mapstructure:"model_failover"`
-	EndpointFailover *bool `yaml:"endpoint_failover" mapstructure:"endpoint_failover"`
+	CircuitBreak        *bool `yaml:"circuit_break" mapstructure:"circuit_break"`
+	RateLimit           *bool `yaml:"rate_limit" mapstructure:"rate_limit"`
+	InvocationFail      *bool `yaml:"invocation_fail" mapstructure:"invocation_fail"`
+	ModelFailover       *bool `yaml:"model_failover" mapstructure:"model_failover"`
+	EndpointFailover    *bool `yaml:"endpoint_failover" mapstructure:"endpoint_failover"`
+	RetryError          *bool `yaml:"retry_error" mapstructure:"retry_error"`
+	CircuitBreakerError *bool `yaml:"circuit_breaker_error" mapstructure:"circuit_breaker_error"`
 }
 
 // PublisherConfig holds event publisher configuration.

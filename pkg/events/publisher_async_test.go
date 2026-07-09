@@ -145,3 +145,46 @@ func TestAsyncPublisher_FilterEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestAsyncPublisher_FilterNewEvents(t *testing.T) {
+	mock := &mockUnderlyingPublisher{}
+	asyncPub := NewAsyncPublisher(mock, 10)
+	defer asyncPub.Close()
+
+	falseVal := false
+	trueVal := true
+	cfg := EventsConfig{
+		ModelFailover:       &falseVal,
+		EndpointFailover:    &trueVal,
+		RetryError:          &falseVal,
+		CircuitBreakerError: &trueVal,
+	}
+	asyncPub.SetEventsConfig(cfg)
+
+	// 1. 发送禁用的 ModelFailover 和 RetryError
+	_ = asyncPub.Publish(context.Background(), &OpsEvent{EventType: EventTypeModelFailover})
+	_ = asyncPub.Publish(context.Background(), &OpsEvent{EventType: EventTypeRetryError})
+
+	// 2. 发送启用的 EndpointFailover 和 CircuitBreakerError
+	_ = asyncPub.Publish(context.Background(), &OpsEvent{EventType: EventTypeEndpointFailover})
+	_ = asyncPub.Publish(context.Background(), &OpsEvent{EventType: EventTypeCircuitBreakerError})
+
+	// 3. 发送默认启用的 RateLimit (因为未在 cfg 里配置)
+	_ = asyncPub.Publish(context.Background(), &OpsEvent{EventType: EventTypeRateLimit})
+
+	time.Sleep(20 * time.Millisecond)
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+
+	// 应当有 3 个成功发布的事件
+	if len(mock.published) != 3 {
+		t.Errorf("expected 3 published events, got %d", len(mock.published))
+	}
+
+	for _, evt := range mock.published {
+		if evt.EventType == EventTypeModelFailover || evt.EventType == EventTypeRetryError {
+			t.Errorf("received disabled event type: %s", evt.EventType)
+		}
+	}
+}

@@ -63,6 +63,14 @@ func (p *AsyncPublisher) isEventEnabled(eventType string) bool {
 		if p.cfg.EndpointFailover != nil {
 			return *p.cfg.EndpointFailover
 		}
+	case EventTypeRetryError:
+		if p.cfg.RetryError != nil {
+			return *p.cfg.RetryError
+		}
+	case EventTypeCircuitBreakerError:
+		if p.cfg.CircuitBreakerError != nil {
+			return *p.cfg.CircuitBreakerError
+		}
 	}
 	return true
 }

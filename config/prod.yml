@@ -60,13 +60,15 @@ events:
   enabled: true
   type: redis
   topic: aigw:events:policy
-  # 各个事件类型发送开关，不配置默认开启（true）
+  # 各个事件类型发送开关，不配置默认开启（true）。新增了 model_failover 和 endpoint_failover 类型
   types:
     circuit_break: true
     rate_limit: true
     invocation_fail: true
     model_failover: true
     endpoint_failover: true
+    retry_error: false
+    circuit_breaker_error: false
   # kafka:
   #   brokers: ["localhost:9092"]
 
