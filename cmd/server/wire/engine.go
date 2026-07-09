@@ -541,9 +541,10 @@ func buildFromRelationalConfig(
 					core.RequestTypeChatCompletion,
 					core.RequestTypeEmbedding,
 				}
-				if re.ProviderProtocol == "openai" {
+				switch re.ProviderProtocol {
+case "openai":
 					caps = append(caps, core.RequestTypeResponses)
-				} else if re.ProviderProtocol == "anthropic" {
+				case "anthropic":
 					caps = []core.RequestType{core.RequestTypeMessages}
 				}
 				providerConfigMap[re.ProviderName] = &core.ProviderConfig{
@@ -595,7 +596,9 @@ func buildFromRelationalConfig(
 	}
 
 	// 1. 创建通用的 chat_completion pipeline
-	inboundFilters := []string{"tagging", "session_reader", "credits_check", "validate"}
+	// 注意：inbound filters 顺序需与 config/local.yml 中静态 pipelines 保持一致，
+	// 其中 rate_limit 必须包含在内，否则限流过滤器不会进入执行链导致限流静默失效。
+	inboundFilters := []string{"session_reader", "tagging", "credits_check", "rate_limit", "validate"}
 	if hasAuth {
 		inboundFilters = append([]string{"auth"}, inboundFilters...)
 	}

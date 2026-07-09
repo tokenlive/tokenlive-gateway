@@ -158,7 +158,7 @@ pipelines:
   chat_completion:
     name: "chat_completion"
     request_types: [ "chat_completion" ]
-    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "tagging", "credits_check", "rate_limit", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -174,7 +174,7 @@ pipelines:
   responses:
     name: "responses"
     request_types: [ "responses" ]
-    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "tagging", "credits_check", "rate_limit", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -190,7 +190,7 @@ pipelines:
   embedding:
     name: "embedding"
     request_types: [ "embedding" ]
-    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "tagging", "credits_check", "rate_limit", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
@@ -207,7 +207,7 @@ pipelines:
   messages:
     name: "messages"
     request_types: [ "messages" ]
-    inbound_filters: [ "auth", "session_reader", "credits_check", "rate_limit", "tagging", "validate" ]
+    inbound_filters: [ "auth", "session_reader", "tagging", "credits_check", "rate_limit", "validate" ]
     outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
     critical_outbound_filters: [ "token_settlement", "sticky_session" ]
     invoker:
