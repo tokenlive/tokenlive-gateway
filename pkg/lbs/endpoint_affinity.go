@@ -81,6 +81,9 @@ func (lb *EndpointAffinityLoadBalancer) Select(gctx *core.GatewayContext, endpoi
 
 		// 若指定了端点但未匹配到，根据 allowDegrade 开关决定是否降级
 		if !allowDegrade {
+			if gctx != nil {
+				gctx.FatalErr = core.ErrFatalNoAvailableEndpoint
+			}
 			return nil
 		}
 	}

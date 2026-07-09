@@ -53,11 +53,12 @@ type RetryPolicy struct {
 	ErrorMessages  []string           `yaml:"error_messages" json:"error_messages"`       // 需要重试的错误消息列表
 	CodePolicy     *ErrorParserPolicy `yaml:"code_policy" json:"code_policy"`             // 错误码解析策略
 	MessagePolicy  *ErrorParserPolicy `yaml:"message_policy" json:"message_policy"`       // 错误消息解析策略
-	ConnectTimeout int                `yaml:"connect_timeout" json:"connect_timeout"`     // 建立连接超时 (毫秒)
-	TtftTimeout    int                `yaml:"ttft_timeout" json:"ttft_timeout"`           // 首字超时 (毫秒)
-	TotalTimeout   int                `yaml:"total_timeout" json:"total_timeout"`         // 请求总超时 (毫秒)
-	IdleTimeout    int                `yaml:"idle_timeout" json:"idle_timeout"`           // 读空闲超时 (毫秒)
-	Version        int64              `yaml:"version,omitempty" json:"version,omitempty"` // 版本标识 (保留)
+	ConnectTimeout        int                `yaml:"connect_timeout" json:"connect_timeout"`                               // 建立连接超时 (毫秒)
+	TtftTimeout           int                `yaml:"ttft_timeout" json:"ttft_timeout"`                                     // 首字超时 (毫秒)
+	TotalTimeout          int                `yaml:"total_timeout" json:"total_timeout"`                                   // 请求总超时 (毫秒)
+	IdleTimeout           int                `yaml:"idle_timeout" json:"idle_timeout"`                                     // 读空闲超时 (毫秒)
+	ExcludeFailedEndpoint *bool              `yaml:"exclude_failed_endpoint" json:"exclude_failed_endpoint"`               // 重试时是否排除失败的端点
+	Version               int64              `yaml:"version,omitempty" json:"version,omitempty"`                           // 版本标识 (保留)
 }
 
 // UnmarshalJSON 自定义反序列化，兼容 error_codes 数组中包含整型或字符型的情况，以及驼峰格式字段
@@ -71,10 +72,11 @@ func (r *RetryPolicy) UnmarshalJSON(data []byte) error {
 		MessagePolicyCamel  *ErrorParserPolicy `json:"messagePolicy"`
 		ConnectTimeoutCamel int                `json:"connectTimeout"`
 		TtftTimeoutCamel    int                `json:"ttftTimeout"`
-		TotalTimeoutCamel   int                `json:"totalTimeout"`
-		IdleTimeoutCamel    int                `json:"idleTimeout"`
-		BackoffTypeCamel    string             `json:"backoffType"`
-		BaseMsCamel         int                `json:"baseMs"`
+		TotalTimeoutCamel          int                `json:"totalTimeout"`
+		IdleTimeoutCamel           int                `json:"idleTimeout"`
+		BackoffTypeCamel           string             `json:"backoffType"`
+		BaseMsCamel                int                `json:"baseMs"`
+		ExcludeFailedEndpointCamel *bool              `json:"excludeFailedEndpoint"`
 		*Alias
 	}{
 		Alias: (*Alias)(r),
@@ -148,7 +150,19 @@ func (r *RetryPolicy) UnmarshalJSON(data []byte) error {
 		r.IdleTimeout = r.IdleTimeout * 1000
 	}
 
+	if aux.ExcludeFailedEndpointCamel != nil {
+		r.ExcludeFailedEndpoint = aux.ExcludeFailedEndpointCamel
+	}
+
 	return nil
+}
+
+// IsExcludeFailedEndpoint 返回重试时是否排除失败的端点
+func (r *RetryPolicy) IsExcludeFailedEndpoint() bool {
+	if r.ExcludeFailedEndpoint == nil {
+		return true
+	}
+	return *r.ExcludeFailedEndpoint
 }
 
 // GetErrorCodes 获取重试策略的错误码

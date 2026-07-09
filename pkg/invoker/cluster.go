@@ -340,6 +340,10 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return lastErr
 		}
 
+		if gctx.FatalErr != nil {
+			return gctx.FatalErr
+		}
+
 		// 动态选择 LoadBalancer
 		var lb core.LoadBalancer
 		lbStrategy := ci.defaultLBStrategy
@@ -385,6 +389,9 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			invoker = lb.Select(gctx, filtered)
 		}
 		if invoker == nil {
+			if gctx.FatalErr != nil {
+				return gctx.FatalErr
+			}
 			lastErr = core.ErrNoAvailableEndpoint
 			return lastErr
 		}
@@ -395,6 +402,9 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			// 真正决定使用该 Endpoint 发送流量之前，先抢占可能需要的半开探路许可
 			serviceKey := selectedEp.Provider + ":" + selectedEp.Model
 			if !ci.cbManager.AcquireHalfOpenPermit(serviceKey, ci.enableActive) {
+				if !rp.IsExcludeFailedEndpoint() {
+					return fmt.Errorf("service breaker half-open permit acquisition failed: %s", serviceKey)
+				}
 				excluded[selectedEp.ID] = true
 				lastErr = fmt.Errorf("service breaker half-open permit acquisition failed")
 				if attempt+1 >= maxAttempts {
@@ -404,6 +414,9 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			}
 			if !ci.cbManager.AcquireHalfOpenPermit(selectedEp.ID, ci.enableActive) {
 				ci.cbManager.ReleaseHalfOpenPermit(serviceKey)
+				if !rp.IsExcludeFailedEndpoint() {
+					return fmt.Errorf("instance breaker half-open permit acquisition failed: %s", selectedEp.ID)
+				}
 				excluded[selectedEp.ID] = true
 				lastErr = fmt.Errorf("instance breaker half-open permit acquisition failed")
 				if attempt+1 >= maxAttempts {
@@ -511,7 +524,9 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return err
 		}
 
-		excluded[gctx.SelectedEndpoint.ID] = true
+		if rp.IsExcludeFailedEndpoint() {
+			excluded[gctx.SelectedEndpoint.ID] = true
+		}
 
 		if attempt+1 >= maxAttempts {
 			return err

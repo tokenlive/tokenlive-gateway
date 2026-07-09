@@ -161,6 +161,7 @@ func TestEndpointAffinity_DefaultNoDegradeOnMiss(t *testing.T) {
 
 	invoker := lb.Select(gctx, endpoints)
 	assert.Nil(t, invoker)
+	assert.Equal(t, core.ErrFatalNoAvailableEndpoint, gctx.FatalErr)
 }
 
 func TestEndpointAffinity_NoDegradeOnMiss(t *testing.T) {
@@ -191,4 +192,5 @@ func TestEndpointAffinity_NoDegradeOnMiss(t *testing.T) {
 
 	invoker := lb.Select(gctx, endpoints)
 	assert.Nil(t, invoker)
+	assert.Equal(t, core.ErrFatalNoAvailableEndpoint, gctx.FatalErr)
 }

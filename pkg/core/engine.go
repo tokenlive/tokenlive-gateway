@@ -487,5 +487,52 @@ func shouldDynamicFallback(gctx *GatewayContext, err error) bool {
 	if err == nil {
 		return false
 	}
+	if gctx != nil && gctx.FatalErr != nil {
+		return false
+	}
+	if errors.Is(err, ErrFatalNoAvailableEndpoint) {
+		return false
+	}
+	if isAffinityNoDegrade(gctx) {
+		return false
+	}
 	return errors.Is(err, ErrNoAvailableEndpoint)
 }
+
+func isAffinityNoDegrade(gctx *GatewayContext) bool {
+	if gctx == nil || gctx.Policy == nil || gctx.Policy.LoadBalancePolicy == nil {
+		return false
+	}
+	lbPolicy := gctx.Policy.LoadBalancePolicy
+	if lbPolicy.Type == "endpoint_affinity" {
+		if lbPolicy.Params != nil {
+			var allowDegrade bool
+			if v, ok := lbPolicy.Params["allow_degrade"]; ok {
+				switch x := v.(type) {
+				case bool:
+					allowDegrade = x
+				case string:
+					allowDegrade = (x == "true")
+				case float64:
+					allowDegrade = (x != 0)
+				case int:
+					allowDegrade = (x != 0)
+				}
+			} else if v, ok := lbPolicy.Params["allowDegrade"]; ok {
+				switch x := v.(type) {
+				case bool:
+					allowDegrade = x
+				case string:
+					allowDegrade = (x == "true")
+				case float64:
+					allowDegrade = (x != 0)
+				case int:
+					allowDegrade = (x != 0)
+				}
+			}
+			return !allowDegrade
+		}
+	}
+	return false
+}
+

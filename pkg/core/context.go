@@ -49,6 +49,7 @@ type GatewayContext struct {
 	UpstreamBody     []byte
 	UpstreamError    error
 	TTFT             time.Duration
+	FatalErr         error // 致命错误，一旦设置，将跳过重试和降级，直接终止并返回该错误
 
 	// ===== 累积字段 =====
 	AttemptCount  int

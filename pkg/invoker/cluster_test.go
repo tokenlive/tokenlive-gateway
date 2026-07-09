@@ -711,3 +711,147 @@ func TestClusterInvoker_PriorityFailover(t *testing.T) {
 	}
 }
 
+func TestClusterInvoker_ExcludeFailedEndpointFalse_RetriesOnSameEndpoint(t *testing.T) {
+	provider := &countingProvider{
+		name:      "openai",
+		failCount: 2, // 失败2次，需要第3次才成功
+	}
+
+	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4", ProviderImpl: provider}
+	ep2 := &core.Endpoint{ID: "ep-2", Provider: "openai", Model: "gpt-4", ProviderImpl: provider}
+
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{ep1, ep2}}
+	logger, _ := zap.NewDevelopment()
+	stateStore := newMockStateStore()
+	cbManager := core.NewCircuitBreakerManager()
+
+	excludeFalse := false
+	ci := NewClusterInvoker(
+		discovery,
+		[]core.Router{},
+		map[string]core.LoadBalancer{"round_robin": &testRoundRobin{}},
+		&policy.RetryPolicy{
+			Retry:                 2,
+			BackoffType:           "fixed",
+			BaseMs:                1,
+			ErrorCodes:            []string{"500"},
+			ExcludeFailedEndpoint: &excludeFalse,
+		},
+		cbManager,
+		stateStore,
+		logger,
+		nil,
+	)
+
+	gctx := newTestGatewayContext()
+	defer core.ReleaseContext(gctx)
+
+	err := ci.Invoke(gctx)
+	if err != nil {
+		t.Fatalf("expected retry on same endpoint to succeed eventually, got error: %v", err)
+	}
+
+	if gctx.AttemptCount != 3 {
+		t.Errorf("expected 3 attempts, got %d", gctx.AttemptCount)
+	}
+
+	// 因为 exclude_failed_endpoint 为 false，所以三次都是分配在 ep-1
+	if gctx.SelectedEndpoint == nil || gctx.SelectedEndpoint.ID != "ep-1" {
+		t.Errorf("expected selected endpoint to be ep-1, got %v", gctx.SelectedEndpoint)
+	}
+}
+
+func TestClusterInvoker_ExcludeFailedEndpointFalse_AbortedWhenCircuitBreakerOpen(t *testing.T) {
+	provider := &countingProvider{
+		name:      "openai",
+		failCount: 5, // 总是失败
+	}
+
+	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4", ProviderImpl: provider}
+
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{ep1}}
+	logger, _ := zap.NewDevelopment()
+	stateStore := newMockStateStore()
+	cbManager := core.NewCircuitBreakerManager()
+
+	excludeFalse := false
+	ci := NewClusterInvoker(
+		discovery,
+		[]core.Router{},
+		map[string]core.LoadBalancer{"round_robin": &testRoundRobin{}},
+		&policy.RetryPolicy{
+			Retry:                 3,
+			BackoffType:           "fixed",
+			BaseMs:                1,
+			ErrorCodes:            []string{"500"},
+			ExcludeFailedEndpoint: &excludeFalse,
+		},
+		cbManager,
+		stateStore,
+		logger,
+		nil,
+	)
+
+	// 先让 ep-1 连续失败 10 次触发熔断
+	for i := 0; i < 10; i++ {
+		cbManager.RecordRaw("ep-1", false, 0, 0, 0, 0)
+	}
+
+	gctx := newTestGatewayContext()
+	defer core.ReleaseContext(gctx)
+
+	err := ci.Invoke(gctx)
+	if err == nil {
+		t.Fatal("expected error due to circuit breaker Open, got nil")
+	}
+
+	// 应该在第 1 次 Attempt 真正请求前（由于已熔断）就直接被阻断返回错误，所以 AttemptCount 应该为 0
+	if gctx.AttemptCount != 0 {
+		t.Errorf("expected 0 attempts (aborted before execution), got %d", gctx.AttemptCount)
+	}
+}
+
+func TestClusterInvoker_FatalErrAbortsRetry(t *testing.T) {
+	provider := &countingProvider{
+		name:      "openai",
+		failCount: 5,
+	}
+
+	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4", ProviderImpl: provider}
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{ep1}}
+	logger, _ := zap.NewDevelopment()
+	stateStore := newMockStateStore()
+	cbManager := core.NewCircuitBreakerManager()
+
+	ci := NewClusterInvoker(
+		discovery,
+		[]core.Router{},
+		map[string]core.LoadBalancer{"round_robin": &testRoundRobin{}},
+		&policy.RetryPolicy{
+			Retry: 3,
+			ErrorCodes: []string{"500"},
+		},
+		cbManager,
+		stateStore,
+		logger,
+		nil,
+	)
+
+	gctx := newTestGatewayContext()
+	defer core.ReleaseContext(gctx)
+
+	// 强制注入 FatalErr
+	gctx.FatalErr = core.ErrFatalNoAvailableEndpoint
+
+	err := ci.Invoke(gctx)
+	if err == nil || err.Error() != core.ErrFatalNoAvailableEndpoint.Error() {
+		t.Fatalf("expected ErrFatalNoAvailableEndpoint, got %v", err)
+	}
+
+	// 应该在第 1 次 Attempt 执行前就直接因为 FatalErr 返回，所以 AttemptCount 为 0
+	if gctx.AttemptCount != 0 {
+		t.Errorf("expected 0 attempts, got %d", gctx.AttemptCount)
+	}
+}
+
+

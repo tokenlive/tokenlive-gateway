@@ -13,6 +13,9 @@ import (
 // ErrNoAvailableEndpoint 无可用端点错误
 var ErrNoAvailableEndpoint = errors.New("no available endpoint")
 
+// ErrFatalNoAvailableEndpoint 致命的无可用端点错误（例如端点亲和性强制要求不允许降级且匹配失败）
+var ErrFatalNoAvailableEndpoint = errors.New("fatal: no available endpoint")
+
 // Invoker 统一的"可被调用"抽象
 type Invoker interface {
 	Invoke(gctx *GatewayContext) error

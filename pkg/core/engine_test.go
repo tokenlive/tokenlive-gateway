@@ -1725,6 +1725,44 @@ func TestShouldDynamicFallback(t *testing.T) {
 		}
 		assert.True(t, shouldDynamicFallback(gctx4, ErrNoAvailableEndpoint))
 	}
+
+	// 4. 端点亲和性策略下 allowDegrade = false 屏蔽跨模型降级 (Fallback)
+	{
+		gctx5 := &GatewayContext{
+			Policy: &policy.Policy{
+				LoadBalancePolicy: &policy.LoadBalancePolicy{
+					Type: "endpoint_affinity",
+					Params: map[string]interface{}{
+						"allow_degrade": false,
+					},
+				},
+				InvocationPolicy: &policy.InvocationPolicy{
+					FallbackPolicy: &policy.FallbackPolicy{
+						Targets: []string{"gpt-3.5-turbo"},
+					},
+				},
+			},
+		}
+		assert.False(t, shouldDynamicFallback(gctx5, ErrNoAvailableEndpoint))
+
+		// allowDegrade 设为 true 时应该允许降级
+		gctx6 := &GatewayContext{
+			Policy: &policy.Policy{
+				LoadBalancePolicy: &policy.LoadBalancePolicy{
+					Type: "endpoint_affinity",
+					Params: map[string]interface{}{
+						"allow_degrade": true,
+					},
+				},
+				InvocationPolicy: &policy.InvocationPolicy{
+					FallbackPolicy: &policy.FallbackPolicy{
+						Targets: []string{"gpt-3.5-turbo"},
+					},
+				},
+			},
+		}
+		assert.True(t, shouldDynamicFallback(gctx6, ErrNoAvailableEndpoint))
+	}
 }
 
 type testInspectDiscovery struct {
