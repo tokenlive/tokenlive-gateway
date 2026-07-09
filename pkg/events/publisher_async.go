@@ -55,9 +55,13 @@ func (p *AsyncPublisher) isEventEnabled(eventType string) bool {
 		if p.cfg.InvocationFail != nil {
 			return *p.cfg.InvocationFail
 		}
-	case EventTypeLBSwitch:
-		if p.cfg.LBSwitch != nil {
-			return *p.cfg.LBSwitch
+	case EventTypeModelFailover:
+		if p.cfg.ModelFailover != nil {
+			return *p.cfg.ModelFailover
+		}
+	case EventTypeEndpointFailover:
+		if p.cfg.EndpointFailover != nil {
+			return *p.cfg.EndpointFailover
 		}
 	}
 	return true

@@ -126,7 +126,7 @@ func TestAsyncPublisher_FilterEvents(t *testing.T) {
 	_ = asyncPub.Publish(context.Background(), &OpsEvent{EventType: EventTypeInvocationFail})
 
 	// 3. 发送默认启用的事件（未配置的事件）
-	_ = asyncPub.Publish(context.Background(), &OpsEvent{EventType: EventTypeLBSwitch})
+	_ = asyncPub.Publish(context.Background(), &OpsEvent{EventType: EventTypeModelFailover})
 
 	// 等待 worker 协程发送
 	time.Sleep(20 * time.Millisecond)

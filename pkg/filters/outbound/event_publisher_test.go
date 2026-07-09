@@ -66,7 +66,7 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 		}
 	})
 
-	t.Run("LB Switch event when fallback happens", func(t *testing.T) {
+	t.Run("Model Failover event when fallback happens", func(t *testing.T) {
 		pub := &mockPublisher{}
 		f := NewEventPublishFilter(pub, nil)
 		gctx := &core.GatewayContext{
@@ -86,8 +86,8 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 			t.Fatalf("expected 1 published event, got %d", len(pub.published))
 		}
 		evt := pub.published[0]
-		if evt.EventType != events.EventTypeLBSwitch {
-			t.Errorf("expected event type %q, got %q", events.EventTypeLBSwitch, evt.EventType)
+		if evt.EventType != events.EventTypeModelFailover {
+			t.Errorf("expected event type %q, got %q", events.EventTypeModelFailover, evt.EventType)
 		}
 		if evt.Message != "fallback from gpt-4 to gpt-4:free" {
 			t.Errorf("unexpected message: %q", evt.Message)
@@ -306,19 +306,19 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 		if len(pub.published) != 2 {
 			t.Fatalf("expected 2 published events, got %d", len(pub.published))
 		}
-		var failEvt, lbEvt *events.OpsEvent
+		var failEvt, endpointFailoverEvt *events.OpsEvent
 		for _, e := range pub.published {
 			if e.EventType == events.EventTypeInvocationFail {
 				failEvt = e
-			} else if e.EventType == events.EventTypeLBSwitch {
-				lbEvt = e
+			} else if e.EventType == events.EventTypeEndpointFailover {
+				endpointFailoverEvt = e
 			}
 		}
 		if failEvt == nil {
 			t.Fatalf("expected invocation_fail event to be published")
 		}
-		if lbEvt == nil {
-			t.Fatalf("expected lb_switch event to be published")
+		if endpointFailoverEvt == nil {
+			t.Fatalf("expected endpoint_failover event to be published")
 		}
 		if failEvt.EndpointID != "d90c177924mt69n7b0n0" {
 			t.Errorf("expected EndpointID to be failed endpoint, got %q", failEvt.EndpointID)

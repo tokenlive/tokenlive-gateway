@@ -62,7 +62,7 @@ func (f *EventPublishFilter) OnResponse(gctx *core.GatewayContext) error {
 }
 
 // analyzeEvents examines the GatewayContext and returns all applicable policy events.
-// A single request may trigger multiple events (e.g. circuit_break + lb_switch).
+// A single request may trigger multiple events (e.g. circuit_break + model_failover).
 func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.OpsEvent {
 	if gctx.Err == nil && len(gctx.FallbackChain) <= 1 && !hasFailedAttempts(gctx.History) {
 		return nil
@@ -122,10 +122,10 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 	// 2. Invocation failure for failed upstream attempts recorded in History.
 	result = append(result, f.detectInvocationFailuresFromHistory(gctx, base)...)
 
-	// 3. LB switch / fallback
+	// 3. Model Failover / fallback
 	if len(gctx.FallbackChain) > 1 {
 		evt := base
-		evt.EventType = events.EventTypeLBSwitch
+		evt.EventType = events.EventTypeModelFailover
 		evt.ModelCode = gctx.Model // fallback target model
 		evt.Message = "fallback from " + gctx.FallbackChain[0] + " to " + gctx.FallbackChain[len(gctx.FallbackChain)-1]
 		if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
@@ -134,7 +134,7 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 		}
 		result = append(result, &evt)
 	} else if len(gctx.History) > 1 {
-		// 3.5. Endpoint-level LB switch (failover within the same model)
+		// 3.5. Endpoint-level failover (failover within the same model)
 		lastAttempt := gctx.History[len(gctx.History)-1]
 		if lastAttempt.Success {
 			var firstFailed core.AttemptRecord
@@ -146,7 +146,7 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 			}
 			if firstFailed.EndpointID != "" {
 				evt := base
-				evt.EventType = events.EventTypeLBSwitch
+				evt.EventType = events.EventTypeEndpointFailover
 				evt.Message = fmt.Sprintf("endpoint failover: switched from %s (%s) to %s (%s) due to error: %s",
 					firstFailed.EndpointID, firstFailed.Provider,
 					lastAttempt.EndpointID, lastAttempt.Provider,
