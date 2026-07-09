@@ -47,7 +47,7 @@ func (pi *ProviderInvoker) Invoke(gctx *core.GatewayContext) error {
 	var originalRawBody []byte
 	if pi.endpoint != nil {
 		effectiveModel := pi.endpoint.EffectiveModel()
-		if effectiveModel != "" && effectiveModel != originalModel {
+		if effectiveModel != "" && (effectiveModel != originalModel || (gctx.OriginalModel != "" && effectiveModel != gctx.OriginalModel)) {
 			gctx.Model = effectiveModel
 			// 同步替换 RawBody 中的 model 字段
 			originalRawBody = gctx.RawBody

@@ -392,7 +392,7 @@ func TestOpenAIMessages_NonStream_Tools(t *testing.T) {
 		t.Fatalf("expected 1 content block, got %v", resp["content"])
 	}
 	item := content[0].(map[string]interface{})
-	if item["type"] != "tool_use" || item["id"] != "call_123" || item["name"] != "get_weather" {
+	if item["type"] != "tool_use" || item["id"] != "toolu_123" || item["name"] != "get_weather" {
 		t.Errorf("unexpected content block: %v", item)
 	}
 	input := item["input"].(map[string]interface{})
@@ -451,7 +451,7 @@ func TestOpenAIMessages_Stream_Tools(t *testing.T) {
 		`"type":"message_start"`,
 		`event: content_block_start`,
 		`"type":"tool_use"`,
-		`"id":"call_123"`,
+		`"id":"toolu_123"`,
 		`"name":"get_weather"`,
 		`event: content_block_delta`,
 		`"type":"input_json_delta"`,

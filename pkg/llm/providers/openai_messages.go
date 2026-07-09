@@ -104,6 +104,9 @@ func (i *openaiMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provide
 
 	var openAIMessages []interface{}
 	if systemPrompt != "" {
+		if !strings.Contains(op.baseURL, "api.openai.com") {
+			systemPrompt = cleanSystemPrompt(systemPrompt)
+		}
 		openAIMessages = append(openAIMessages, map[string]interface{}{
 			"role":    "system",
 			"content": systemPrompt,
@@ -218,21 +221,54 @@ func (i *openaiMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provide
 			}
 		}
 	}
+	if !strings.Contains(op.baseURL, "api.openai.com") {
+		openAIMessages = degradeMessagesToTextOnly(openAIMessages)
+	}
 	payload["messages"] = openAIMessages
 	delete(payload, "system")
 
+	// 翻译 stop_sequences -> stop
+	if stops, ok := payload["stop_sequences"]; ok {
+		payload["stop"] = stops
+		delete(payload, "stop_sequences")
+	}
+
+	// 剔除第三方 OpenAI 兼容端点不支持的参数 (如 top_k、metadata、output_config)
+	if !strings.Contains(op.baseURL, "api.openai.com") {
+		delete(payload, "top_k")
+		delete(payload, "metadata")
+		delete(payload, "output_config")
+	}
+
 	// 映射 max_tokens 到 max_completion_tokens
 	if maxTokens, ok := payload["max_tokens"]; ok {
-		payload["max_completion_tokens"] = maxTokens
-		delete(payload, "max_tokens")
+		// 为了与各大第三方 OpenAI 兼容上游（如商汤 Sensenova, DeepSeek 等）保持最佳兼容性（它们通常不支持 max_completion_tokens 字段，只接受 max_tokens），
+		// 我们只有在明确请求官方 OpenAI 或是本地测试时才进行新版字段转换
+		isOfficialOrTest := strings.Contains(op.baseURL, "api.openai.com") ||
+			strings.Contains(op.baseURL, "127.0.0.1") ||
+			strings.Contains(op.baseURL, "localhost")
+		if isOfficialOrTest {
+			payload["max_completion_tokens"] = maxTokens
+			delete(payload, "max_tokens")
+		}
 	}
 
 	// 翻译 thinking (Anthropic -> OpenAI)
-	if thinking, ok := payload["thinking"].(map[string]interface{}); ok {
-		if t, ok := thinking["type"].(string); ok {
-			if t == "adaptive" {
-				thinking["type"] = "auto"
+	if _, exists := payload["thinking"]; exists {
+		isOfficialOrTest := strings.Contains(op.baseURL, "api.openai.com") ||
+			strings.Contains(op.baseURL, "127.0.0.1") ||
+			strings.Contains(op.baseURL, "localhost")
+		if isOfficialOrTest {
+			if thinking, ok := payload["thinking"].(map[string]interface{}); ok {
+				if t, ok := thinking["type"].(string); ok {
+					if t == "adaptive" {
+						thinking["type"] = "auto"
+					}
+				}
 			}
+		} else {
+			// 对于第三方兼容端点，由于不支持 thinking 字段，直接剔除以防 400 报错
+			delete(payload, "thinking")
 		}
 	}
 
@@ -255,7 +291,11 @@ func (i *openaiMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provide
 				fnMap["description"] = desc
 			}
 			if inputSchema, ok := tMap["input_schema"]; ok {
-				fnMap["parameters"] = inputSchema
+				if isM, ok := inputSchema.(map[string]interface{}); ok {
+					fnMap["parameters"] = cleanJSONSchema(isM, !strings.Contains(op.baseURL, "api.openai.com"))
+				} else {
+					fnMap["parameters"] = inputSchema
+				}
 			} else {
 				fnMap["parameters"] = map[string]interface{}{
 					"type":       "object",
@@ -268,6 +308,11 @@ func (i *openaiMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provide
 			})
 		}
 		if len(oaiTools) > 0 {
+			// 第三方 OpenAI 兼容端点通常无法在单次请求中高效解析海量工具（如 50+ 个），强行发送会导致上游 Schema 校验超时或返回 400 错误。
+			// 因此我们对非官方端点限制 tools 的最大数量为 32 个以确保可用性与稳定性。
+			if !strings.Contains(op.baseURL, "api.openai.com") && len(oaiTools) > 32 {
+				oaiTools = oaiTools[:32]
+			}
 			payload["tools"] = oaiTools
 		} else {
 			delete(payload, "tools")
@@ -364,7 +409,7 @@ func translateNonStreamResponse(gctx *core.GatewayContext) error {
 			}
 			anthropicContent = append(anthropicContent, map[string]interface{}{
 				"type":  "tool_use",
-				"id":    tc.ID,
+				"id":    normalizeToolUseID(tc.ID),
 				"name":  tc.Function.Name,
 				"input": input,
 			})
@@ -673,7 +718,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 								blockStartEv.Type = "content_block_start"
 								blockStartEv.Index = anthropicIdx
 								blockStartEv.ContentBlock.Type = "tool_use"
-								blockStartEv.ContentBlock.ID = tc.ID
+								blockStartEv.ContentBlock.ID = normalizeToolUseID(tc.ID)
 								blockStartEv.ContentBlock.Name = tc.Function.Name
 								blockStartEv.ContentBlock.Input = make(map[string]interface{})
 
@@ -793,4 +838,122 @@ func normalizeAnthropicID(id string) string {
 		return "msg_mockprobe1234567890"
 	}
 	return res
+}
+
+func cleanJSONSchema(m map[string]interface{}, removeAdditionalProps bool) map[string]interface{} {
+	if m == nil {
+		return m
+	}
+	res := make(map[string]interface{})
+	for k, v := range m {
+		// 剔除第三方端点可能无法解析并导致 400 报错的高级/冷门 JSON Schema 元属性
+		if k == "$schema" || k == "propertyNames" || k == "minItems" || k == "maxItems" || 
+		   k == "minLength" || k == "maxLength" || k == "default" || k == "pattern" {
+			continue
+		}
+		if k == "additionalProperties" && removeAdditionalProps {
+			continue
+		}
+		if subMap, ok := v.(map[string]interface{}); ok {
+			res[k] = cleanJSONSchema(subMap, removeAdditionalProps)
+		} else if subArr, ok := v.([]interface{}); ok {
+			var newArr []interface{}
+			for _, item := range subArr {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					newArr = append(newArr, cleanJSONSchema(itemMap, removeAdditionalProps))
+				} else {
+					newArr = append(newArr, item)
+				}
+			}
+			res[k] = newArr
+		} else {
+			res[k] = v
+		}
+	}
+	return res
+}
+
+func degradeMessagesToTextOnly(msgs []interface{}) []interface{} {
+	var temp []interface{}
+	for _, m := range msgs {
+		mMap, ok := m.(map[string]interface{})
+		if !ok {
+			temp = append(temp, m)
+			continue
+		}
+		role, _ := mMap["role"].(string)
+		if role == "system" && len(temp) > 0 {
+			// 非最开头消息，将 system 角色退化为 user 角色，防止上游报错 InvalidParameter
+			role = "user"
+			mMap["role"] = "user"
+		}
+		if role == "tool" {
+			toolCallID, _ := mMap["tool_call_id"].(string)
+			content, _ := mMap["content"].(string)
+			temp = append(temp, map[string]interface{}{
+				"role":    "user",
+				"content": fmt.Sprintf("<historical_tool_result id=\"%s\">\n%s\n</historical_tool_result>", toolCallID, content),
+			})
+		} else if role == "assistant" {
+			content, _ := mMap["content"].(string)
+			temp = append(temp, map[string]interface{}{
+				"role":    "assistant",
+				"content": content,
+			})
+		} else {
+			temp = append(temp, mMap)
+		}
+	}
+
+	// 合并相邻角色相同的消息
+	var res []interface{}
+	for _, m := range temp {
+		mMap, ok := m.(map[string]interface{})
+		if !ok {
+			res = append(res, m)
+			continue
+		}
+		if len(res) == 0 {
+			res = append(res, mMap)
+			continue
+		}
+		lastMap, ok := res[len(res)-1].(map[string]interface{})
+		if !ok {
+			res = append(res, mMap)
+			continue
+		}
+		if lastMap["role"] == mMap["role"] {
+			lastContent, _ := lastMap["content"].(string)
+			thisContent, _ := mMap["content"].(string)
+			lastMap["content"] = lastContent + "\n\n" + thisContent
+		} else {
+			res = append(res, mMap)
+		}
+	}
+	return res
+}
+
+func cleanSystemPrompt(prompt string) string {
+	lines := strings.Split(prompt, "\n")
+	var cleanLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "x-anthropic-") {
+			continue
+		}
+		cleanLines = append(cleanLines, line)
+	}
+	return strings.Join(cleanLines, "\n")
+}
+
+func normalizeToolUseID(id string) string {
+	if id == "" {
+		return "toolu_mock"
+	}
+	if strings.HasPrefix(id, "toolu_") {
+		return id
+	}
+	res := strings.TrimPrefix(id, "call_")
+	res = strings.TrimPrefix(res, "toolu-")
+	return "toolu_" + res
 }

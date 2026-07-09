@@ -133,7 +133,14 @@ func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string) e
 	// 流式请求注入 stream_options 以确保上游在最后一个 SSE chunk 返回 usage 统计
 	body := gctx.RawBody
 	if gctx.IsStream {
-		body = ensureStreamUsage(body)
+		// 为了防止不支持该特性的第三方 OpenAI 兼容端点（如火山引擎等）报错 InvalidParameter，
+		// 我们只有在明确请求官方 OpenAI 或是本地测试时才注入 stream_options
+		isOfficialOrTest := strings.Contains(p.baseURL, "api.openai.com") ||
+			strings.Contains(p.baseURL, "127.0.0.1") ||
+			strings.Contains(p.baseURL, "localhost")
+		if isOfficialOrTest {
+			body = ensureStreamUsage(body)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(singleCtx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -192,9 +199,15 @@ func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string) e
 	gctx.UpstreamResponse = resp
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		gctx.UpstreamBody = body
-		return fmt.Errorf("upstream error: status %d, body: %s", resp.StatusCode, string(body))
+		respBody, _ := io.ReadAll(resp.Body)
+		gctx.UpstreamBody = respBody
+		gctx.Logger(zap.L()).Warn("upstream error details",
+			zap.String("endpoint_id", endpointID),
+			zap.Int("status", resp.StatusCode),
+			zap.String("req_body", string(body)),
+			zap.String("resp_body", string(respBody)),
+		)
+		return fmt.Errorf("upstream error: status %d, body: %s", resp.StatusCode, string(respBody))
 	}
 
 	if gctx.IsStream {

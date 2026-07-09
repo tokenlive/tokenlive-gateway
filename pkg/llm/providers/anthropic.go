@@ -58,6 +58,12 @@ func (p *AnthropicProvider) HealthCheck(ctx context.Context) error {
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
+	// 如果是非官方 Anthropic 域名且 apiKey 不为空，则自动补充 Authorization: Bearer <key>
+	// 以兼容类似于商汤(Sensenova)等使用 Anthropic 协议但采用 OpenAI 鉴权机制的第三方提供商
+	if p.apiKey != "" && !strings.Contains(p.baseURL, "anthropic.com") {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return err
