@@ -416,4 +416,75 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 			t.Errorf("expected EndpointID to be %q, got %q", "ep-muyuan-1", evt.EndpointID)
 		}
 	})
+
+	t.Run("Endpoint Failover with 1-2-3 step process", func(t *testing.T) {
+		pub := &mockPublisher{}
+		f := NewEventPublishFilter(pub, nil)
+		gctx := &core.GatewayContext{
+			Ctx:           context.Background(),
+			Request:       httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+			OriginalModel: "glm-5.2",
+			Model:         "glm-5.2",
+			AttemptCount:  3,
+			SelectedEndpoint: &core.Endpoint{
+				ID:       "ep-3",
+				Code:     "glm-ep-3",
+				Provider: "provider-c",
+				Model:    "glm-5.2",
+			},
+			History: []core.AttemptRecord{
+				{
+					Model:        "glm-5.2",
+					EndpointID:   "ep-1",
+					EndpointCode: "glm-ep-1",
+					Provider:     "provider-a",
+					StatusCode:   502,
+					Error:        "bad gateway",
+					Success:      false,
+					Timestamp:    time.Now(),
+				},
+				{
+					Model:        "glm-5.2",
+					EndpointID:   "ep-2",
+					EndpointCode: "glm-ep-2",
+					Provider:     "provider-b",
+					StatusCode:   500,
+					Error:        "internal server error",
+					Success:      false,
+					Timestamp:    time.Now(),
+				},
+				{
+					Model:        "glm-5.2",
+					EndpointID:   "ep-3",
+					EndpointCode: "glm-ep-3",
+					Provider:     "provider-c",
+					StatusCode:   200,
+					Success:      true,
+					Timestamp:    time.Now(),
+				},
+			},
+		}
+
+		err := f.OnResponse(gctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond) // Wait for async goroutine
+
+		var endpointFailoverEvt *events.OpsEvent
+		for _, e := range pub.published {
+			if e.EventType == events.EventTypeEndpointFailover {
+				endpointFailoverEvt = e
+				break
+			}
+		}
+		if endpointFailoverEvt == nil {
+			t.Fatalf("expected endpoint_failover event to be published")
+		}
+
+		expectedMsg := "endpoint failover: [1] ep-1 (provider-a) failed: bad gateway -> [2] ep-2 (provider-b) failed: internal server error -> [3] ep-3 (provider-c) succeeded"
+		if endpointFailoverEvt.Message != expectedMsg {
+			t.Errorf("expected Message to be %q, got %q", expectedMsg, endpointFailoverEvt.Message)
+		}
+	})
 }

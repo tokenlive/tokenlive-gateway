@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
@@ -137,21 +138,25 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 		// 3.5. Endpoint-level failover (failover within the same model)
 		lastAttempt := gctx.History[len(gctx.History)-1]
 		if lastAttempt.Success {
-			var firstFailed core.AttemptRecord
-			for _, rec := range gctx.History {
-				if !rec.Success {
-					firstFailed = rec
-					break
+			var steps []string
+			hasFailure := false
+			for i, rec := range gctx.History {
+				stepNum := i + 1
+				if rec.Success {
+					steps = append(steps, fmt.Sprintf("[%d] %s (%s) succeeded", stepNum, rec.EndpointID, rec.Provider))
+				} else {
+					hasFailure = true
+					errStr := rec.Error
+					if errStr == "" {
+						errStr = fmt.Sprintf("status %d", rec.StatusCode)
+					}
+					steps = append(steps, fmt.Sprintf("[%d] %s (%s) failed: %s", stepNum, rec.EndpointID, rec.Provider, errStr))
 				}
 			}
-			if firstFailed.EndpointID != "" {
+			if hasFailure {
 				evt := base
 				evt.EventType = events.EventTypeEndpointFailover
-				evt.Message = fmt.Sprintf("endpoint failover: switched from %s (%s) to %s (%s) due to error: %s",
-					firstFailed.EndpointID, firstFailed.Provider,
-					lastAttempt.EndpointID, lastAttempt.Provider,
-					firstFailed.Error,
-				)
+				evt.Message = "endpoint failover: " + strings.Join(steps, " -> ")
 				if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
 					evt.PolicyID = gctx.Policy.InvocationPolicy.ID
 					evt.PolicyName = gctx.Policy.InvocationPolicy.Name
