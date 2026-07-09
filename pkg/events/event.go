@@ -4,11 +4,13 @@ import "context"
 
 // Event types
 const (
-	EventTypeCircuitBreak     = "circuit_break"
-	EventTypeRateLimit        = "rate_limit"
-	EventTypeInvocationFail   = "invocation_fail"
-	EventTypeModelFailover    = "model_failover"
-	EventTypeEndpointFailover = "endpoint_failover"
+	EventTypeCircuitBreak        = "circuit_break"
+	EventTypeRateLimit           = "rate_limit"
+	EventTypeInvocationFail      = "invocation_fail"
+	EventTypeModelFailover       = "model_failover"
+	EventTypeEndpointFailover    = "endpoint_failover"
+	EventTypeRetryError          = "retry_error"
+	EventTypeCircuitBreakerError = "circuit_breaker_error"
 )
 
 // Event represents a policy execution event to be published.

@@ -308,14 +308,14 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 		}
 		var failEvt, endpointFailoverEvt *events.OpsEvent
 		for _, e := range pub.published {
-			if e.EventType == events.EventTypeInvocationFail {
+			if e.EventType == events.EventTypeRetryError {
 				failEvt = e
 			} else if e.EventType == events.EventTypeEndpointFailover {
 				endpointFailoverEvt = e
 			}
 		}
 		if failEvt == nil {
-			t.Fatalf("expected invocation_fail event to be published")
+			t.Fatalf("expected retry_error event to be published")
 		}
 		if endpointFailoverEvt == nil {
 			t.Fatalf("expected endpoint_failover event to be published")

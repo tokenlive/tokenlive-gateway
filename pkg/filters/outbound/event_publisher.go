@@ -231,6 +231,7 @@ func (f *EventPublishFilter) detectInvocationFailuresFromHistory(gctx *core.Gate
 			if rp.Retry > 0 {
 				if matched, reason := rp.MatchErrorWithReason(rec.StatusCode, rec.ContentType, errMsg, rec.Body); matched {
 					evt := invocationFailEventFromAttempt(base, rec)
+					evt.EventType = events.EventTypeRetryError
 					evt.Message = fmt.Sprintf("retry policy matched: %s", reason)
 					if errMsg != "" {
 						evt.Message = fmt.Sprintf("%s (attempt error: %s)", evt.Message, errMsg)
@@ -248,6 +249,7 @@ func (f *EventPublishFilter) detectInvocationFailuresFromHistory(gctx *core.Gate
 			}
 			if matched, reason := cbPolicy.MatchErrorWithReason(rec.StatusCode, rec.ContentType, errMsg, rec.Body); matched {
 				evt := invocationFailEventFromAttempt(base, rec)
+				evt.EventType = events.EventTypeCircuitBreakerError
 				evt.Message = fmt.Sprintf("circuit breaker policy matched: %s", reason)
 				if errMsg != "" {
 					evt.Message = fmt.Sprintf("%s (attempt error: %s)", evt.Message, errMsg)
