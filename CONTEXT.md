@@ -112,6 +112,17 @@ _Avoid_: config provider, data source
 独立的后台管理工程，通过管理 API 维护 models/providers/endpoints 配置，将已合并的扁平 Endpoint 数据（`[]ResolvedEndpoint`）按 model 维度写入 Redis。网关不直接操作配置，只从 Redis 读取。
 _Avoid_: admin service, management backend
 
+**Endpoint Affinity (端点亲和性/会话粘性)**:
+打分与筛选函数中的选项，用于让同一逻辑会话（例如通过 `conversation_id` 或 Prompt 前缀指纹关联）倾向于路由到上一次命中的 Endpoint。其核心目的是最大化命中上游物理节点的 **Prompt Cache（提示词缓存）**，从而降低首字延迟（TTFT）并节省 Token 成本。在具体实现中，它既可以表现为增加打分权重的“软粘性”，也可以通过配置控制强制锁定。
+_Avoid_: session affinity, sticky routing
+
+**Exclude Failed Endpoint (排除失败端点控制)**:
+重试策略中用于控制失败端点生命周期的参数（如 `exclude_failed_endpoint` 字段）。当设为 `true`（默认值）时，请求失败重试会触发故障转移（Failover），将该端点临时排除，漂移到其他端点；当设为 `false` 时，系统将触发原地重试，退避后仍在原端点上重试，常用于保留端点亲和性下的 Prompt Cache，必须配合指数退避以防重试风暴。
+
+**Fatal Error (致命错误)**:
+服务治理流中的一种阻断性异常标记。当触发某些不可恢复的故障（例如强端点亲和性强制要求且不允许降级，但路由匹配失败）时，系统会在请求上下文（`GatewayContext.FatalErr`）中写入致命错误（如 `ErrFatalNoAvailableEndpoint`）。该错误一经标记，将立刻短路重试引擎与降级引擎，立即终止单次请求内的所有重试 Attempt 并跳过 Fallback 链，直接向客户端返回错误，以防止模型污染和无谓的重试开销。
+
+
 ## Relationships
 
 - 一个 **Model** 持有一组 **Endpoint**，表达"这个模型可以通过哪些端点被服务"
@@ -123,6 +134,9 @@ _Avoid_: admin service, management backend
 - **Auth 分层**：Gin middleware 提取 user（认证），Engine auth Filter 做授权检查（post-policy，读 gctx.Policy）
 - **AdminProject** 写入 Redis（`aigw:config:endpoints:{modelName}`），网关从 Redis 读取 Endpoint 数据和 Policy 配置（版本轮询）
 - **ConfigSource** 分两层：YAML（默认）→ Redis（覆盖），Redis 不可用时回退到 YAML
+- **Exclude Failed Endpoint** 控制重试路由时是否允许端点漂移。当其为 `false`（原地重试）时，必须与指数退避配合，且重试前需校验端点的熔断器状态（熔断优先原则）
+- **Fatal Error**（例如亲和性拦截触发的 `ErrFatalNoAvailableEndpoint`）一旦在 LBS 或 Invoker 阶段被写入上下文，将绕过所有重试与 Fallback，直接向客户端返回该错误
+
 
 ## Example dialogue
 
