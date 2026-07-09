@@ -69,7 +69,12 @@ func (e *CostLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayConte
 					zap.Float64("burst_ratio", burstCoeff),
 					zap.Int64("remaining", remaining),
 				)
-				return &HTTPError{Code: http.StatusTooManyRequests, Message: "cost limit exceeded (daily budget blown)"}
+				return &HTTPError{
+					Code:         http.StatusTooManyRequests,
+					Message:      "cost limit exceeded (daily budget blown)",
+					Threshold:    float64Ptr(float64(sw.Threshold)),
+					CurrentValue: float64Ptr(float64(capacity - remaining)),
+				}
 			}
 		} else {
 			current, err := e.stateStore.RateLimitIncr(ctx, limitKey+":"+window.String(), estimateCost, window)
@@ -91,7 +96,12 @@ func (e *CostLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayConte
 					zap.Int64("current", current),
 					zap.Int64("estimated_request_cost_li", estimateCost),
 				)
-				return &HTTPError{Code: http.StatusTooManyRequests, Message: "cost limit exceeded (daily budget blown)"}
+				return &HTTPError{
+					Code:         http.StatusTooManyRequests,
+					Message:      "cost limit exceeded (daily budget blown)",
+					Threshold:    float64Ptr(float64(sw.Threshold)),
+					CurrentValue: float64Ptr(float64(current)),
+				}
 			}
 		}
 	}

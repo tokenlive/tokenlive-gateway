@@ -85,6 +85,13 @@ func (f *RateLimitFilter) OnRequest(gctx *core.GatewayContext) error {
 				err = exec.Execute(gctx.Ctx, gctx, lp)
 			}
 			if err != nil {
+				if httpErr, ok := err.(*limiter.HTTPError); ok && httpErr.Code == http.StatusTooManyRequests {
+					if gctx.Tags == nil {
+						gctx.Tags = make(map[string]string)
+					}
+					gctx.Tags["rate_limit_policy_name"] = lp.Name
+					gctx.Tags["rate_limit_policy_id"] = lp.ID
+				}
 				// 限流触发时直接发事件，此时 policy 信息完整
 				if f.eventHandler != nil {
 					if httpErr, ok := err.(*limiter.HTTPError); ok && httpErr.Code == http.StatusTooManyRequests {

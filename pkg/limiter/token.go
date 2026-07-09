@@ -58,7 +58,12 @@ func (e *TokenLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayCont
 					zap.Float64("burst_ratio", burstCoeff),
 					zap.Int64("remaining", remaining),
 				)
-				return &HTTPError{Code: http.StatusTooManyRequests, Message: "rate limit exceeded"}
+				return &HTTPError{
+					Code:         http.StatusTooManyRequests,
+					Message:      "rate limit exceeded",
+					Threshold:    float64Ptr(float64(sw.Threshold)),
+					CurrentValue: float64Ptr(float64(capacity - remaining)),
+				}
 			}
 		} else {
 			current, err := e.stateStore.RateLimitIncr(ctx, limitKey+":"+window.String(), estimate, window)
@@ -80,7 +85,12 @@ func (e *TokenLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayCont
 					zap.Int64("current", current),
 					zap.Int64("estimated_request_tokens", estimate),
 				)
-				return &HTTPError{Code: http.StatusTooManyRequests, Message: "rate limit exceeded"}
+				return &HTTPError{
+					Code:         http.StatusTooManyRequests,
+					Message:      "rate limit exceeded",
+					Threshold:    float64Ptr(float64(sw.Threshold)),
+					CurrentValue: float64Ptr(float64(current)),
+				}
 			}
 		}
 	}

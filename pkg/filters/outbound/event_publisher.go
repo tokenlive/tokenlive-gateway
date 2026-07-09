@@ -10,6 +10,7 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/events"
 	"github.com/tokenlive/tokenlive-gateway/pkg/limiter"
+	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 
 	"go.uber.org/zap"
 )
@@ -175,12 +176,25 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 			evt := base
 			evt.EventType = events.EventTypeRateLimit
 			evt.Message = httpErr.Error()
+			evt.Threshold = httpErr.Threshold
+			evt.CurrentValue = httpErr.CurrentValue
+
 			if gctx.Policy != nil && len(gctx.Policy.LimitPolicies) > 0 {
-				lp := gctx.Policy.LimitPolicies[0]
-				evt.PolicyID = lp.ID
-				evt.PolicyName = lp.Name
-				if len(lp.SlidingWindows) > 0 {
-					tVal := float64(lp.SlidingWindows[0].Threshold)
+				// 获取可能匹配的限流策略以补充 policy 元数据
+				var matchedLP *policy.LimitPolicy
+				for _, lp := range gctx.Policy.LimitPolicies {
+					if lp.Name == gctx.Tags["rate_limit_policy_name"] || lp.ID == gctx.Tags["rate_limit_policy_id"] {
+						matchedLP = lp
+						break
+					}
+				}
+				if matchedLP == nil {
+					matchedLP = gctx.Policy.LimitPolicies[0]
+				}
+				evt.PolicyID = matchedLP.ID
+				evt.PolicyName = matchedLP.Name
+				if evt.Threshold == nil && len(matchedLP.SlidingWindows) > 0 {
+					tVal := float64(matchedLP.SlidingWindows[0].Threshold)
 					evt.Threshold = &tVal
 				}
 			}

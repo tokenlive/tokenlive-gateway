@@ -482,6 +482,97 @@ func NewGatewayEngine(
 		)
 	}
 
+	// 启动 Redis 订阅实时刷新缓存（针对 RedisGatewayProvider 等 Redis 存储模式）
+	if rdb != nil {
+		go func() {
+			var retryDelay = 1 * time.Second
+			var maxRetryDelay = 30 * time.Second
+			var retryCount = 0
+			var maxRetries = 5
+
+			for {
+				select {
+				case <-engine.Context().Done():
+					return
+				default:
+				}
+
+				pubsub := rdb.Subscribe(engine.Context(), "aigw:channel:policy_update", "aigw:channel:apikey_update")
+
+				// 尝试接收第一条确认消息以检测是否支持此命令
+				_, err := pubsub.Receive(engine.Context())
+				if err != nil {
+					_ = pubsub.Close()
+					errMsg := err.Error()
+					if strings.Contains(errMsg, "unknown command") || strings.Contains(errMsg, "not allowed") || strings.Contains(errMsg, "ERR unknown") {
+						logger.Logger.Warn("Redis Pub/Sub is not supported by current Redis server (unknown command). Falling back to local cache TTL expiration.", zap.Error(err))
+						return // 遇到不支持命令，彻底退出，不再重试
+					}
+
+					retryCount++
+					if retryCount > maxRetries {
+						logger.Logger.Warn("Redis Pub/Sub subscription failed permanently after maximum retries. Falling back to local cache TTL expiration.", zap.Error(err))
+						return
+					}
+
+					logger.Logger.Warn("Redis Pub/Sub subscription failed, retrying...", zap.Int("attempt", retryCount), zap.Duration("delay", retryDelay), zap.Error(err))
+					select {
+					case <-engine.Context().Done():
+						return
+					case <-time.After(retryDelay):
+					}
+					retryDelay *= 2
+					if retryDelay > maxRetryDelay {
+						retryDelay = maxRetryDelay
+					}
+					continue
+				}
+
+				// 订阅成功，重置重试计数
+				retryCount = 0
+				retryDelay = 1 * time.Second
+				logger.Logger.Info("Successfully subscribed to Redis policy & apikey update channels")
+
+				ch := pubsub.Channel()
+				var loopErr error
+				for {
+					select {
+					case <-engine.Context().Done():
+						_ = pubsub.Close()
+						return
+					case msg, ok := <-ch:
+						if !ok {
+							loopErr = fmt.Errorf("pubsub channel closed")
+							break
+						}
+						switch msg.Channel {
+						case "aigw:channel:policy_update":
+							policyService.PurgeCache()
+							logger.Logger.Info("Redis policy update signal received, local cache purged")
+						case "aigw:channel:apikey_update":
+							apiKeyService.PurgeCache()
+							logger.Logger.Info("Redis API Key update signal received, local cache purged")
+						}
+					}
+					if loopErr != nil {
+						break
+					}
+				}
+				_ = pubsub.Close()
+
+				// 如果是因为上下文退出引起的关闭，正常结束
+				select {
+				case <-engine.Context().Done():
+					return
+				default:
+				}
+
+				// 重新进入外层 loop 进行重新订阅
+				time.Sleep(1 * time.Second)
+			}
+		}()
+	}
+
 	var compWorker *compensation.Worker
 	chEnabled := v.GetBool("access_log.clickhouse.enabled")
 	if chEnabled && compQueue != nil && chConn != nil && rdb != nil {

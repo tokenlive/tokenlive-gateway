@@ -9,12 +9,18 @@ import (
 
 // HTTPError HTTP 错误，包含状态码和消息
 type HTTPError struct {
-	Code    int
-	Message string
+	Code         int
+	Message      string
+	Threshold    *float64
+	CurrentValue *float64
 }
 
 func (e *HTTPError) Error() string {
 	return e.Message
+}
+
+func float64Ptr(v float64) *float64 {
+	return &v
 }
 
 func getLimitKey(gctx *core.GatewayContext, lp *policy.LimitPolicy) string {
