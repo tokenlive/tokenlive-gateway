@@ -23,7 +23,7 @@ func float64Ptr(v float64) *float64 {
 	return &v
 }
 
-func getLimitKey(gctx *core.GatewayContext, lp *policy.LimitPolicy) string {
+func GetLimitKey(gctx *core.GatewayContext, lp *policy.LimitPolicy) string {
 	policyKey := lp.ID
 	if policyKey == "" {
 		policyKey = lp.Name

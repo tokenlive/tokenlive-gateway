@@ -23,7 +23,7 @@ func NewCostLimitExecutor(ss core.StateStore) *CostLimitExecutor {
 }
 
 func (e *CostLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayContext, lp *policy.LimitPolicy) error {
-	limitKey := getLimitKey(gctx, lp)
+	limitKey := GetLimitKey(gctx, lp)
 
 	inputPrice := 3.0 // 默认兜底价格 (元/百万 Tokens)
 	outputPrice := 10.0
@@ -129,7 +129,7 @@ func (e *CostLimitExecutor) rollback(ctx context.Context, limitKey string, windo
 }
 
 func (e *CostLimitExecutor) Refund(ctx context.Context, gctx *core.GatewayContext, lp *policy.LimitPolicy) error {
-	limitKey := getLimitKey(gctx, lp)
+	limitKey := GetLimitKey(gctx, lp)
 
 	inputPrice := 3.0 // 默认兜底价格 (元/百万 Tokens)
 	outputPrice := 10.0

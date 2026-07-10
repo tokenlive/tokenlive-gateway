@@ -128,6 +128,65 @@ func TestPolicyService_GetPolicy_RedisResolutionAndMerge(t *testing.T) {
 	}
 }
 
+func TestPolicyService_GetPolicy_RedisGlobalPolicies(t *testing.T) {
+	rdb, logger := setupTestRedis(t)
+	defer rdb.Close()
+
+	svc := NewPolicyService(config.NewRedisGatewayProvider(rdb), nil, nil, logger)
+	ctx := context.Background()
+
+	modelName := "gpt-4-global"
+	globalKey := "aigw:policies:global"
+	defer rdb.Del(ctx, globalKey)
+
+	globalDefault := &policy.Policy{
+		LimitPolicies: []*policy.LimitPolicy{
+			{
+				Name: "global-default-tpm",
+				Type: "token",
+				SlidingWindows: []*policy.SlidingWindow{
+					{Threshold: 1000, TimeWindowInMs: 60000},
+				},
+			},
+		},
+	}
+	modelSpecific := &policy.Policy{
+		LimitPolicies: []*policy.LimitPolicy{
+			{
+				Name: "model-global-tpm",
+				Type: "token",
+				SlidingWindows: []*policy.SlidingWindow{
+					{Threshold: 100, TimeWindowInMs: 60000},
+				},
+			},
+		},
+	}
+
+	globalDefaultBytes, _ := json.Marshal(globalDefault)
+	modelSpecificBytes, _ := json.Marshal(modelSpecific)
+	rdb.HSet(ctx, globalKey, "*", globalDefaultBytes)
+	rdb.HSet(ctx, globalKey, modelName, modelSpecificBytes)
+
+	merged, err := svc.GetPolicy(ctx, "", "user_global_policy", modelName)
+	if err != nil {
+		t.Fatalf("expected global policies to resolve, got %v", err)
+	}
+
+	limitMap := make(map[string]int64)
+	for _, lp := range merged.LimitPolicies {
+		if len(lp.SlidingWindows) > 0 {
+			limitMap[lp.Name] = lp.SlidingWindows[0].Threshold
+		}
+	}
+
+	if limitMap["global-default-tpm"] != 1000 {
+		t.Errorf("expected wildcard global TPM 1000, got %d", limitMap["global-default-tpm"])
+	}
+	if limitMap["model-global-tpm"] != 100 {
+		t.Errorf("expected model-specific global TPM 100, got %d", limitMap["model-global-tpm"])
+	}
+}
+
 func TestPolicyService_Caching(t *testing.T) {
 	rdb, logger := setupTestRedis(t)
 	defer rdb.Close()

@@ -212,15 +212,9 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 			continue
 		}
 
-		id := gctx.UserID
-		if id == "" {
-			id = gctx.Tenant
-		}
-		policyKey := lp.ID
-		if policyKey == "" {
-			policyKey = lp.Name
-		}
-		limitKey := id + ":" + gctx.Model + ":" + policyKey
+		// 必须复用入站预扣的 key 构造逻辑 (limiter.GetLimitKey)，否则两边操作的计数器不一致，
+		// 会导致预扣的额度无法被结算/退还，限流形同虚设。
+		limitKey := limiter.GetLimitKey(gctx, lp)
 		for _, sw := range lp.SlidingWindows {
 			window := time.Duration(sw.TimeWindowInMs) * time.Millisecond
 			if window <= 0 {
