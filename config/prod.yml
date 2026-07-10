@@ -7,10 +7,6 @@ http:
     cert_file: "certs/fullchain.crt"     # TLS 证书文件路径
     key_file: "certs/tokenlive.net.key"      # TLS 私钥文件路径
 data:
-  db:
-    user:
-      driver: sqlite3
-      dsn: storage/gateway.db?_busy_timeout=5000
   redis:
     addr: ${REDIS_ADDR:}
     password: ${REDIS_PASSWORD:}

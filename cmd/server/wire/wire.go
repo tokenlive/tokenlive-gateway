@@ -18,13 +18,9 @@ import (
 )
 
 var repositorySet = wire.NewSet(
-	repository.NewDB,
 	repository.LoadRedisConfig,
 	repository.NewRedis,
 	repository.NewClickHouse,
-	//repository.NewMongo,
-	repository.NewRepository,
-	repository.NewTransaction,
 )
 
 var serviceSet = wire.NewSet(
