@@ -29,6 +29,7 @@ type EndpointConfig struct {
 	URL       string            `mapstructure:"url" yaml:"url" json:"url"`                           // 上游地址（必填）
 	RealModel string            `mapstructure:"real_model" yaml:"real_model" json:"real_model,omitempty"`             // 可选，覆盖 model 的 real_model
 	APIKey    string            `mapstructure:"api_key" yaml:"api_key" json:"api_key,omitempty"`                   // 可选，覆盖 provider 的 api_key
+	AuthType  string            `mapstructure:"auth_type" yaml:"auth_type" json:"auth_type,omitempty"`             // 认证类型
 	Protocol  string            `mapstructure:"protocol" yaml:"protocol" json:"protocol,omitempty"`                 // 可选，覆盖 provider 的 protocol
 	Timeout   time.Duration     `mapstructure:"timeout" yaml:"timeout" json:"timeout,omitempty"`                   // 可选，覆盖 provider 的 timeout
 	Priority  int               `mapstructure:"priority" yaml:"priority" json:"priority"`                 // failover 优先级，值越小越优先
@@ -55,6 +56,7 @@ type ResolvedEndpoint struct {
 	ProviderName       string            `json:"provider_name"`
 	ProviderProtocol   string            `json:"provider_protocol"`
 	APIKey             string            `json:"api_key"`
+	AuthType           string            `json:"auth_type,omitempty"`
 	URL                string            `json:"url"`
 	Timeout            int64             `json:"timeout"` // 毫秒
 	MaxRetries         int               `json:"max_retries"`

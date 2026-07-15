@@ -779,6 +779,7 @@ func registerEndpointsFromResolvedEndpoints(sd *core.StaticDiscovery, resolved m
 				Provider:           re.ProviderName,
 				ProviderProtocol:   re.ProviderProtocol,
 				APIKey:             re.APIKey,
+				AuthType:           re.AuthType,
 				Model:              modelName,
 				UpstreamModel:      re.RealModel,
 				Weight:             re.Weight,

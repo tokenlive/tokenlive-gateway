@@ -259,11 +259,18 @@ func (sd *StaticDiscovery) probeEndpoint(ctx context.Context, ep *Endpoint) erro
 
 	// 传递必要的认证信息以通过安全校验
 	if ep.APIKey != "" {
-		if ep.ProviderProtocol == "openai" {
+		if ep.AuthType == "oauth_token" {
 			req.Header.Set("Authorization", "Bearer "+ep.APIKey)
-		} else if ep.ProviderProtocol == "anthropic" {
-			req.Header.Set("x-api-key", ep.APIKey)
-			req.Header.Set("anthropic-version", "2023-06-01")
+			if ep.ProviderProtocol == "anthropic" {
+				req.Header.Set("anthropic-version", "2023-06-01")
+			}
+		} else {
+			if ep.ProviderProtocol == "openai" {
+				req.Header.Set("Authorization", "Bearer "+ep.APIKey)
+			} else if ep.ProviderProtocol == "anthropic" {
+				req.Header.Set("x-api-key", ep.APIKey)
+				req.Header.Set("anthropic-version", "2023-06-01")
+			}
 		}
 	}
 

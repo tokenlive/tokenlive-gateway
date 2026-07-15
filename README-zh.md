@@ -179,6 +179,17 @@ curl http://localhost:8000/metrics
 | `/health` | GET | 健康检查 |
 | `/metrics` | GET | Prometheus 指标 |
 
+## Agent 工具兼容
+
+TokenLive 的协议转换能力使主流 AI Agent 开发工具能够通过配置接入第三方大模型。网关在 Provider 适配层（ProviderInvoker）自动完成跨协议的请求体翻译与响应体翻译，包括流式 SSE 事件的实时帧级转换，对 Agent 工具完全透明。
+
+**已适配的 Agent 工具：**
+
+- **Claude Code** — 通过暴露 Anthropic `/v1/messages` 协议端点，Claude Code 可将 API 地址指向 TokenLive，由网关透明转换为 OpenAI 兼容协议调用上游第三方模型。网关已内置 Claude Code 连通性探测请求的识别与模拟响应处理。
+- **Codex** — 通过暴露 OpenAI `/v1/responses` 协议端点，Codex 可将 API 地址指向 TokenLive，由网关自动降级翻译为 `chat/completions` 调用上游。网关已内置 Codex 非标准 tools 格式的自动纠正逻辑。
+
+> 详细的协议转换架构设计参见 [ADR-0015](docs/adr/0015-protocol-translation-at-provider-invoker.md)，场景概述参见 [Agent 工具兼容指南](docs/agent-tool-compatibility.md)。
+
 ## 配置
 
 LLM 配置采用关系型三表结构（models / providers / model_providers），配置数据源分层：YAML 默认层 + Redis 覆盖层。

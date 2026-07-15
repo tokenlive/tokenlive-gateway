@@ -33,6 +33,7 @@ type Endpoint struct {
 	ProviderImpl     Provider          // 关联 of Provider implementation, filled by Discovery or Engine
 	Headers          map[string]string // 自定义 Header
 	APIKey           string            // 认证凭证
+	AuthType         string            // 认证类型: api_key, oauth_token
 	ProviderProtocol string            // 协议类型，如 "openai", "anthropic"
 
 	// 新增 Endpoint 费率单价（为 nil 时继承 Model 的 Policy.Billing 费率）

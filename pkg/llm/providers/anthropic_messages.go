@@ -61,14 +61,23 @@ func (i *anthropicMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Prov
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", ap.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	// 如果是非官方 Anthropic 域名且 apiKey 不为空，则自动补充 Authorization: Bearer <key>
-	// 以兼容类似于商汤(Sensenova)等使用 Anthropic 协议但采用 OpenAI 鉴权机制的第三方提供商
-	if ap.apiKey != "" && !strings.Contains(ap.baseURL, "anthropic.com") {
-		req.Header.Set("Authorization", "Bearer "+ap.apiKey)
+	
+	isOAuth := false
+	if gctx.SelectedEndpoint != nil && gctx.SelectedEndpoint.AuthType == "oauth_token" {
+		isOAuth = true
 	}
+
+	if isOAuth {
+		req.Header.Set("Authorization", "Bearer "+ap.apiKey)
+	} else {
+		req.Header.Set("x-api-key", ap.apiKey)
+		// 如果是非官方 Anthropic 域名且 apiKey 不为空，则自动补充 Authorization: Bearer <key>
+		// 以兼容类似于商汤(Sensenova)等使用 Anthropic 协议但采用 OpenAI 鉴权机制的第三方提供商
+		if ap.apiKey != "" && !strings.Contains(ap.baseURL, "anthropic.com") {
+			req.Header.Set("Authorization", "Bearer "+ap.apiKey)
+		}
+	}
+	req.Header.Set("anthropic-version", "2023-06-01")
 
 	var ua string
 	if gctx.Request != nil {

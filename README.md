@@ -179,6 +179,17 @@ curl http://localhost:8000/metrics
 | `/health` | GET | Gateway health check |
 | `/metrics` | GET | Prometheus metrics |
 
+## Agent Tool Compatibility
+
+TokenLive's protocol translation capability enables mainstream AI agent development tools to connect to third-party LLMs through simple configuration. The gateway performs automatic cross-protocol request/response translation at the Provider adapter layer (ProviderInvoker), including real-time frame-level SSE stream translation, fully transparent to the agent tool.
+
+**Adapted Agent Tools:**
+
+- **Claude Code** — By exposing the Anthropic `/v1/messages` protocol endpoint, Claude Code can point its API address to TokenLive. The gateway transparently converts requests to OpenAI-compatible protocol calls against upstream third-party models. Built-in recognition and mock response handling for Claude Code connectivity probe requests.
+- **Codex** — By exposing the OpenAI `/v1/responses` protocol endpoint, Codex can point its API address to TokenLive. The gateway automatically downgrades and translates to `chat/completions` calls against upstream. Built-in auto-correction logic for non-standard tools format sent by Codex.
+
+> For protocol translation architecture details, see [ADR-0015](docs/adr/0015-protocol-translation-at-provider-invoker.md). For a scenario overview, see [Agent Tool Compatibility Guide](docs/agent-tool-compatibility.md).
+
 ## Configuration
 
 LLM configurations use a relational three-table database structure (models / providers / model_providers). The configuration sources are hierarchical: YAML default layer + Redis override layer.

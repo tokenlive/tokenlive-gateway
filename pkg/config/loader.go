@@ -70,6 +70,11 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				protocol = p.Protocol
 			}
 
+			authType := ep.AuthType
+			if authType == "" {
+				authType = "api_key"
+			}
+
 			re := ResolvedEndpoint{
 				ID:               ep.ID,
 				Code:             ep.Code,
@@ -80,6 +85,7 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				Headers:          ep.Headers,
 				RequestTypes:     m.RequestTypes,
 				Metadata:         ep.Metadata,
+				AuthType:         authType,
 			}
 
 			// RealModel: endpoint 级别必填（无 provider 级别回退）

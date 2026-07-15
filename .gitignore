@@ -17,3 +17,7 @@ scratch/
 .env.local
 config/*.local.yml
 /deploy.sh
+/.opencode/
+/.codex/
+/openspec/
+/.agent/
