@@ -375,7 +375,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		// LoadBalancer 选择
 		var invoker core.Invoker
 		if lbStrategy == "round_robin" && lastSelectedEndpointID != "" {
-			nextEp := nextEndpointAfter(endpoints, excluded, lastSelectedEndpointID)
+			nextEp := nextEndpointAfter(filtered, excluded, lastSelectedEndpointID)
 			if nextEp == nil {
 				lastErr = core.ErrNoAvailableEndpoint
 				return lastErr

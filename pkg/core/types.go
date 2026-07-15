@@ -90,6 +90,11 @@ func (ep *Endpoint) protocolSupportsRequestType(rt RequestType) bool {
 		return rt == RequestTypeMessages
 	case ProtocolGemini:
 		return rt == RequestTypeGeminiGenerateContent
+	case ProtocolJoyCode:
+		switch rt {
+		case RequestTypeChatCompletion, RequestTypeResponses, RequestTypeMessages:
+			return true
+		}
 	case "":
 		return true
 	}
