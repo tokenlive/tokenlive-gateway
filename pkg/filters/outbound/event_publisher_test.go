@@ -121,11 +121,22 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 
 	t.Run("Circuit Break event", func(t *testing.T) {
 		pub := &mockPublisher{}
+		disc := &mockDiscovery{
+			endpoints: []*core.Endpoint{
+				{
+					ID:       "ep-glm52-stkj-anthropic3",
+					Code:     "ep-glm52-stkj-anthropic3",
+					Provider: "SenseTime",
+					Model:    "anthropic-model",
+				},
+			},
+		}
 		f := NewEventPublishFilter(pub, nil)
+		f.SetDiscovery(disc)
 		gctx := &core.GatewayContext{
 			Ctx:     context.Background(),
 			Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-			Model:   "gpt-4",
+			Model:   "grok-4.5",
 			Err:     core.ErrNoAvailableEndpoint,
 		}
 
@@ -141,6 +152,9 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 		evt := pub.published[0]
 		if evt.EventType != events.EventTypeCircuitBreak {
 			t.Errorf("expected event type %q, got %q", events.EventTypeCircuitBreak, evt.EventType)
+		}
+		if evt.EndpointID != "" || evt.EndpointCode != "" || evt.ProviderName != "" {
+			t.Errorf("expected Endpoint and Provider to be empty when SelectedEndpoint is nil, got ID: %q, Code: %q, Provider: %q", evt.EndpointID, evt.EndpointCode, evt.ProviderName)
 		}
 	})
 

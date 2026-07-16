@@ -104,12 +104,15 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 			base.ModelCode = gctx.SelectedEndpoint.Model
 		}
 	} else {
-		// 针对限流或熔断拦截等未进行物理选路的场景，尝试通过服务发现推断默认供应商，以补全事件中的供应商字段
-		if f.discovery != nil && gctx.Model != "" {
-			if eps, err := f.discovery.List(gctx.Ctx, gctx.Model); err == nil && len(eps) > 0 {
-				base.EndpointID = eps[0].ID
-				base.EndpointCode = eps[0].Code
-				base.ProviderName = eps[0].Provider
+		// 针对限流拦截等未选路成功但模型正常配置的场景，补全供应商信息。
+		// 但如果是因无可用端点（core.ErrNoAvailableEndpoint）引起的熔断或失败，不绑定任何具体的 EndpointCode/Provider，以防展示错乱。
+		if gctx.Err == nil || !errors.Is(gctx.Err, core.ErrNoAvailableEndpoint) {
+			if f.discovery != nil && gctx.Model != "" {
+				if eps, err := f.discovery.List(gctx.Ctx, gctx.Model); err == nil && len(eps) > 0 {
+					base.EndpointID = eps[0].ID
+					base.EndpointCode = eps[0].Code
+					base.ProviderName = eps[0].Provider
+				}
 			}
 		}
 	}

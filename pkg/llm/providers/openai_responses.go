@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -39,6 +38,12 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 
 	// 分支 A：原生同名转发
 	if hasResponseCapability {
+		newBody, err := correctToolsForNativeResponses(gctx, gctx.RawBody)
+		if err == nil {
+			gctx.RawBody = newBody
+		} else {
+			gctx.Logger(zap.L()).Warn("failed to correct tools for native responses", zap.Error(err))
+		}
 		endpoint := op.baseURL + "/responses"
 		return op.doRequest(gctx, endpoint)
 	}
@@ -125,10 +130,21 @@ func translateResponsesToChatCompletion(rawBody []byte) ([]byte, error) {
 					}
 				}
 
-				openAIMessages = append(openAIMessages, map[string]interface{}{
+				msg := map[string]interface{}{
 					"role":    openAIRole,
 					"content": textContent.String(),
-				})
+				}
+				if name, ok := itemMap["name"].(string); ok && name != "" {
+					msg["name"] = name
+				}
+				if toolCallID, ok := itemMap["tool_call_id"].(string); ok && toolCallID != "" {
+					msg["tool_call_id"] = toolCallID
+				}
+				if toolCalls, ok := itemMap["tool_calls"]; ok {
+					msg["tool_calls"] = toolCalls
+				}
+
+				openAIMessages = append(openAIMessages, msg)
 			}
 		}
 	}
@@ -159,19 +175,16 @@ func translateResponsesToChatCompletion(rawBody []byte) ([]byte, error) {
 						if !ok {
 							continue
 						}
-						subType, _ := subToolMap["type"].(string)
-						if subType == "function" || subToolMap["name"] != nil {
-							fn := buildStandardFunctionTool(subToolMap)
-							if fn != nil {
-								finalTools = append(finalTools, fn)
-							}
+						stdTool := buildStandardTool(subToolMap)
+						if stdTool != nil && stdTool["type"] == "function" {
+							finalTools = append(finalTools, wrapFlatToolToNestedOpenAI(stdTool))
 						}
 					}
 				}
 			} else {
-				fn := buildStandardFunctionTool(toolMap)
-				if fn != nil {
-					finalTools = append(finalTools, fn)
+				stdTool := buildStandardTool(toolMap)
+				if stdTool != nil && stdTool["type"] == "function" {
+					finalTools = append(finalTools, wrapFlatToolToNestedOpenAI(stdTool))
 				}
 			}
 		}
@@ -467,246 +480,7 @@ func writeResponseEvent(w io.Writer, eventType string, data interface{}) error {
 	return err
 }
 
-type ParsedToolCall struct {
-	Name      string
-	Arguments string
-}
 
-func parseXMLToolCall(xmlStr string) (*ParsedToolCall, error) {
-	// 1. 提取函数名
-	funcRegex := regexp.MustCompile(`<function\s*=\s*([a-zA-Z0-9_\-]+)>`)
-	funcMatches := funcRegex.FindStringSubmatch(xmlStr)
-	if len(funcMatches) < 2 {
-		funcRegexAlt := regexp.MustCompile(`<function\s+name\s*=\s*["']?([a-zA-Z0-9_\-]+)["']?>`)
-		funcMatches = funcRegexAlt.FindStringSubmatch(xmlStr)
-		if len(funcMatches) < 2 {
-			return nil, fmt.Errorf("could not find function name")
-		}
-	}
-	funcName := funcMatches[1]
-
-	// 2. 提取所有 parameter 标签
-	// 匹配不限制属性格式的 parameter：(?s)<parameter\s*([^>]*?)>(.*?)</parameter>
-	paramRegex := regexp.MustCompile(`(?s)<parameter\s*([^>]*?)>(.*?)</parameter>`)
-	matches := paramRegex.FindAllStringSubmatch(xmlStr, -1)
-
-	argsMap := make(map[string]interface{})
-
-	// 用于在无法提取属性键名时 fallback 默认字段名
-	fallbackKey := ""
-	if funcName == "exec_command" {
-		fallbackKey = "cmd"
-	} else if funcName == "apply_patch" {
-		fallbackKey = "patch"
-	} else if funcName == "update_plan" {
-		fallbackKey = "steps"
-	}
-
-	for _, match := range matches {
-		if len(match) < 3 {
-			continue
-		}
-		attrStr := strings.TrimSpace(match[1])
-		content := strings.TrimSpace(match[2])
-
-		// 清洗开头的 "=" 字符
-		if strings.HasPrefix(attrStr, "=") {
-			attrStr = strings.TrimSpace(attrStr[1:])
-		}
-
-		// 尝试从属性中提取键名
-		// 模式：匹配 `name="cmd"` 或是 `=cmd` 或是 `="cmd"` 或者是 `'cmd'`
-		keyName := ""
-		keyRegex := regexp.MustCompile(`(?:name\s*=\s*|=(?:\s*))["']?([a-zA-Z0-9_\-]+)["']?`)
-		keyMatches := keyRegex.FindStringSubmatch(attrStr)
-		if len(keyMatches) >= 2 {
-			keyName = keyMatches[1]
-		} else {
-			// 如果没有 `=` 或 `name=`，整个属性就是带引号或不带引号的单词 (例如 <parameter "cmd"> 或 <parameter cmd>)
-			cleanAttrRegex := regexp.MustCompile(`^["']?([a-zA-Z0-9_\-]+)["']?$`)
-			cleanMatches := cleanAttrRegex.FindStringSubmatch(attrStr)
-			if len(cleanMatches) >= 2 {
-				keyName = cleanMatches[1]
-			}
-		}
-
-		// 如果完全提取不出键名
-		if keyName == "" {
-			// 如果 content 为空且 attrStr 类似 json
-			if content == "" && (strings.HasPrefix(attrStr, "[") || strings.HasPrefix(attrStr, "{")) {
-				var jsonVal interface{}
-				if err := json.Unmarshal([]byte(attrStr), &jsonVal); err == nil {
-					if funcName == "update_plan" {
-						argsMap["steps"] = jsonVal
-					} else {
-						argsMap["arguments"] = jsonVal
-					}
-					continue
-				}
-			}
-
-			// fallback 默认字段名
-			if fallbackKey != "" {
-				keyName = fallbackKey
-			} else {
-				keyName = "value" // 通用兜底
-			}
-		}
-
-		// 移除键名中两端多余的单双引号
-		if (strings.HasPrefix(keyName, "\"") && strings.HasSuffix(keyName, "\"")) ||
-			(strings.HasPrefix(keyName, "'") && strings.HasSuffix(keyName, "'")) {
-			keyName = keyName[1 : len(keyName)-1]
-		}
-
-		if funcName == "update_plan" {
-			if keyName == "explanation" {
-				argsMap["explanation"] = content
-			} else if strings.HasPrefix(keyName, "[") || strings.HasPrefix(content, "[") {
-				var jsonVal interface{}
-				valStr := content
-				if valStr == "" {
-					valStr = attrStr
-				}
-				if err := json.Unmarshal([]byte(valStr), &jsonVal); err == nil {
-					argsMap["steps"] = jsonVal
-				} else {
-					argsMap["steps"] = valStr
-				}
-			} else {
-				if argsMap["explanation"] == nil {
-					argsMap["explanation"] = content
-				} else {
-					argsMap["steps"] = content
-				}
-			}
-		} else if funcName == "apply_patch" {
-			if strings.Contains(content, "*** Begin Patch") {
-				argsMap["patch"] = content
-			} else if strings.Contains(attrStr, "*** Begin Patch") {
-				argsMap["patch"] = attrStr
-			} else if keyName == "explanation" {
-				argsMap["explanation"] = content
-			} else if keyName == "patch" {
-				if content != "" {
-					argsMap["patch"] = content
-				} else {
-					argsMap["patch"] = attrStr
-				}
-			} else {
-				if argsMap["patch"] == nil {
-					argsMap["patch"] = content
-				} else {
-					argsMap["explanation"] = content
-				}
-			}
-		} else if funcName == "exec_command" {
-			if keyName == "explanation" {
-				argsMap["explanation"] = content
-			} else if keyName == "cmd" {
-				if content != "" {
-					argsMap["cmd"] = content
-				} else {
-					argsMap["cmd"] = attrStr
-				}
-			} else {
-				if argsMap["cmd"] == nil {
-					if content != "" {
-						argsMap["cmd"] = content
-					} else {
-						argsMap["cmd"] = attrStr
-					}
-				} else {
-					argsMap["explanation"] = content
-				}
-			}
-		} else {
-			argsMap[keyName] = content
-		}
-	}
-
-	// 针对核心参数缺失时的终极兜底逻辑，剥离所有 XML/HTML 标签提取纯文本
-	if funcName == "exec_command" && (argsMap["cmd"] == nil || argsMap["cmd"] == "") {
-		argsMap["cmd"] = stripXMLTags(xmlStr)
-	} else if funcName == "apply_patch" && (argsMap["patch"] == nil || argsMap["patch"] == "") {
-		argsMap["patch"] = stripXMLTags(xmlStr)
-	} else if funcName == "update_plan" && (argsMap["steps"] == nil || argsMap["steps"] == "") {
-		plainText := stripXMLTags(xmlStr)
-		var jsonVal interface{}
-		if err := json.Unmarshal([]byte(plainText), &jsonVal); err == nil {
-			argsMap["steps"] = jsonVal
-		} else {
-			argsMap["steps"] = plainText
-		}
-	}
-
-	argBytes, err := json.Marshal(argsMap)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ParsedToolCall{
-		Name:      funcName,
-		Arguments: string(argBytes),
-	}, nil
-}
-
-type ToolCallStreamParser struct {
-	buffer       strings.Builder
-	intercepting bool
-}
-
-func NewToolCallStreamParser() *ToolCallStreamParser {
-	return &ToolCallStreamParser{}
-}
-
-func (p *ToolCallStreamParser) Feed(txt string) (string, *ParsedToolCall) {
-	p.buffer.WriteString(txt)
-	fullBuf := p.buffer.String()
-
-	if !p.intercepting {
-		idx := strings.Index(fullBuf, "<tool_call")
-		if idx != -1 {
-			p.intercepting = true
-			plainText := fullBuf[:idx]
-			p.buffer.Reset()
-			p.buffer.WriteString(fullBuf[idx:])
-			return plainText, nil
-		} else {
-			if len(fullBuf) > 15 {
-				sendLen := len(fullBuf) - 15
-				plainText := fullBuf[:sendLen]
-				p.buffer.Reset()
-				p.buffer.WriteString(fullBuf[sendLen:])
-				return plainText, nil
-			}
-			return "", nil
-		}
-	} else {
-		endIdx := strings.Index(fullBuf, "</tool_call>")
-		if endIdx != -1 {
-			tagEnd := endIdx + len("</tool_call>")
-			xmlChunk := fullBuf[:tagEnd]
-
-			p.intercepting = false
-			p.buffer.Reset()
-			p.buffer.WriteString(fullBuf[tagEnd:])
-
-			parsed, err := parseXMLToolCall(xmlChunk)
-			if err != nil {
-				return xmlChunk, nil
-			}
-			return "", parsed
-		}
-		return "", nil
-	}
-}
-
-func (p *ToolCallStreamParser) Flush() string {
-	remaining := p.buffer.String()
-	p.buffer.Reset()
-	return remaining
-}
 
 func sendPlainResponsesText(gctx *core.GatewayContext, respID string, txt string, msgID string, messageAdded *bool, textOutputIndex *int, currentOutputIndex *int) error {
 	if !*messageAdded {
@@ -770,7 +544,6 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 	flusher, hasFlusher := gctx.ResponseWriter.(http.Flusher)
 
 	parser := llm.NewSSEParser()
-	xmlParser := NewToolCallStreamParser()
 	buf := make([]byte, 4096)
 	started := false
 
@@ -1026,51 +799,11 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 					// 处理文本
 					txt := choice.Delta.Content
 					if txt != "" {
-						plainText, parsedTool := xmlParser.Feed(txt)
-						if plainText != "" {
-							if err := sendPlainResponsesText(gctx, respID, plainText, msgID, &messageAdded, &textOutputIndex, &currentOutputIndex); err != nil {
-								return err
-							}
-							fullText.WriteString(plainText)
-							gctx.TransmittedChars += len(plainText)
+						if err := sendPlainResponsesText(gctx, respID, txt, msgID, &messageAdded, &textOutputIndex, &currentOutputIndex); err != nil {
+							return err
 						}
-
-						if parsedTool != nil {
-							tcIdx := len(localToolCalls)
-							localTC := &localToolCall{}
-							localTC.ID = fmt.Sprintf("call_%s_xml_%d", msgID, tcIdx)
-							localTC.Name = parsedTool.Name
-							localTC.OutputIndex = currentOutputIndex
-							currentOutputIndex++
-							localTC.Added = true
-							localTC.Arguments.WriteString(parsedTool.Arguments)
-							localToolCalls[tcIdx] = localTC
-
-							// 发送 function_call added
-							var evTCAdded responseOutputItemAddedFunctionCallEvent
-							evTCAdded.Type = "response.output_item.added"
-							evTCAdded.ResponseID = respID
-							evTCAdded.OutputIndex = localTC.OutputIndex
-							evTCAdded.Item.ID = localTC.ID
-							evTCAdded.Item.Type = "function_call"
-							evTCAdded.Item.Status = "in_progress"
-							evTCAdded.Item.Name = localTC.Name
-							evTCAdded.Item.Arguments = ""
-							if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", evTCAdded); err != nil {
-								return err
-							}
-
-							// 发送 function_call arguments.delta
-							var evTCDelta responseFunctionCallArgumentsDeltaEvent
-							evTCDelta.Type = "response.function_call.arguments.delta"
-							evTCDelta.ResponseID = respID
-							evTCDelta.ItemID = localTC.ID
-							evTCDelta.OutputIndex = localTC.OutputIndex
-							evTCDelta.Delta = parsedTool.Arguments
-							if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.delta", evTCDelta); err != nil {
-								return err
-							}
-						}
+						fullText.WriteString(txt)
+						gctx.TransmittedChars += len(txt)
 					}
 
 					// 处理工具调用
@@ -1176,14 +909,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			msgID = "msg_" + msgID
 		}
 
-		remainingText := xmlParser.Flush()
-		if remainingText != "" {
-			if err := sendPlainResponsesText(gctx, respID, remainingText, msgID, &messageAdded, &textOutputIndex, &currentOutputIndex); err != nil {
-				return err
-			}
-			fullText.WriteString(remainingText)
-			gctx.TransmittedChars += len(remainingText)
-		}
+
 
 		modelName := lastModelName
 		if modelName == "" {
@@ -1342,39 +1068,245 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 	return nil
 }
 
-func buildStandardFunctionTool(toolMap map[string]interface{}) map[string]interface{} {
-	if fnObj, ok := toolMap["function"].(map[string]interface{}); ok {
-		return map[string]interface{}{
-			"type":     "function",
-			"function": fnObj,
+// builtinToolStandardFields 列出 OpenAI 原生 responses 内置工具（非 function/mcp/shell）
+// 各自允许透传的标准字段。清洗时只保留这些字段，其余客户端私有字段一律剥离。
+var builtinToolStandardFields = map[string][]string{
+	"web_search":         {"search_context_size", "user_location", "filters"},
+	"web_search_preview": {"search_context_size", "user_location", "filters"},
+	"code_interpreter":   {"container"},
+	"image_generation":   {"model", "size", "quality", "background", "output_format"},
+	"file_search":        {"vector_store_ids", "max_num_results", "filters", "ranking_options"},
+	"computer_use_preview": {"display_width", "display_height", "environment"},
+}
+
+func buildStandardTool(toolMap map[string]interface{}) map[string]interface{} {
+	toolType, _ := toolMap["type"].(string)
+	if toolType == "" {
+		if name, ok := toolMap["name"].(string); ok && name != "" {
+			toolType = "function"
+		} else {
+			return nil
 		}
 	}
 
-	name, _ := toolMap["name"].(string)
-	if name == "" {
-		return nil
+	targetType := toolType
+	if targetType == "" || targetType == "custom" {
+		targetType = "function"
 	}
 
-	fnMap := make(map[string]interface{})
-	fnMap["name"] = name
-	if desc, ok := toolMap["description"].(string); ok {
-		fnMap["description"] = desc
+	// 针对 web_search 等内置工具：按白名单保留 OpenAI 标准字段，仅剥离客户端私有的非标准字段（如 Codex 的 external_web_access）。
+	// 未知类型无白名单时降级为只保留 type，避免把私有字段透传给上游导致报错。
+	if targetType != "function" && targetType != "mcp" && targetType != "shell" {
+		builtin := map[string]interface{}{"type": targetType}
+		if allowed, ok := builtinToolStandardFields[targetType]; ok {
+			for _, field := range allowed {
+				if v, exists := toolMap[field]; exists {
+					builtin[field] = v
+				}
+			}
+		}
+		return builtin
 	}
-	if params, ok := toolMap["parameters"]; ok {
-		fnMap["parameters"] = params
+
+	// 1. 如果有对应 toolType 的内层嵌套对象，比如 toolMap["function"] 或 toolMap["mcp"]，将其“打平”（Flatten）
+	if innerObj, ok := toolMap[toolType].(map[string]interface{}); ok {
+		flatTool := make(map[string]interface{})
+		flatTool["type"] = toolType
+
+		// 将内层对象的所有属性平铺到外层
+		for k, v := range innerObj {
+			flatTool[k] = v
+		}
+
+		// 保留外层的其他非嵌套属性（但不覆盖已经平铺上来的属性）
+		for k, v := range toolMap {
+			if k != "type" && k != toolType {
+				if _, exists := flatTool[k]; !exists {
+					flatTool[k] = v
+				}
+			}
+		}
+
+		// 针对 function、mcp 和 shell 类型，如果依然没有有效的 name，则过滤该工具
+		if toolType == "function" || toolType == "mcp" || toolType == "shell" {
+			if name, ok := flatTool["name"].(string); !ok || name == "" {
+				return nil
+			}
+		}
+
+		return flatTool
 	}
-	if strict, ok := toolMap["strict"]; ok {
-		fnMap["strict"] = strict
+
+	// 2. 如果本来就是平铺格式，复制并确保基本字段符合必填要求
+	targetType = toolType
+	if targetType == "" || targetType == "custom" {
+		targetType = "function"
+	}
+
+	innerName, _ := toolMap["name"].(string)
+	if innerName == "" {
+		innerName = targetType // 对于像 web_search 等无 name 的内置平铺工具，默认以类型名作为 name 补齐
+	}
+
+	flatTool := make(map[string]interface{})
+	for k, v := range toolMap {
+		if k != "type" && k != "name" {
+			flatTool[k] = v
+		}
+	}
+	flatTool["type"] = targetType
+	flatTool["name"] = innerName
+
+	// 针对 function、mcp 和 shell 类型，必须在最外层有有效的 name
+	if targetType == "function" || targetType == "mcp" || targetType == "shell" {
+		if innerName == "" {
+			return nil
+		}
+	}
+
+	return flatTool
+}
+
+func wrapFlatToolToNestedOpenAI(flatTool map[string]interface{}) map[string]interface{} {
+	toolType, _ := flatTool["type"].(string)
+	if toolType == "" {
+		toolType = "function"
+	}
+
+	innerMap := make(map[string]interface{})
+	for k, v := range flatTool {
+		if k != "type" {
+			innerMap[k] = v
+		}
 	}
 
 	return map[string]interface{}{
-		"type":     "function",
-		"function": fnMap,
+		"type":   toolType,
+		toolType: innerMap,
 	}
 }
 
-func stripXMLTags(xmlStr string) string {
-	tagRegex := regexp.MustCompile(`<[^>]*>`)
-	cleaned := tagRegex.ReplaceAllString(xmlStr, "")
-	return strings.TrimSpace(cleaned)
+
+
+func correctToolsForNativeResponses(gctx *core.GatewayContext, rawBody []byte) ([]byte, error) {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return nil, fmt.Errorf("parse raw body: %w", err)
+	}
+
+	correctInputForNativeResponses(payload)
+
+	tools, ok := payload["tools"].([]interface{})
+	if !ok {
+		// Even if no tools present, we still marshal the normalized input
+		newBody, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal corrected body: %w", err)
+		}
+		return newBody, nil
+	}
+
+	var finalTools []interface{}
+	for _, t := range tools {
+		toolMap, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		toolType, _ := toolMap["type"].(string)
+
+		if toolType == "namespace" {
+			if subTools, ok := toolMap["tools"].([]interface{}); ok {
+				for _, st := range subTools {
+					subToolMap, ok := st.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					subType, _ := subToolMap["type"].(string)
+					if subType == "namespace" {
+						continue
+					}
+					
+					stdTool := buildStandardTool(subToolMap)
+					if stdTool != nil {
+						finalTools = append(finalTools, stdTool)
+					}
+				}
+			}
+		} else {
+			stdTool := buildStandardTool(toolMap)
+			if stdTool != nil {
+				finalTools = append(finalTools, stdTool)
+			}
+		}
+	}
+
+	if len(finalTools) > 0 {
+		payload["tools"] = finalTools
+	} else {
+		delete(payload, "tools")
+		delete(payload, "tool_choice")
+	}
+
+	var toolTypesAndNames []string
+	for _, t := range finalTools {
+		if tm, ok := t.(map[string]interface{}); ok {
+			ttype, _ := tm["type"].(string)
+			tname, _ := tm["name"].(string)
+			toolTypesAndNames = append(toolTypesAndNames, fmt.Sprintf("%s:%s", ttype, tname))
+		}
+	}
+	gctx.Logger(zap.L()).Debug("native responses tools conversion result summary",
+		zap.Int("original_count", len(tools)),
+		zap.Int("final_count", len(finalTools)),
+		zap.Strings("final_tools_summary", toolTypesAndNames),
+	)
+
+	newBody, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal corrected body: %w", err)
+	}
+	return newBody, nil
+}
+
+func correctInputForNativeResponses(payload map[string]interface{}) {
+	inputVal, ok := payload["input"]
+	if !ok || inputVal == nil {
+		return
+	}
+
+	inputArr, ok := inputVal.([]interface{})
+	if !ok {
+		return
+	}
+
+	for _, item := range inputArr {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		if role, ok := itemMap["role"].(string); ok {
+			if role == "developer" {
+				itemMap["role"] = "system"
+			}
+		}
+
+		if contentVal, ok := itemMap["content"]; ok && contentVal != nil {
+			if contentArr, ok := contentVal.([]interface{}); ok {
+				for _, c := range contentArr {
+					cMap, ok := c.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if cType, ok := cMap["type"].(string); ok {
+						if cType == "input_text" {
+							cMap["type"] = "text"
+						}
+					}
+				}
+			}
+		}
+
+		delete(itemMap, "type")
+	}
 }

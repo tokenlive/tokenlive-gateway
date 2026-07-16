@@ -224,7 +224,8 @@ func TestOpenAIResponses_Translation_Stream(t *testing.T) {
 		`"id":"msg_stream123"`,
 		`event: response.content_part.added`,
 		`event: response.output_text.delta`,
-		`"delta":"Hi there!"`,
+		`"delta":"Hi"`,
+		`"delta":" there!"`,
 		`event: response.output_text.done`,
 		`"text":"Hi there!"`,
 		`event: response.content_part.done`,
@@ -267,6 +268,29 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 		var req map[string]interface{}
 		if err := json.Unmarshal(body, &req); err != nil {
 			t.Errorf("failed to unmarshal request: %v", err)
+		}
+
+		// 验证 messages 是否被正确映射且保留元数据
+		messages, ok := req["messages"].([]interface{})
+		if !ok || len(messages) != 3 {
+			t.Fatalf("expected messages length 3, got %v", req["messages"])
+		}
+		msg2, _ := messages[1].(map[string]interface{})
+		if msg2["role"] != "assistant" {
+			t.Errorf("expected msg2 role assistant, got %v", msg2["role"])
+		}
+		if msg2["tool_calls"] == nil {
+			t.Error("expected msg2 to contain tool_calls")
+		}
+		msg3, _ := messages[2].(map[string]interface{})
+		if msg3["role"] != "tool" {
+			t.Errorf("expected msg3 role tool, got %v", msg3["role"])
+		}
+		if msg3["name"] != "js" {
+			t.Errorf("expected msg3 name js, got %v", msg3["name"])
+		}
+		if msg3["tool_call_id"] != "call_1" {
+			t.Errorf("expected msg3 tool_call_id call_1, got %v", msg3["tool_call_id"])
 		}
 
 		// 验证 tools 是否被正确处理
@@ -342,7 +366,32 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 	// 使用包含 namespace, tool_search, custom type(apply_patch) 和平铺 function 的复杂请求体
 	reqBody := `{
 		"model": "gpt-5.4",
-		"input": "Run some complex tasks",
+		"input": [
+			{
+				"role": "user",
+				"content": "Run some complex tasks"
+			},
+			{
+				"role": "assistant",
+				"content": "Running task...",
+				"tool_calls": [
+					{
+						"id": "call_1",
+						"type": "function",
+						"function": {
+							"name": "js",
+							"arguments": "{\"code\":\"console.log(1)\"}"
+						}
+					}
+				]
+			},
+			{
+				"role": "tool",
+				"name": "js",
+				"tool_call_id": "call_1",
+				"content": "1"
+			}
+		],
 		"tools": [
 			{
 				"name": "mcp__node_repl",
@@ -406,6 +455,229 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 
 	if resp["id"] != "resp_responseToolsNew" {
 		t.Errorf("expected id=resp_responseToolsNew, got %v", resp["id"])
+	}
+}
+
+func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
+	// 1. 模拟原生支持 /responses 的上游
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("failed to unmarshal request: %v", err)
+		}
+
+		// 验证 input 是否被规范清洗标准化为标准的 OpenAI 协议格式
+		inputList, ok := req["input"].([]interface{})
+		if !ok || len(inputList) != 2 {
+			t.Fatalf("expected input list size 2, got %v", req["input"])
+		}
+		item0, ok := inputList[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected item0 to be map")
+		}
+		if item0["role"] != "system" {
+			t.Errorf("expected role=system, got %v", item0["role"])
+		}
+		if _, exists := item0["type"]; exists {
+			t.Errorf("expected type field to be deleted from message item, but it exists")
+		}
+		content0, ok := item0["content"].([]interface{})
+		if !ok || len(content0) != 1 {
+			t.Fatalf("expected content0 list size 1, got %v", item0["content"])
+		}
+		c0, ok := content0[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected content block to be map")
+		}
+		if c0["type"] != "text" {
+			t.Errorf("expected content type to be text, got %v", c0["type"])
+		}
+
+		// 验证 tools 是否被正确清洗并转发
+		tools, ok := req["tools"].([]interface{})
+		if !ok || len(tools) != 5 {
+			t.Fatalf("expected tools length 5, got %v", req["tools"])
+		}
+
+		toolTypes := make(map[string]string)
+		toolNames := make(map[string]bool)
+
+		hasWebSearch := false
+		for _, tVal := range tools {
+			toolMap, ok := tVal.(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected tool to be a map")
+			}
+			tType, _ := toolMap["type"].(string)
+			if tType == "web_search" {
+				hasWebSearch = true
+				// 标准字段应保留
+				if toolMap["search_context_size"] != "high" {
+					t.Errorf("expected web_search to keep standard field search_context_size, got: %v", toolMap)
+				}
+				// 客户端私有字段应被剥离
+				if _, exists := toolMap["external_web_access"]; exists {
+					t.Errorf("expected web_search private field external_web_access to be stripped, got: %v", toolMap)
+				}
+			} else {
+				name, _ := toolMap["name"].(string)
+				toolNames[name] = true
+				toolTypes[name] = tType
+			}
+		}
+
+		if !toolNames["js"] {
+			t.Error("expected tool 'js' to be present")
+		}
+		if !toolNames["apply_patch"] {
+			t.Error("expected tool 'apply_patch' to be present")
+		}
+		if !toolNames["view_image"] {
+			t.Error("expected tool 'view_image' to be present")
+		}
+		if !toolNames["mcp__node_repl"] {
+			t.Error("expected tool 'mcp__node_repl' to be present")
+		}
+		if !hasWebSearch {
+			t.Error("expected tool 'web_search' to be present")
+		}
+		if toolTypes["mcp__node_repl"] != "mcp" {
+			t.Error("expected 'mcp__node_repl' tool type to be mcp")
+		}
+		if _, exists := toolTypes["namespace"]; exists {
+			t.Error("namespace tool type should have been removed")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "resp_nativeToolsOk",
+			"object": "response",
+			"created": 1741476542,
+			"model": "gpt-5.4",
+			"output": [
+				{
+					"id": "msg_ok",
+					"object": "response.output",
+					"type": "message",
+					"status": "completed",
+					"role": "assistant",
+					"content": [
+						{
+							"type": "text",
+							"text": "Native execution with cleaned tools."
+						}
+					]
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	ep := &core.Endpoint{
+		ID:           "ep-native-tools-complex",
+		Provider:     "openai",
+		Model:        "gpt-5.4",
+		RequestTypes: []core.RequestType{core.RequestTypeResponses},
+	}
+	p := NewOpenAIProvider("test-openai-native-complex", server.URL, "test-key", []string{"gpt-5.4"})
+
+	reqBody := `{
+		"model": "gpt-5.4",
+		"input": [
+			{
+				"role": "developer",
+				"content": [
+					{
+						"type": "input_text",
+						"text": "System prompt"
+					}
+				],
+				"type": "input_text"
+			},
+			{
+				"role": "user",
+				"content": "Run some complex tasks natively"
+			}
+		],
+		"tools": [
+			{
+				"name": "mcp__node_repl",
+				"type": "namespace",
+				"tools": [
+					{
+						"type": "function",
+						"name": "js",
+						"description": "Run JavaScript in persistent Node kernel",
+						"strict": false,
+						"parameters": {
+							"type": "object"
+						}
+					}
+				]
+			},
+			{
+				"type": "mcp",
+				"name": "mcp__node_repl",
+				"mcp": {
+					"server": "node_repl"
+				}
+			},
+			{
+				"name": "apply_patch",
+				"type": "custom",
+				"description": "Apply code patch",
+				"parameters": {
+					"type": "object"
+				}
+			},
+			{
+				"type": "function",
+				"name": "view_image",
+				"function": {
+					"description": "View an image",
+					"strict": false,
+					"parameters": {
+						"type": "object"
+					}
+				}
+			},
+			{
+				"type": "web_search",
+				"search_context_size": "high",
+				"external_web_access": false
+			}
+		]
+	}`
+
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "gpt-5.4"
+	gctx.SelectedEndpoint = ep
+
+	invoker := &openaiResponsesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(gctx.UpstreamBody, &resp); err != nil {
+		t.Fatalf("failed to unmarshal responses result: %v", err)
+	}
+
+	if resp["id"] != "resp_nativeToolsOk" {
+		t.Errorf("expected id=resp_nativeToolsOk, got %v", resp["id"])
 	}
 }
 
@@ -568,205 +840,7 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream(t *testing.T) {
 	}
 }
 
-func TestParseXMLToolCall(t *testing.T) {
-	// 1. 测试 update_plan 的不规则格式
-	xml1 := `<tool_call>
-<function=update_plan>
-<parameter=explanation>Let's plan</parameter>
-<parameter=[{"status": "in_progress", "step": "step1"}]></parameter>
-</function>
-</tool_call>`
-	tc1, err := parseXMLToolCall(xml1)
-	if err != nil {
-		t.Fatalf("failed to parse: %v", err)
-	}
-	if tc1.Name != "update_plan" {
-		t.Errorf("expected update_plan, got %s", tc1.Name)
-	}
-	var args1 map[string]interface{}
-	if err := json.Unmarshal([]byte(tc1.Arguments), &args1); err != nil {
-		t.Fatalf("invalid json: %v", err)
-	}
-	if args1["explanation"] != "Let's plan" {
-		t.Errorf("expected Let's plan, got %v", args1["explanation"])
-	}
-	steps, ok := args1["steps"].([]interface{})
-	if !ok || len(steps) != 1 {
-		t.Fatalf("expected 1 step, got %v", args1["steps"])
-	}
-	s0 := steps[0].(map[string]interface{})
-	if s0["status"] != "in_progress" || s0["step"] != "step1" {
-		t.Errorf("unexpected step value: %v", s0)
-	}
 
-	// 2. 测试 apply_patch 的不规则格式
-	xml2 := `<tool_call>
-<function=apply_patch>
-<parameter=explanation>Applying fix</parameter>
-<parameter=*** Begin Patch
-some patch
-*** End Patch></parameter>
-</function>
-</tool_call>`
-	tc2, err := parseXMLToolCall(xml2)
-	if err != nil {
-		t.Fatalf("failed to parse patch: %v", err)
-	}
-	if tc2.Name != "apply_patch" {
-		t.Errorf("expected apply_patch, got %s", tc2.Name)
-	}
-	var args2 map[string]interface{}
-	json.Unmarshal([]byte(tc2.Arguments), &args2)
-	if args2["explanation"] != "Applying fix" {
-		t.Errorf("expected explanation, got %v", args2["explanation"])
-	}
-	if !strings.Contains(args2["patch"].(string), "some patch") {
-		t.Errorf("expected patch, got %v", args2["patch"])
-	}
-
-	// 3. 测试 exec_command 的各种不规则格式
-	// Case 3A: name="cmd"
-	xml3A := `<tool_call>
-<function=exec_command>
-<parameter name="cmd">ls -la</parameter>
-</function>
-</tool_call>`
-	tc3A, err := parseXMLToolCall(xml3A)
-	if err != nil {
-		t.Fatalf("failed to parse 3A: %v", err)
-	}
-	var args3A map[string]interface{}
-	json.Unmarshal([]byte(tc3A.Arguments), &args3A)
-	if args3A["cmd"] != "ls -la" {
-		t.Errorf("expected ls -la, got %v", args3A["cmd"])
-	}
-
-	// Case 3B: parameter cmd (没有=且不带引号)
-	xml3B := `<tool_call>
-<function=exec_command>
-<parameter cmd>ls -la</parameter>
-</function>
-</tool_call>`
-	tc3B, err := parseXMLToolCall(xml3B)
-	if err != nil {
-		t.Fatalf("failed to parse 3B: %v", err)
-	}
-	var args3B map[string]interface{}
-	json.Unmarshal([]byte(tc3B.Arguments), &args3B)
-	if args3B["cmd"] != "ls -la" {
-		t.Errorf("expected ls -la, got %v", args3B["cmd"])
-	}
-
-	// Case 3C: 空 parameter attribute (无参数名，fallback 机制)
-	xml3C := `<tool_call>
-<function=exec_command>
-<parameter>ls -la</parameter>
-</function>
-</tool_call>`
-	tc3C, err := parseXMLToolCall(xml3C)
-	if err != nil {
-		t.Fatalf("failed to parse 3C: %v", err)
-	}
-	var args3C map[string]interface{}
-	json.Unmarshal([]byte(tc3C.Arguments), &args3C)
-	if args3C["cmd"] != "ls -la" {
-		t.Errorf("expected ls -la, got %v", args3C["cmd"])
-	}
-
-	// Case 3D: 极端畸形，完全没有 parameter 标签，直接写在 function 内
-	xml3D := `<tool_call>
-<function=exec_command>
-ls -la
-</function>
-</tool_call>`
-	tc3D, err := parseXMLToolCall(xml3D)
-	if err != nil {
-		t.Fatalf("failed to parse 3D: %v", err)
-	}
-	var args3D map[string]interface{}
-	json.Unmarshal([]byte(tc3D.Arguments), &args3D)
-	if args3D["cmd"] != "ls -la" {
-		t.Errorf("expected ls -la, got %v", args3D["cmd"])
-	}
-}
-
-func TestOpenAIResponses_XMLToolCalls_Stream(t *testing.T) {
-	// 1. 模拟上游返回的 Content 里包含 XML 标签的流
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-
-		chunks := []string{
-			`data: {"id":"chatcmpl-xmlStream","object":"chat.completion.chunk","created":1741290958,"model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"Preamble message. <tool_"},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-xmlStream","object":"chat.completion.chunk","created":1741290958,"model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"call>\n<function=update_plan>\n<parameter=explanation>Planning</parameter>"},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-xmlStream","object":"chat.completion.chunk","created":1741290958,"model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"\n<parameter=[{\"status\":\"in_progress\",\"step\":\"setup\"}]></parameter>\n</function>\n</tool_call>\nPostamble."},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-xmlStream","object":"chat.completion.chunk","created":1741290958,"model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
-			`data: [DONE]`,
-		}
-
-		for _, chunk := range chunks {
-			_, _ = w.Write([]byte(chunk + "\n\n"))
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
-	}))
-	defer server.Close()
-
-	ep := &core.Endpoint{
-		ID:           "ep-translation-xml-stream",
-		Provider:     "openai",
-		Model:        "gpt-5.4",
-		RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
-	}
-	p := NewOpenAIProvider("test-openai-xml-stream", server.URL, "test-key", []string{"gpt-5.4"})
-
-	reqBody := `{"model": "gpt-5.4", "input": "Do it", "stream": true}`
-	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
-	w := httptest.NewRecorder()
-	gctx := core.AcquireContext(w, req)
-	defer core.ReleaseContext(gctx)
-
-	gctx.RequestType = core.RequestTypeResponses
-	gctx.RawBody = []byte(reqBody)
-	gctx.Model = "gpt-5.4"
-	gctx.IsStream = true
-	gctx.SelectedEndpoint = ep
-
-	invoker := &openaiResponsesInvoker{}
-	err := invoker.Invoke(gctx, p)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	respBody := w.Body.String()
-
-	// 2. 验证：
-	// - "Preamble message. " 应该以文本形式输出
-	// - 应该成功解析出 tool_call (update_plan) 并作为 function_call 输出
-	// - "Postamble." 应该以文本形式输出
-	expectedEvents := []string{
-		`event: response.output_text.delta`,
-		`"delta":"Preamble "`,
-		`"delta":"message. "`,
-		`event: response.output_item.added`,
-		`"type":"function_call"`,
-		`"name":"update_plan"`,
-		`event: response.function_call.arguments.delta`,
-		`"delta":"{\"explanation\":\"Planning\",\"steps\":[{\"status\":\"in_progress\",\"step\":\"setup\"}]}"`,
-		`"delta":"\nPostamble."`,
-		`event: response.done`,
-		`event: response.completed`,
-		`data: [DONE]`,
-	}
-
-	for _, expected := range expectedEvents {
-		if !strings.Contains(respBody, expected) {
-			t.Errorf("expected stream to contain %q, but got:\n%s", expected, respBody)
-		}
-	}
-}
 
 func TestOpenAIResponses_Translation_WithComplexInput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
