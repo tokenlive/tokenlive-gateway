@@ -123,6 +123,19 @@ make build
 
 对于生产环境，强烈推荐使用统一的部署项目 [tokenlive-deploy](https://github.com/tokenlive/tokenlive-deploy) 来一键部署 TokenLive 全家桶（包含 Admin 控制台、Gateway 网关、Redis、Prometheus 以及 Caddy 反向代理）。
 
+### Homebrew 安装（macOS 单机）
+
+macOS 单机部署，Gateway + Admin 合为一个进程：
+
+```bash
+brew tap tokenlive/tokenlive
+brew install tokenlive
+brew services start tokenlive
+# http://127.0.0.1:2525  admin / admin
+```
+
+详见 [tokenlive-standalone](https://github.com/tokenlive/tokenlive-standalone)。
+
 ### 调用 API
 
 ```bash
