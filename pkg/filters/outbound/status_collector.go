@@ -31,7 +31,7 @@ type RequestMetric struct {
 	Attempts            []AttemptMetric `json:"attempts"`
 }
 
-// StatusCollectorFilter 收集模型成功/失败的过滤器，用于最近状态显示
+// StatusCollectorFilter collects model success/failure status for recent status display.
 type StatusCollectorFilter struct {
 	rdb        *redis.Client
 	cbManager  *core.CircuitBreakerManager
@@ -40,13 +40,13 @@ type StatusCollectorFilter struct {
 	httpClient *http.Client
 	logger     *zap.Logger
 
-	// HTTP 异步上报通道
+	// async HTTP reporting channel
 	metricCh chan RequestMetric
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
 
-// NewStatusCollectorFilter 创建 StatusCollectorFilter
+// NewStatusCollectorFilter creates a StatusCollectorFilter.
 func NewStatusCollectorFilter(rdb *redis.Client, cbManager *core.CircuitBreakerManager, adminURL string, syncToken string, logger *zap.Logger) *StatusCollectorFilter {
 	f := &StatusCollectorFilter{
 		rdb:        rdb,
@@ -84,13 +84,13 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 	cacheCreationTokens := int64(gctx.CacheCreationTokens)
 	cost := gctx.Cost
 
-	// 防御性截断，确保写入 Redis 日指标的数据逻辑绝对成立
+	// defensive truncation to ensure Redis daily metrics data integrity
 	if cachedTokens+cacheCreationTokens > inputTokens {
 		cachedTokens = inputTokens
 		cacheCreationTokens = 0
 	}
 
-	// 提前拷贝 AttemptHistory 中各 endpoint 尝试记录，防止异步竞争
+	// copy attempt history to prevent async races
 	type epAttempt struct {
 		endpointID string
 		success    bool
@@ -105,7 +105,7 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 		}
 	}
 
-	// HTTP 模式下，直接加入缓冲队列进行异步批量上报
+	// HTTP mode: enqueue to buffer for async batch reporting
 	if f.rdb == nil {
 		if f.metricCh != nil {
 			var attempts []AttemptMetric
@@ -129,7 +129,7 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 			select {
 			case f.metricCh <- m:
 			default:
-				// 队列满则安全丢弃，不阻塞请求主流程
+				// queue full: safely drop, don't block the request
 			}
 		}
 		return nil
@@ -153,17 +153,17 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 		dailyOutputKey := fmt.Sprintf("aigw:status:daily:output_tokens:%s", dateStr)
 		dailyCostKey := fmt.Sprintf("aigw:status:daily:cost:%s", dateStr)
 
-		// 必须采用 context.Background()，以确保在 HTTP 请求结束、主协程退出后，异步指标写入不会因原 Context 的 Cancel 而中断。
+		// use context.Background() so async writes survive request cancellation after the main goroutine exits
 		bgCtx := context.Background()
 		pipe := f.rdb.Pipeline()
 
-		// 1. 模型分钟级统计与全局分钟级统计
+		// 1. per-model and global per-minute stats
 		pipe.Incr(bgCtx, statusKey)
 		pipe.Expire(bgCtx, statusKey, 2*time.Hour)
 		pipe.Incr(bgCtx, globalKey)
 		pipe.Expire(bgCtx, globalKey, 2*time.Hour)
 
-		// 1.2 端点尝试统计
+		// 1.2 endpoint attempt stats
 		for _, att := range epAttempts {
 			var epKey string
 			if att.success {
@@ -175,7 +175,7 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 			pipe.Expire(bgCtx, epKey, 2*time.Hour)
 		}
 
-		// 2. 自然日累计值统计
+		// 2. daily cumulative stats
 		pipe.Incr(bgCtx, dailyReqKey)
 		pipe.Expire(bgCtx, dailyReqKey, 48*time.Hour)
 
@@ -225,7 +225,7 @@ func (f *StatusCollectorFilter) startWorker() {
 				batch = nil
 			}
 		case <-ticker.C:
-			// 即使无请求，也定期发送心跳（用于同步熔断器状态）
+			// periodic heartbeat even without requests (syncs circuit breaker state)
 			f.flush(batch)
 			batch = nil
 		}

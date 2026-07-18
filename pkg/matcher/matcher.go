@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// RequestContext 通用只读请求上下文契约
+// RequestContext is a read-only request context contract.
 type RequestContext interface {
 	GetHeader(key string) []string
 	GetQuery(key string) []string
@@ -14,18 +14,18 @@ type RequestContext interface {
 	GetTagValue(key string) string
 }
 
-// TagMatcher 标签匹配契约
+// TagMatcher is the tag matching contract.
 type TagMatcher interface {
-	// Match 判断当前请求是否满足指定的 TagCondition 条件
+	// Match reports whether the request satisfies the TagCondition.
 	Match(ctx context.Context, condition *TagCondition, reqCtx RequestContext) bool
 }
 
-// TagMatcherFactory 匹配器注册工厂
+// TagMatcherFactory registers matchers.
 type TagMatcherFactory struct {
 	matchers map[string]TagMatcher
 }
 
-// DefaultTagMatcherFactory 匹配器全局工厂单例
+// DefaultTagMatcherFactory is the global factory singleton.
 var DefaultTagMatcherFactory = &TagMatcherFactory{
 	matchers: make(map[string]TagMatcher),
 }
@@ -38,12 +38,12 @@ func (f *TagMatcherFactory) Get(matcherType string) TagMatcher {
 	return f.matchers[matcherType]
 }
 
-// IsWildcard 判定一个模式是否为通配符或未指定
+// IsWildcard reports whether the pattern is wildcard or empty.
 func IsWildcard(pattern string) bool {
 	return pattern == "" || pattern == "*" || strings.Contains(pattern, "*")
 }
 
-// MatchWildcard 通用简单通配符前缀/后缀匹配
+// MatchWildcard does simple prefix/suffix wildcard match.
 func MatchWildcard(pattern, val string) bool {
 	if pattern == "" || pattern == "*" {
 		return true

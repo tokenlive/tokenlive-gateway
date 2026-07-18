@@ -170,26 +170,16 @@ func TestJoyCode_TranslateAnthropicToOpenAINonStream(t *testing.T) {
 	}
 }
 
-// TestJoyCode_HandleAnthropicStreamToOpenAI 测试流式翻译状态机 (Anthropic -> OpenAI SSE)
+// TestJoyCode_HandleAnthropicStreamToOpenAI 测试流式翻译 (Anthropic -> OpenAI SSE)，含 text/thinking
 func TestJoyCode_HandleAnthropicStreamToOpenAI(t *testing.T) {
-	sseContent := `
-data: {"type": "message_start", "message": {"id": "msg_001", "usage": {"input_tokens": 10}}}
-
-data: {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Let me think."}}
-
-data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Answer is 42."}}
-
-data: {"type": "message_delta", "usage": {"output_tokens": 20}}
-
-data: {"type": "message_stop"}
-
-data: [DONE]
-`
+	sseContent := "data: {\"type\": \"message_start\", \"message\": {\"id\": \"msg_001\", \"usage\": {\"input_tokens\": 10}}}\n\n" +
+		"data: {\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {\"type\": \"thinking_delta\", \"thinking\": \"Let me think.\"}}\n\n" +
+		"data: {\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {\"type\": \"text_delta\", \"text\": \"Answer is 42.\"}}\n\n" +
+		"data: {\"type\": \"message_delta\", \"delta\": {\"stop_reason\": \"end_turn\"}, \"usage\": {\"output_tokens\": 20}}\n\n" +
+		"data: {\"type\": \"message_stop\"}\n\n"
 
 	respBody := io.NopCloser(strings.NewReader(sseContent))
-	httpResp := &http.Response{
-		Body: respBody,
-	}
+	httpResp := &http.Response{Body: respBody}
 
 	recorder := httptest.NewRecorder()
 	gctx := &core.GatewayContext{
@@ -199,22 +189,92 @@ data: [DONE]
 		IsStream:       true,
 	}
 
-	p := &JoyCodeProvider{
-		name: "test-joycode",
-	}
-
-	err := p.handleAnthropicStreamToOpenAI(gctx, httpResp)
-	if err != nil {
+	p := &JoyCodeProvider{name: "test-joycode"}
+	if err := p.handleAnthropicStreamToOpenAI(gctx, httpResp); err != nil {
 		t.Fatalf("handleAnthropicStreamToOpenAI failed: %v", err)
 	}
 
-	resultBody := recorder.Body.String()
-	lines := strings.Split(resultBody, "\n")
+	openaiEvents, hasDone := parseSSEOpenAIEvents(t, recorder.Body.String())
 
-	var openaiEvents []map[string]interface{}
-	hasDone := false
+	if gctx.InputTokens != 10 {
+		t.Errorf("expected InputTokens 10, got %d", gctx.InputTokens)
+	}
+	if gctx.OutputTokens != 20 {
+		t.Errorf("expected OutputTokens 20, got %d", gctx.OutputTokens)
+	}
+	if len(openaiEvents) != 3 {
+		t.Fatalf("expected 3 OpenAI events translated, got %d: %+v", len(openaiEvents), openaiEvents)
+	}
 
-	for _, line := range lines {
+	ev1Delta := openaiEvents[0]["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})
+	if ev1Delta["reasoning_content"] != "Let me think." {
+		t.Errorf("expected reasoning_content, got %v", ev1Delta["reasoning_content"])
+	}
+	ev2Delta := openaiEvents[1]["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})
+	if ev2Delta["content"] != "Answer is 42." {
+		t.Errorf("expected content, got %v", ev2Delta["content"])
+	}
+	ev3Choice := openaiEvents[2]["choices"].([]interface{})[0].(map[string]interface{})
+	if ev3Choice["finish_reason"] != "stop" {
+		t.Errorf("expected finish_reason stop, got %v", ev3Choice["finish_reason"])
+	}
+	if !hasDone {
+		t.Errorf("expected stream to end with [DONE]")
+	}
+}
+
+// TestJoyCode_HandleAnthropicStreamToOpenAI_Tools 验证 tool_use 流翻译为 OpenAI tool_calls
+func TestJoyCode_HandleAnthropicStreamToOpenAI_Tools(t *testing.T) {
+	sseContent := "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_tool\",\"usage\":{\"input_tokens\":5}}}\n\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\",\"input\":{}}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"BJ\\\"}\"}}\n\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":8}}\n\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+
+	recorder := httptest.NewRecorder()
+	gctx := &core.GatewayContext{
+		Ctx:            context.Background(),
+		ResponseWriter: recorder,
+		Model:          "claude-3-5-sonnet",
+		IsStream:       true,
+	}
+	p := &JoyCodeProvider{name: "test-joycode"}
+	if err := p.handleAnthropicStreamToOpenAI(gctx, &http.Response{Body: io.NopCloser(strings.NewReader(sseContent))}); err != nil {
+		t.Fatalf("stream tools: %v", err)
+	}
+
+	events, hasDone := parseSSEOpenAIEvents(t, recorder.Body.String())
+	if !hasDone {
+		t.Fatal("expected [DONE]")
+	}
+	if len(events) < 4 {
+		t.Fatalf("expected >=4 events, got %d: %+v", len(events), events)
+	}
+
+	// first: tool start
+	d0 := events[0]["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})
+	tc := d0["tool_calls"].([]interface{})[0].(map[string]interface{})
+	if tc["id"] != "toolu_1" {
+		t.Errorf("id = %v", tc["id"])
+	}
+	if tc["function"].(map[string]interface{})["name"] != "get_weather" {
+		t.Errorf("name = %v", tc["function"])
+	}
+
+	// finish
+	last := events[len(events)-1]["choices"].([]interface{})[0].(map[string]interface{})
+	if last["finish_reason"] != "tool_calls" {
+		t.Errorf("finish_reason = %v", last["finish_reason"])
+	}
+	if gctx.OutputTokens != 8 {
+		t.Errorf("OutputTokens = %d", gctx.OutputTokens)
+	}
+}
+
+func parseSSEOpenAIEvents(t *testing.T, body string) (events []map[string]interface{}, hasDone bool) {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -227,46 +287,9 @@ data: [DONE]
 			dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			var val map[string]interface{}
 			if err := json.Unmarshal([]byte(dataStr), &val); err == nil {
-				openaiEvents = append(openaiEvents, val)
+				events = append(events, val)
 			}
 		}
 	}
-
-	// 验证 Token 累计抓取
-	if gctx.InputTokens != 10 {
-		t.Errorf("expected InputTokens 10, got %d", gctx.InputTokens)
-	}
-	if gctx.OutputTokens != 20 {
-		t.Errorf("expected OutputTokens 20, got %d", gctx.OutputTokens)
-	}
-
-	// 应当有 3 个翻译事件：1. thinking_delta, 2. text_delta, 3. message_delta (finish_reason)
-	if len(openaiEvents) != 3 {
-		t.Fatalf("expected 3 OpenAI events translated, got %d: %+v", len(openaiEvents), openaiEvents)
-	}
-
-	// 验证 thinking_delta
-	ev1Choices := openaiEvents[0]["choices"].([]interface{})
-	ev1Delta := ev1Choices[0].(map[string]interface{})["delta"].(map[string]interface{})
-	if ev1Delta["reasoning_content"] != "Let me think." {
-		t.Errorf("expected reasoning_content, got %v", ev1Delta["reasoning_content"])
-	}
-
-	// 验证 text_delta
-	ev2Choices := openaiEvents[1]["choices"].([]interface{})
-	ev2Delta := ev2Choices[0].(map[string]interface{})["delta"].(map[string]interface{})
-	if ev2Delta["content"] != "Answer is 42." {
-		t.Errorf("expected content, got %v", ev2Delta["content"])
-	}
-
-	// 验证 message_delta (finish_reason)
-	ev3Choices := openaiEvents[2]["choices"].([]interface{})
-	ev3Choice := ev3Choices[0].(map[string]interface{})
-	if ev3Choice["finish_reason"] != "stop" {
-		t.Errorf("expected finish_reason stop, got %v", ev3Choice["finish_reason"])
-	}
-
-	if !hasDone {
-		t.Errorf("expected stream to end with [DONE]")
-	}
+	return events, hasDone
 }

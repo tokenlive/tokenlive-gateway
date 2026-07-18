@@ -7,7 +7,7 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
 
-// HTTPError HTTP 错误，包含状态码和消息
+// HTTPError is an HTTP-facing error with status code and message.
 type HTTPError struct {
 	Code         int
 	Message      string
@@ -28,7 +28,7 @@ func GetLimitKey(gctx *core.GatewayContext, lp *policy.LimitPolicy) string {
 	if policyKey == "" {
 		policyKey = lp.Name
 	}
-	// 向下兼容：如果未配置或长度为0，按原来的默认逻辑（租户或用户）生成
+	// Backward compat: empty LimitBy → user or tenant.
 	if len(lp.LimitBy) == 0 {
 		id := gctx.UserID
 		if id == "" {

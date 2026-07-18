@@ -12,12 +12,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// CostLimitExecutor 针对消费额度 (厘) 的限流执行器
+// CostLimitExecutor enforces spend limits (unit: li, 1/1000 yuan).
 type CostLimitExecutor struct {
 	stateStore core.StateStore
 }
 
-// NewCostLimitExecutor 创建 CostLimitExecutor 实例
+// NewCostLimitExecutor creates a CostLimitExecutor.
 func NewCostLimitExecutor(ss core.StateStore) *CostLimitExecutor {
 	return &CostLimitExecutor{stateStore: ss}
 }
@@ -25,14 +25,14 @@ func NewCostLimitExecutor(ss core.StateStore) *CostLimitExecutor {
 func (e *CostLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayContext, lp *policy.LimitPolicy) error {
 	limitKey := GetLimitKey(gctx, lp)
 
-	inputPrice := 3.0 // 默认兜底价格 (元/百万 Tokens)
+	inputPrice := 3.0 // default yuan per million tokens
 	outputPrice := 10.0
 	if gctx.Policy != nil && gctx.Policy.Billing != nil {
 		inputPrice = gctx.Policy.Billing.InputPrice
 		outputPrice = gctx.Policy.Billing.OutputPrice
 	}
 
-	// 分别估算 input/output token 数，使用各自单价换算预估费用 (以厘为单位)
+	// Estimate cost in li from input/output tokens and unit prices.
 	estimateInputTokens := EstimateInputTokens(gctx, lp)
 	estimateOutputTokens := EstimateOutputTokens(ctx, e.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
 	estimateCost := int64((float64(estimateInputTokens)*inputPrice +
@@ -131,7 +131,7 @@ func (e *CostLimitExecutor) rollback(ctx context.Context, limitKey string, windo
 func (e *CostLimitExecutor) Refund(ctx context.Context, gctx *core.GatewayContext, lp *policy.LimitPolicy) error {
 	limitKey := GetLimitKey(gctx, lp)
 
-	inputPrice := 3.0 // 默认兜底价格 (元/百万 Tokens)
+	inputPrice := 3.0 // default yuan per million tokens
 	outputPrice := 10.0
 	if gctx.Policy != nil && gctx.Policy.Billing != nil {
 		inputPrice = gctx.Policy.Billing.InputPrice

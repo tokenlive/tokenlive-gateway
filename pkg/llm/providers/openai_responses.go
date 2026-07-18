@@ -12,6 +12,7 @@ import (
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
+	"github.com/tokenlive/tokenlive-gateway/pkg/llm/translate"
 
 	"go.uber.org/zap"
 )
@@ -25,7 +26,7 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 		return fmt.Errorf("expected *OpenAIProvider, got %T", p)
 	}
 
-	// 1. 分流判定：端点是否原生支持 responses
+	// 1. Branch decision: does the endpoint natively support responses?
 	hasResponseCapability := false
 	if gctx.SelectedEndpoint != nil {
 		for _, cap := range gctx.SelectedEndpoint.RequestTypes {
@@ -36,11 +37,16 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 		}
 	}
 
-	// 分支 A：原生同名转发
+	// Branch A: native same-name forwarding
 	if hasResponseCapability {
-		newBody, err := correctToolsForNativeResponses(gctx, gctx.RawBody)
+		newBody, orig, final, summary, err := translate.CorrectNativeResponsesRequest(gctx.RawBody)
 		if err == nil {
 			gctx.RawBody = newBody
+			gctx.Logger(zap.L()).Debug("native responses tools conversion result summary",
+				zap.Int("original_count", orig),
+				zap.Int("final_count", final),
+				zap.Strings("final_tools_summary", summary),
+			)
 		} else {
 			gctx.Logger(zap.L()).Warn("failed to correct tools for native responses", zap.Error(err))
 		}
@@ -48,273 +54,45 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 		return op.doRequest(gctx, endpoint)
 	}
 
-	// 分支 B：协议降级与翻译 (Responses -> Chat/Completions)
-	newBody, err := translateResponsesToChatCompletion(gctx.RawBody)
+	// Branch B: protocol downgrade and translation (Responses -> Chat/Completions)
+	newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
 	if err != nil {
 		return err
 	}
 	gctx.RawBody = newBody
 
-	// 同名重定向到上游 /chat/completions
+	// Redirect to upstream /chat/completions
 	endpoint := op.baseURL + "/chat/completions"
 	if err := op.doRequest(gctx, endpoint); err != nil {
 		return err
 	}
 
-	// 翻译响应体 (OpenAI Chat -> Responses)
+	// Translate response body (OpenAI Chat -> Responses)
 	if gctx.IsStream {
 		return handleResponsesStream(gctx, gctx.UpstreamResponse)
-	} else {
-		if err := translateResponsesNonStreamResponse(gctx); err != nil {
-			return fmt.Errorf("translate response: %w", err)
-		}
 	}
-
+	if err := translateResponsesNonStreamResponse(gctx); err != nil {
+		return fmt.Errorf("translate response: %w", err)
+	}
 	return nil
 }
 
+// Compatible with same-package callers (joycode / tests)
 func translateResponsesToChatCompletion(rawBody []byte) ([]byte, error) {
-	var payload map[string]interface{}
-	if err := json.Unmarshal(rawBody, &payload); err != nil {
-		return nil, fmt.Errorf("parse raw body: %w", err)
-	}
-
-	var openAIMessages []interface{}
-	// 处理 instructions -> system message
-	if instructions, ok := payload["instructions"].(string); ok && instructions != "" {
-		openAIMessages = append(openAIMessages, map[string]interface{}{
-			"role":    "system",
-			"content": instructions,
-		})
-	}
-
-	// 处理 input
-	if inputVal, ok := payload["input"]; ok && inputVal != nil {
-		if inputStr, ok := inputVal.(string); ok {
-			if inputStr != "" {
-				openAIMessages = append(openAIMessages, map[string]interface{}{
-					"role":    "user",
-					"content": inputStr,
-				})
-			}
-		} else if inputArr, ok := inputVal.([]interface{}); ok {
-			for _, item := range inputArr {
-				itemMap, ok := item.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				role, _ := itemMap["role"].(string)
-				openAIRole := "user"
-				if role == "developer" {
-					openAIRole = "system"
-				} else if role == "assistant" {
-					openAIRole = "assistant"
-				} else if role == "system" {
-					openAIRole = "system"
-				} else if role != "" {
-					openAIRole = role
-				}
-
-				var textContent strings.Builder
-				if contentVal, ok := itemMap["content"]; ok {
-					if contentStr, ok := contentVal.(string); ok {
-						textContent.WriteString(contentStr)
-					} else if contentArr, ok := contentVal.([]interface{}); ok {
-						for _, c := range contentArr {
-							if cMap, ok := c.(map[string]interface{}); ok {
-								if text, ok := cMap["text"].(string); ok {
-									textContent.WriteString(text)
-								}
-							}
-						}
-					}
-				}
-
-				msg := map[string]interface{}{
-					"role":    openAIRole,
-					"content": textContent.String(),
-				}
-				if name, ok := itemMap["name"].(string); ok && name != "" {
-					msg["name"] = name
-				}
-				if toolCallID, ok := itemMap["tool_call_id"].(string); ok && toolCallID != "" {
-					msg["tool_call_id"] = toolCallID
-				}
-				if toolCalls, ok := itemMap["tool_calls"]; ok {
-					msg["tool_calls"] = toolCalls
-				}
-
-				openAIMessages = append(openAIMessages, msg)
-			}
-		}
-	}
-	payload["messages"] = openAIMessages
-	delete(payload, "input")
-	delete(payload, "instructions")
-
-	// 映射 max_output_tokens -> max_completion_tokens
-	if maxOutputTokens, ok := payload["max_output_tokens"]; ok {
-		payload["max_completion_tokens"] = maxOutputTokens
-		delete(payload, "max_output_tokens")
-	}
-
-	// 纠正 Codex 等客户端发送的非标准 tools 格式（平铺或自定义字段转换为嵌套的 function，且打平 namespace 级工具，过滤无名查询）
-	if tools, ok := payload["tools"].([]interface{}); ok {
-		var finalTools []interface{}
-		for _, t := range tools {
-			toolMap, ok := t.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			toolType, _ := toolMap["type"].(string)
-
-			if toolType == "namespace" {
-				if subTools, ok := toolMap["tools"].([]interface{}); ok {
-					for _, st := range subTools {
-						subToolMap, ok := st.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						stdTool := buildStandardTool(subToolMap)
-						if stdTool != nil && stdTool["type"] == "function" {
-							finalTools = append(finalTools, wrapFlatToolToNestedOpenAI(stdTool))
-						}
-					}
-				}
-			} else {
-				stdTool := buildStandardTool(toolMap)
-				if stdTool != nil && stdTool["type"] == "function" {
-					finalTools = append(finalTools, wrapFlatToolToNestedOpenAI(stdTool))
-				}
-			}
-		}
-
-		if len(finalTools) > 0 {
-			payload["tools"] = finalTools
-		} else {
-			delete(payload, "tools")
-			delete(payload, "tool_choice")
-		}
-	}
-
-	newBody, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal translated body: %w", err)
-	}
-	return newBody, nil
+	return translate.ResponsesRequestToChat(rawBody)
 }
 
 func translateResponsesNonStreamResponse(gctx *core.GatewayContext) error {
-	var oaiResp struct {
-		ID      string `json:"id"`
-		Model   string `json:"model"`
-		Choices []struct {
-			Message struct {
-				Role      string `json:"role"`
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					ID       string `json:"id"`
-					Type     string `json:"type"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
-
-	if err := json.Unmarshal(gctx.UpstreamBody, &oaiResp); err != nil {
-		return err
-	}
-
-	now := time.Now().Unix()
-	respID := oaiResp.ID
-	if strings.HasPrefix(respID, "chatcmpl-") {
-		respID = strings.Replace(respID, "chatcmpl-", "resp_", 1)
-	} else if respID == "" {
-		respID = "resp_mock"
-	} else if !strings.HasPrefix(respID, "resp_") {
-		respID = "resp_" + respID
-	}
-
-	msgID := oaiResp.ID
-	if strings.HasPrefix(msgID, "chatcmpl-") {
-		msgID = strings.Replace(msgID, "chatcmpl-", "msg_", 1)
-	} else if msgID == "" {
-		msgID = "msg_mock"
-	} else if !strings.HasPrefix(msgID, "msg_") {
-		msgID = "msg_" + msgID
-	}
-
-	var outputList []map[string]interface{}
-
-	if len(oaiResp.Choices) > 0 {
-		choice := oaiResp.Choices[0]
-		// 1. 如果有工具调用
-		if len(choice.Message.ToolCalls) > 0 {
-			for _, tc := range choice.Message.ToolCalls {
-				outputList = append(outputList, map[string]interface{}{
-					"id":        tc.ID,
-					"type":      "function_call",
-					"status":    "completed",
-					"name":      tc.Function.Name,
-					"arguments": tc.Function.Arguments,
-				})
-			}
-		} else {
-			// 2. 纯文本消息回复
-			content := choice.Message.Content
-			outputList = append(outputList, map[string]interface{}{
-				"type":   "message",
-				"id":     msgID,
-				"status": "completed",
-				"role":   "assistant",
-				"content": []map[string]interface{}{
-					{
-						"type":        "output_text",
-						"text":        content,
-						"annotations": []interface{}{},
-					},
-				},
-			})
-		}
-	}
-
-	responsesResp := map[string]interface{}{
-		"id":           respID,
-		"object":       "response",
-		"created_at":   now,
-		"status":       "completed",
-		"completed_at": now + 1,
-		"model":        gctx.Model,
-		"output":       outputList,
-		"usage": map[string]interface{}{
-			"input_tokens":  oaiResp.Usage.PromptTokens,
-			"output_tokens": oaiResp.Usage.CompletionTokens,
-			"total_tokens":  oaiResp.Usage.TotalTokens,
-		},
-	}
-
-	translatedBody, err := json.Marshal(responsesResp)
+	res, err := translate.ChatCompletionToResponses(gctx.UpstreamBody, gctx.Model)
 	if err != nil {
 		return err
 	}
-
-	gctx.UpstreamBody = translatedBody
-
+	gctx.UpstreamBody = res.Body
 	var result map[string]interface{}
-	if err := json.Unmarshal(translatedBody, &result); err != nil {
+	if err := json.Unmarshal(res.Body, &result); err != nil {
 		return err
 	}
 	gctx.Response = result
-
 	return nil
 }
 
@@ -486,7 +264,7 @@ func sendPlainResponsesText(gctx *core.GatewayContext, respID string, txt string
 	if !*messageAdded {
 		*messageAdded = true
 		*textOutputIndex = *currentOutputIndex
-		// 3. response.output_item.added (文本 message 类型)
+		// response.output_item.added (text message)
 		var evItemAdded responseOutputItemAddedEvent
 		evItemAdded.Type = "response.output_item.added"
 		evItemAdded.ResponseID = respID
@@ -500,7 +278,7 @@ func sendPlainResponsesText(gctx *core.GatewayContext, respID string, txt string
 			return err
 		}
 
-		// 4. response.content_part.added (output_text 类型)
+		// response.content_part.added (output_text)
 		var evPartAdded responseContentPartAddedEvent
 		evPartAdded.Type = "response.content_part.added"
 		evPartAdded.ResponseID = respID
@@ -569,7 +347,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			// 1. 嗅探所有帧中的 SSE 错误事件
+			// 1. Sniff SSE error events from all frames
 			events := parser.Feed(buf[:n])
 			for _, ev := range events {
 				if strings.Contains(ev.Data, `"error"`) {
@@ -606,7 +384,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			}
 
 			if !headersSent {
-				// 2. 嗅探第一帧原始数据是不是普通 JSON 错误
+				// 2. Sniff first frame raw data for plain JSON error
 				trimmed := strings.TrimSpace(string(buf[:n]))
 				if strings.HasPrefix(trimmed, "{") {
 					var errJSON struct {
@@ -630,7 +408,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 					return fmt.Errorf("upstream stream returned JSON error body: %s", trimmed)
 				}
 
-				// 如果还没发送头部，现在是发送头部并触发首包计时的最佳时机
+				// If headers haven't been sent yet, now is the best time to send them and trigger first-byte timing
 				gctx.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 				gctx.ResponseWriter.Header().Set("Cache-Control", "no-cache")
 				gctx.ResponseWriter.Header().Set("Connection", "keep-alive")
@@ -756,7 +534,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 						return err
 					}
 
-					// 2.1 提前无条件发送 response.output_item.added (message) 以便客户端渲染层完成视图元素 ID 的注册
+					// 2.1 Pre-emptively send response.output_item.added (message) so the client renderer can register view element IDs
 					messageAdded = true
 					textOutputIndex = currentOutputIndex
 					currentOutputIndex++
@@ -774,7 +552,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 						return err
 					}
 
-					// 2.2 提前发送 response.content_part.added (output_text)
+					// 2.2 Pre-send response.content_part.added (output_text)
 					var evPartAdded responseContentPartAddedEvent
 					evPartAdded.Type = "response.content_part.added"
 					evPartAdded.ResponseID = respID
@@ -796,7 +574,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 				if len(chunk.Choices) > 0 {
 					choice := chunk.Choices[0]
 
-					// 处理文本
+					// Process text
 					txt := choice.Delta.Content
 					if txt != "" {
 						if err := sendPlainResponsesText(gctx, respID, txt, msgID, &messageAdded, &textOutputIndex, &currentOutputIndex); err != nil {
@@ -806,7 +584,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 						gctx.TransmittedChars += len(txt)
 					}
 
-					// 处理工具调用
+					// Process tool calls
 					if len(choice.Delta.ToolCalls) > 0 {
 						for _, tc := range choice.Delta.ToolCalls {
 							localTC, exist := localToolCalls[tc.Index]
@@ -826,7 +604,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 								localTC.Name = tc.Function.Name
 							}
 
-							// 只要有了工具名，且还未发送过 added，就立刻发送 added 事件
+							// Once we have a tool name and haven't sent the added event yet, send it immediately
 							if localTC.Name != "" && !localTC.Added {
 								localTC.Added = true
 								var evTCAdded responseOutputItemAddedFunctionCallEvent
@@ -847,7 +625,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 							if argDelta != "" {
 								localTC.Arguments.WriteString(argDelta)
 
-								// 发送 arguments delta
+								// Send arguments delta
 								var evTCDelta responseFunctionCallArgumentsDeltaEvent
 								evTCDelta.Type = "response.function_call.arguments.delta"
 								evTCDelta.ResponseID = respID
@@ -918,7 +696,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 
 		now := time.Now().Unix()
 
-		// 结束文本消息
+		// Finalize text message
 		if messageAdded {
 			finalText := fullText.String()
 
@@ -969,7 +747,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			}
 		}
 
-		// 结束工具调用
+		// Finalize tool calls
 		var outputs []interface{}
 		outputs = append(outputs, map[string]interface{}{
 			"id":     msgID,
@@ -985,7 +763,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			},
 		})
 
-		// 按照 index 顺序遍历工具调用完成事件
+		// Iterate tool call completion events in index order
 		var indices []int
 		for idx := range localToolCalls {
 			indices = append(indices, idx)
@@ -996,7 +774,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			tc := localToolCalls[idx]
 			finalArgs := tc.Arguments.String()
 
-			// 发送 arguments done
+			// Send arguments done
 			var evTCDone responseFunctionCallArgumentsDoneEvent
 			evTCDone.Type = "response.function_call.arguments.done"
 			evTCDone.ResponseID = respID
@@ -1007,7 +785,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 				return err
 			}
 
-			// 发送 output_item.done
+			// Send output_item.done
 			var evTCItemDone responseOutputItemDoneFunctionCallEvent
 			evTCItemDone.Type = "response.output_item.done"
 			evTCItemDone.ResponseID = respID
@@ -1046,7 +824,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			return err
 		}
 
-		// 同时发送 response.completed 兼容旧客户端，避免死等超时
+		// Also send response.completed for old client compatibility to avoid indefinite waiting timeout
 		evCompleted.Type = "response.completed"
 		if err := writeResponseEvent(gctx.ResponseWriter, "response.completed", evCompleted); err != nil {
 			return err
@@ -1057,7 +835,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 		}
 		gctx.Tags["response_completed_sent"] = "true"
 
-		// 发送 data: [DONE] 以显式结束客户端的 SSE 监听
+		// Send data: [DONE] to explicitly end the client's SSE listening
 		_, _ = fmt.Fprintf(gctx.ResponseWriter, "data: [DONE]\n\n")
 
 		if hasFlusher {
@@ -1068,245 +846,4 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 	return nil
 }
 
-// builtinToolStandardFields 列出 OpenAI 原生 responses 内置工具（非 function/mcp/shell）
-// 各自允许透传的标准字段。清洗时只保留这些字段，其余客户端私有字段一律剥离。
-var builtinToolStandardFields = map[string][]string{
-	"web_search":         {"search_context_size", "user_location", "filters"},
-	"web_search_preview": {"search_context_size", "user_location", "filters"},
-	"code_interpreter":   {"container"},
-	"image_generation":   {"model", "size", "quality", "background", "output_format"},
-	"file_search":        {"vector_store_ids", "max_num_results", "filters", "ranking_options"},
-	"computer_use_preview": {"display_width", "display_height", "environment"},
-}
 
-func buildStandardTool(toolMap map[string]interface{}) map[string]interface{} {
-	toolType, _ := toolMap["type"].(string)
-	if toolType == "" {
-		if name, ok := toolMap["name"].(string); ok && name != "" {
-			toolType = "function"
-		} else {
-			return nil
-		}
-	}
-
-	targetType := toolType
-	if targetType == "" || targetType == "custom" {
-		targetType = "function"
-	}
-
-	// 针对 web_search 等内置工具：按白名单保留 OpenAI 标准字段，仅剥离客户端私有的非标准字段（如 Codex 的 external_web_access）。
-	// 未知类型无白名单时降级为只保留 type，避免把私有字段透传给上游导致报错。
-	if targetType != "function" && targetType != "mcp" && targetType != "shell" {
-		builtin := map[string]interface{}{"type": targetType}
-		if allowed, ok := builtinToolStandardFields[targetType]; ok {
-			for _, field := range allowed {
-				if v, exists := toolMap[field]; exists {
-					builtin[field] = v
-				}
-			}
-		}
-		return builtin
-	}
-
-	// 1. 如果有对应 toolType 的内层嵌套对象，比如 toolMap["function"] 或 toolMap["mcp"]，将其“打平”（Flatten）
-	if innerObj, ok := toolMap[toolType].(map[string]interface{}); ok {
-		flatTool := make(map[string]interface{})
-		flatTool["type"] = toolType
-
-		// 将内层对象的所有属性平铺到外层
-		for k, v := range innerObj {
-			flatTool[k] = v
-		}
-
-		// 保留外层的其他非嵌套属性（但不覆盖已经平铺上来的属性）
-		for k, v := range toolMap {
-			if k != "type" && k != toolType {
-				if _, exists := flatTool[k]; !exists {
-					flatTool[k] = v
-				}
-			}
-		}
-
-		// 针对 function、mcp 和 shell 类型，如果依然没有有效的 name，则过滤该工具
-		if toolType == "function" || toolType == "mcp" || toolType == "shell" {
-			if name, ok := flatTool["name"].(string); !ok || name == "" {
-				return nil
-			}
-		}
-
-		return flatTool
-	}
-
-	// 2. 如果本来就是平铺格式，复制并确保基本字段符合必填要求
-	targetType = toolType
-	if targetType == "" || targetType == "custom" {
-		targetType = "function"
-	}
-
-	innerName, _ := toolMap["name"].(string)
-	if innerName == "" {
-		innerName = targetType // 对于像 web_search 等无 name 的内置平铺工具，默认以类型名作为 name 补齐
-	}
-
-	flatTool := make(map[string]interface{})
-	for k, v := range toolMap {
-		if k != "type" && k != "name" {
-			flatTool[k] = v
-		}
-	}
-	flatTool["type"] = targetType
-	flatTool["name"] = innerName
-
-	// 针对 function、mcp 和 shell 类型，必须在最外层有有效的 name
-	if targetType == "function" || targetType == "mcp" || targetType == "shell" {
-		if innerName == "" {
-			return nil
-		}
-	}
-
-	return flatTool
-}
-
-func wrapFlatToolToNestedOpenAI(flatTool map[string]interface{}) map[string]interface{} {
-	toolType, _ := flatTool["type"].(string)
-	if toolType == "" {
-		toolType = "function"
-	}
-
-	innerMap := make(map[string]interface{})
-	for k, v := range flatTool {
-		if k != "type" {
-			innerMap[k] = v
-		}
-	}
-
-	return map[string]interface{}{
-		"type":   toolType,
-		toolType: innerMap,
-	}
-}
-
-
-
-func correctToolsForNativeResponses(gctx *core.GatewayContext, rawBody []byte) ([]byte, error) {
-	var payload map[string]interface{}
-	if err := json.Unmarshal(rawBody, &payload); err != nil {
-		return nil, fmt.Errorf("parse raw body: %w", err)
-	}
-
-	correctInputForNativeResponses(payload)
-
-	tools, ok := payload["tools"].([]interface{})
-	if !ok {
-		// Even if no tools present, we still marshal the normalized input
-		newBody, err := json.Marshal(payload)
-		if err != nil {
-			return nil, fmt.Errorf("marshal corrected body: %w", err)
-		}
-		return newBody, nil
-	}
-
-	var finalTools []interface{}
-	for _, t := range tools {
-		toolMap, ok := t.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		toolType, _ := toolMap["type"].(string)
-
-		if toolType == "namespace" {
-			if subTools, ok := toolMap["tools"].([]interface{}); ok {
-				for _, st := range subTools {
-					subToolMap, ok := st.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					subType, _ := subToolMap["type"].(string)
-					if subType == "namespace" {
-						continue
-					}
-					
-					stdTool := buildStandardTool(subToolMap)
-					if stdTool != nil {
-						finalTools = append(finalTools, stdTool)
-					}
-				}
-			}
-		} else {
-			stdTool := buildStandardTool(toolMap)
-			if stdTool != nil {
-				finalTools = append(finalTools, stdTool)
-			}
-		}
-	}
-
-	if len(finalTools) > 0 {
-		payload["tools"] = finalTools
-	} else {
-		delete(payload, "tools")
-		delete(payload, "tool_choice")
-	}
-
-	var toolTypesAndNames []string
-	for _, t := range finalTools {
-		if tm, ok := t.(map[string]interface{}); ok {
-			ttype, _ := tm["type"].(string)
-			tname, _ := tm["name"].(string)
-			toolTypesAndNames = append(toolTypesAndNames, fmt.Sprintf("%s:%s", ttype, tname))
-		}
-	}
-	gctx.Logger(zap.L()).Debug("native responses tools conversion result summary",
-		zap.Int("original_count", len(tools)),
-		zap.Int("final_count", len(finalTools)),
-		zap.Strings("final_tools_summary", toolTypesAndNames),
-	)
-
-	newBody, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal corrected body: %w", err)
-	}
-	return newBody, nil
-}
-
-func correctInputForNativeResponses(payload map[string]interface{}) {
-	inputVal, ok := payload["input"]
-	if !ok || inputVal == nil {
-		return
-	}
-
-	inputArr, ok := inputVal.([]interface{})
-	if !ok {
-		return
-	}
-
-	for _, item := range inputArr {
-		itemMap, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		if role, ok := itemMap["role"].(string); ok {
-			if role == "developer" {
-				itemMap["role"] = "system"
-			}
-		}
-
-		if contentVal, ok := itemMap["content"]; ok && contentVal != nil {
-			if contentArr, ok := contentVal.([]interface{}); ok {
-				for _, c := range contentArr {
-					cMap, ok := c.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					if cType, ok := cMap["type"].(string); ok {
-						if cType == "input_text" {
-							cMap["type"] = "text"
-						}
-					}
-				}
-			}
-		}
-
-		delete(itemMap, "type")
-	}
-}

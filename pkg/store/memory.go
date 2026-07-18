@@ -8,13 +8,13 @@ import (
 )
 
 var (
-	// ErrKeyNotFound 键不存在
+	// ErrKeyNotFound is returned when a key does not exist.
 	ErrKeyNotFound = errors.New("key not found")
 
-	latencyRingCapacity = 1000 // 延迟环形缓冲区容量
+	latencyRingCapacity = 1000
 )
 
-// ---------- 限流 ----------
+// ---------- rate limit ----------
 
 type rateLimitEntry struct {
 	mu      sync.Mutex
@@ -83,14 +83,14 @@ func (e *tokenBucketEntry) take(requested int64, rate int64, capacity int64, win
 	return false, int64(e.tokens)
 }
 
-// ---------- Sticky Session ----------
+// ---------- sticky session ----------
 
 type stickyEntry struct {
 	endpointID string
 	expiresAt  time.Time
 }
 
-// ---------- 延迟 ----------
+// ---------- latency ----------
 
 type latencySample struct {
 	latency   time.Duration
@@ -135,10 +135,10 @@ func (r *latencyRing) avg(window time.Duration, now time.Time) (time.Duration, b
 	var total time.Duration
 	var n int
 
-	// 从最旧到最新遍历
+	// oldest → newest
 	start := 0
 	if r.count == r.capacity {
-		start = r.writePos // writePos 指向最旧的样本
+		start = r.writePos // writePos is the oldest slot when full
 	}
 	for i := 0; i < r.count; i++ {
 		idx := (start + i) % r.capacity
@@ -163,18 +163,18 @@ type emaEntry struct {
 
 // ---------- MemoryStateStore ----------
 
-// MemoryStateStore 基于内存的 StateStore 实现，适用于单实例部署和测试。
+// MemoryStateStore is an in-memory StateStore for single-instance and tests.
 type MemoryStateStore struct {
 	mu           sync.RWMutex
 	rateLimits   map[string]*rateLimitEntry
 	tokenBuckets map[string]*tokenBucketEntry
 	sticky       map[string]*stickyEntry
 	latencies    map[string]*latencyRing
-	ttfts        map[string]*latencyRing // 首包耗时（TTFT）独立序列，与整单耗时分离
+	ttfts        map[string]*latencyRing // TTFT series, separate from total latency
 	emas         map[string]*emaEntry
 }
 
-// NewMemoryStateStore 创建一个新的 MemoryStateStore。
+// NewMemoryStateStore creates a MemoryStateStore.
 func NewMemoryStateStore() *MemoryStateStore {
 	return &MemoryStateStore{
 		rateLimits:   make(map[string]*rateLimitEntry),
@@ -186,7 +186,7 @@ func NewMemoryStateStore() *MemoryStateStore {
 	}
 }
 
-// --- 限流 ---
+// --- rate limit ---
 
 func (s *MemoryStateStore) getOrCreateRateLimitEntry(key string, window time.Duration) *rateLimitEntry {
 	s.mu.RLock()
@@ -207,15 +207,15 @@ func (s *MemoryStateStore) getOrCreateRateLimitEntry(key string, window time.Dur
 	return e
 }
 
-// RateLimitIncr 将 key 的计数增加 tokens，并返回窗口内剩余配额。
-// window 用于设置窗口大小；若 key 已存在且 window 不同，会在下一个重置周期生效。
+// RateLimitIncr adds tokens to the key counter and returns usage in the window.
+// window sets the window size; if the key exists with a different window, it takes effect on the next reset.
 func (s *MemoryStateStore) RateLimitIncr(ctx context.Context, key string, tokens int64, window time.Duration) (int64, error) {
 	e := s.getOrCreateRateLimitEntry(key, window)
 	remaining := e.incr(tokens, time.Now())
 	return remaining, nil
 }
 
-// RateLimitRefund 退还 tokens 到 key 的计数中。
+// RateLimitRefund refunds tokens to the key counter.
 func (s *MemoryStateStore) RateLimitRefund(ctx context.Context, key string, tokens int64) error {
 	e := s.getOrCreateRateLimitEntry(key, 0)
 	e.refund(tokens)
@@ -241,16 +241,16 @@ func (s *MemoryStateStore) getOrCreateTokenBucketEntry(key string) *tokenBucketE
 	return e
 }
 
-// RateLimitTake 尝试从令牌桶中消费令牌（平滑爆发限流）。
+// RateLimitTake tries to consume tokens from a token bucket (smooth burst limit).
 func (s *MemoryStateStore) RateLimitTake(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (bool, int64, error) {
 	e := s.getOrCreateTokenBucketEntry(key)
 	allowed, remaining := e.take(tokens, rate, capacity, window, now)
 	return allowed, remaining, nil
 }
 
-// --- Sticky Session ---
+// --- sticky session ---
 
-// StickyGet 获取 sessionKey 关联的 endpointID。若已过期或不存在则返回 ErrKeyNotFound。
+// StickyGet returns the endpointID for sessionKey, or ErrKeyNotFound if expired/missing.
 func (s *MemoryStateStore) StickyGet(ctx context.Context, sessionKey string) (string, error) {
 	s.mu.RLock()
 	e, ok := s.sticky[sessionKey]
@@ -260,7 +260,7 @@ func (s *MemoryStateStore) StickyGet(ctx context.Context, sessionKey string) (st
 		return "", ErrKeyNotFound
 	}
 	if time.Now().After(e.expiresAt) {
-		// 惰性清理：删除前验证 entry 指针未被替换，避免误删新值
+		// lazy delete only if entry pointer is still the same (avoid clobbering a refresh)
 		s.mu.Lock()
 		if current, exists := s.sticky[sessionKey]; exists && current == e {
 			delete(s.sticky, sessionKey)
@@ -271,7 +271,7 @@ func (s *MemoryStateStore) StickyGet(ctx context.Context, sessionKey string) (st
 	return e.endpointID, nil
 }
 
-// StickySet 设置 sessionKey 到 endpointID 的映射，ttl 为过期时间。
+// StickySet maps sessionKey to endpointID with the given TTL.
 func (s *MemoryStateStore) StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -283,10 +283,10 @@ func (s *MemoryStateStore) StickySet(ctx context.Context, sessionKey string, end
 	return nil
 }
 
-// --- 延迟统计 ---
+// --- latency ---
 
-// getOrCreateLatencyRing 从指定 ring map 中获取或创建 endpointID 对应的延迟环形缓冲。
-// m 由调用方提供，可指向 latencies（整单耗时）或 ttfts（首包耗时），实现两套序列共享底层逻辑。
+// getOrCreateLatencyRing gets or creates a ring for endpointID in m.
+// m is latencies (total) or ttfts (TTFT) so both series share one ring implementation.
 func (s *MemoryStateStore) getOrCreateLatencyRing(m map[string]*latencyRing, endpointID string) *latencyRing {
 	s.mu.RLock()
 	if r, ok := m[endpointID]; ok {
@@ -306,15 +306,14 @@ func (s *MemoryStateStore) getOrCreateLatencyRing(m map[string]*latencyRing, end
 	return r
 }
 
-// RecordLatency 记录一次延迟采样。
+// RecordLatency records a latency sample.
 func (s *MemoryStateStore) RecordLatency(ctx context.Context, endpointID string, latency time.Duration) error {
 	r := s.getOrCreateLatencyRing(s.latencies, endpointID)
 	r.add(latency, time.Now())
 	return nil
 }
 
-// GetAvgLatency 返回 endpointID 在 window 时间窗口内的平均延迟。
-// 若没有样本则返回 0 和 false。
+// GetAvgLatency returns average latency for endpointID within window, or 0 if none.
 func (s *MemoryStateStore) GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
 	r := s.getOrCreateLatencyRing(s.latencies, endpointID)
 	avg, ok := r.avg(window, time.Now())
@@ -324,15 +323,14 @@ func (s *MemoryStateStore) GetAvgLatency(ctx context.Context, endpointID string,
 	return avg, nil
 }
 
-// RecordTTFT 记录一次首包耗时（TTFT）采样，使用独立序列与整单耗时分离。
+// RecordTTFT records a TTFT sample on a series separate from total latency.
 func (s *MemoryStateStore) RecordTTFT(ctx context.Context, endpointID string, ttft time.Duration) error {
 	r := s.getOrCreateLatencyRing(s.ttfts, endpointID)
 	r.add(ttft, time.Now())
 	return nil
 }
 
-// GetAvgTTFT 返回 endpointID 在 window 时间窗口内的平均首包耗时。
-// 若没有样本则返回 0。
+// GetAvgTTFT returns average TTFT for endpointID within window, or 0 if none.
 func (s *MemoryStateStore) GetAvgTTFT(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
 	r := s.getOrCreateLatencyRing(s.ttfts, endpointID)
 	avg, ok := r.avg(window, time.Now())
@@ -361,7 +359,7 @@ func (s *MemoryStateStore) getOrCreateEMAEntry(key string) *emaEntry {
 	return e
 }
 
-// UpdateEMA 滚动更新指定 key 的 EMA 值并返回最新值。
+// UpdateEMA updates the EMA for key and returns the new value.
 func (s *MemoryStateStore) UpdateEMA(ctx context.Context, key string, actual int64, alpha float64) (float64, error) {
 	e := s.getOrCreateEMAEntry(key)
 	e.mu.Lock()
@@ -375,7 +373,7 @@ func (s *MemoryStateStore) UpdateEMA(ctx context.Context, key string, actual int
 	return e.val, nil
 }
 
-// GetEMA 获取指定 key 的 EMA 缓存值。
+// GetEMA returns the cached EMA for key, or 0 if missing.
 func (s *MemoryStateStore) GetEMA(ctx context.Context, key string) (float64, error) {
 	s.mu.RLock()
 	e, ok := s.emas[key]
@@ -390,7 +388,7 @@ func (s *MemoryStateStore) GetEMA(ctx context.Context, key string) (float64, err
 	return e.val, nil
 }
 
-// Close 释放资源。MemoryStateStore 无需特殊清理。
+// Close is a no-op for MemoryStateStore.
 func (s *MemoryStateStore) Close() error {
 	return nil
 }

@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ErrorParserPolicy 错误解析策略，用于从 HTTP 状态码、Header、响应体中解析出具体的错误码或错误消息
+// ErrorParserPolicy extracts error codes/messages from status, headers, or body.
 type ErrorParserPolicy struct {
 	Parser       string              `yaml:"parser" json:"parser"`
 	Expression   string              `yaml:"expression" json:"expression"`
@@ -19,7 +19,7 @@ type ErrorParserPolicy struct {
 	ContentTypes *CaseInsensitiveSet `yaml:"content_types" json:"content_types"`
 }
 
-// UnmarshalJSON 自定义反序列化，兼容小驼峰 contentTypes 的字段映射
+// UnmarshalJSON accepts camelCase contentTypes.
 func (p *ErrorParserPolicy) UnmarshalJSON(data []byte) error {
 	type Alias ErrorParserPolicy
 	aux := &struct {
@@ -37,9 +37,8 @@ func (p *ErrorParserPolicy) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Match 检查给定的状态码、内容类型是否命中此解析规则
+// Match reports whether status and content type hit this parser rule.
 func (p *ErrorParserPolicy) Match(status string, contentType string, okStatus string) bool {
-	// 判断 status 是否与 okStatus 匹配
 	statusMatch := false
 	if status != "" && status == okStatus {
 		statusMatch = true
@@ -54,19 +53,18 @@ func (p *ErrorParserPolicy) Match(status string, contentType string, okStatus st
 		}
 	}
 
-	// 判断 contentType 是否与配置的内容类型匹配
 	contentTypeMatch := false
 	if p.ContentTypes.IsEmpty() {
 		contentTypeMatch = true
 	} else if contentType != "" {
-		// 使用 mime.ParseMediaType 解析 Content-Type，剥离掉可能存在的 charset 或 boundary 等额外参数
+		// Strip charset/boundary via mime.ParseMediaType
 		mediaType, _, err := mime.ParseMediaType(contentType)
 		if err == nil && mediaType != "" {
 			if p.ContentTypes.Contains(mediaType) {
 				contentTypeMatch = true
 			}
 		} else {
-			// 解析失败（非标 Content-Type 头），Fallback 回退做纯字符串匹配
+			// Non-standard Content-Type: fall back to raw string match
 			if p.ContentTypes.Contains(contentType) {
 				contentTypeMatch = true
 			}
@@ -76,7 +74,7 @@ func (p *ErrorParserPolicy) Match(status string, contentType string, okStatus st
 	return statusMatch && contentTypeMatch
 }
 
-// ParseValue 从给定的响应体中，根据表达式解析出目标字符串（支持 JsonPath 和 Regexp）
+// ParseValue extracts a string from body via JsonPath or Regexp.
 func (p *ErrorParserPolicy) ParseValue(body []byte) (string, error) {
 	if p.Parser == "" || p.Expression == "" || len(body) == 0 {
 		return "", nil
@@ -95,7 +93,6 @@ func (p *ErrorParserPolicy) ParseValue(body []byte) (string, error) {
 		if val == nil {
 			return "", nil
 		}
-		// 转为 string
 		switch v := val.(type) {
 		case string:
 			return v, nil
@@ -109,9 +106,9 @@ func (p *ErrorParserPolicy) ParseValue(body []byte) (string, error) {
 		}
 		matches := re.FindStringSubmatch(string(body))
 		if len(matches) > 1 {
-			return matches[1], nil // 返回第一个捕获组
+			return matches[1], nil // first capture group
 		} else if len(matches) > 0 {
-			return matches[0], nil // 返回整行匹配
+			return matches[0], nil // full match
 		}
 		return "", nil
 	default:
@@ -119,12 +116,12 @@ func (p *ErrorParserPolicy) ParseValue(body []byte) (string, error) {
 	}
 }
 
-// CaseInsensitiveSet 是一个大小写不敏感的集合，用于存储 Content-Type 等媒体类型
+// CaseInsensitiveSet stores media types case-insensitively.
 type CaseInsensitiveSet struct {
 	data map[string]struct{}
 }
 
-// UnmarshalJSON 实现了 json.Unmarshaler 接口，将 JSON 数组或单字符串反序列化为底层小写存储的 map 集合
+// UnmarshalJSON accepts a JSON array or single string; stores lowercased keys.
 func (s *CaseInsensitiveSet) UnmarshalJSON(data []byte) error {
 	var list []string
 	if err := json.Unmarshal(data, &list); err != nil {
@@ -143,7 +140,7 @@ func (s *CaseInsensitiveSet) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON 实现了 json.Marshaler 接口，序列化回 []string 数组以保持与协议/数据库的兼容性
+// MarshalJSON serializes as a []string for protocol/DB compatibility.
 func (s *CaseInsensitiveSet) MarshalJSON() ([]byte, error) {
 	if s == nil || s.data == nil {
 		return json.Marshal([]string{})
@@ -155,7 +152,7 @@ func (s *CaseInsensitiveSet) MarshalJSON() ([]byte, error) {
 	return json.Marshal(list)
 }
 
-// UnmarshalYAML 实现了 yaml.Unmarshaler 接口，以便支持 YAML 文件解析
+// UnmarshalYAML implements yaml.Unmarshaler.
 func (s *CaseInsensitiveSet) UnmarshalYAML(value *yaml.Node) error {
 	var list []string
 	if err := value.Decode(&list); err != nil {
@@ -174,7 +171,7 @@ func (s *CaseInsensitiveSet) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// MarshalYAML 实现了 yaml.Marshaler 接口，以便支持序列化回 YAML 数组结构
+// MarshalYAML implements yaml.Marshaler.
 func (s *CaseInsensitiveSet) MarshalYAML() (interface{}, error) {
 	if s == nil || s.data == nil {
 		return []string{}, nil
@@ -186,7 +183,7 @@ func (s *CaseInsensitiveSet) MarshalYAML() (interface{}, error) {
 	return list, nil
 }
 
-// Contains 判定给定的值是否在集合中（大小写不敏感）
+// Contains reports membership case-insensitively.
 func (s *CaseInsensitiveSet) Contains(val string) bool {
 	if s == nil || s.data == nil {
 		return false
@@ -195,7 +192,7 @@ func (s *CaseInsensitiveSet) Contains(val string) bool {
 	return ok
 }
 
-// IsEmpty 判定集合是否为空
+// IsEmpty reports whether the set is nil or empty.
 func (s *CaseInsensitiveSet) IsEmpty() bool {
 	return s == nil || len(s.data) == 0
 }

@@ -38,7 +38,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// defer cleanup 放在错误检查之后，确保只有成功初始化后才执行清理
+	// Defer cleanup only after successful init so failed startup skips resource cleanup.
 	defer func() {
 		logger.Info("shutting down, cleaning up resources...")
 		cleanup()

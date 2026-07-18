@@ -10,19 +10,19 @@ import (
 	"go.uber.org/zap"
 )
 
-// ErrNoAvailableEndpoint 无可用端点错误
+// ErrNoAvailableEndpoint means no endpoint is available.
 var ErrNoAvailableEndpoint = errors.New("no available endpoint")
 
-// ErrFatalNoAvailableEndpoint 致命的无可用端点错误（例如端点亲和性强制要求不允许降级且匹配失败）
+// ErrFatalNoAvailableEndpoint is non-degradable (e.g. affinity miss).
 var ErrFatalNoAvailableEndpoint = errors.New("fatal: no available endpoint")
 
-// Invoker 统一的"可被调用"抽象
+// Invoker is the unified callable abstraction.
 type Invoker interface {
 	Invoke(gctx *GatewayContext) error
 	Endpoint() *Endpoint
 }
 
-// InvokerDependencyResolver 提供构建 Invoker 所需的底层依赖，由 Engine 实现
+// InvokerDependencyResolver supplies deps for building invokers (Engine).
 type InvokerDependencyResolver interface {
 	Discovery() Discovery
 	StateStore() StateStore
@@ -34,36 +34,36 @@ type InvokerDependencyResolver interface {
 	Publisher() events.Publisher
 }
 
-// InvokerBuilder 用于在外部构建 Invoker 具体实现，规避循环依赖
+// InvokerBuilder builds invokers externally to avoid import cycles.
 type InvokerBuilder interface {
 	BuildInvoker(cfg *InvokerConfig, r InvokerDependencyResolver) (Invoker, error)
 }
 
-// StateStore 本地状态存储接口，避免 gateway -> store 的循环依赖。
+// StateStore is local state storage (avoids gateway→store cycles).
 type StateStore interface {
-	// 限流：投机预扣 + 精确结算
+	// Rate limit: speculative debit + precise settlement
 	RateLimitIncr(ctx context.Context, key string, tokens int64, window time.Duration) (remaining int64, err error)
 	RateLimitRefund(ctx context.Context, key string, tokens int64) error
 
-	// 令牌桶（平滑爆发限流）：高精度浮点数原子消费
+	// Token bucket (smooth burst): high-precision atomic consume
 	RateLimitTake(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (allowed bool, remaining int64, err error)
 
 	// Sticky Session
 	StickyGet(ctx context.Context, sessionKey string) (endpointID string, err error)
 	StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error
 
-	// 延迟统计（整单耗时）
+	// Latency stats (full request)
 	RecordLatency(ctx context.Context, endpointID string, latency time.Duration) error
 	GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error)
 
-	// 延迟统计（首包耗时 TTFT，独立序列，不与整单耗时混淆）
+	// Latency stats (TTFT; separate series)
 	RecordTTFT(ctx context.Context, endpointID string, ttft time.Duration) error
 	GetAvgTTFT(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error)
 
-	// EMA (指数移动平均) 统计与获取
+	// EMA (exponential moving average)
 	UpdateEMA(ctx context.Context, key string, actual int64, alpha float64) (float64, error)
 	GetEMA(ctx context.Context, key string) (float64, error)
 
-	// 生命周期
+	// Lifecycle
 	Close() error
 }

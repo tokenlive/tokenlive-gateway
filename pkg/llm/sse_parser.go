@@ -31,7 +31,7 @@ func (p *SSEParser) Feed(data []byte) []SSEEvent {
 	p.buf.Write(data)
 
 	var events []SSEEvent
-	// 规范化 \r\n 为 \n 以兼容 CRLF 分包格式
+	// Normalize \r\n to \n for CRLF cross-packet compatibility
 	fullText := strings.ReplaceAll(p.buf.String(), "\r\n", "\n")
 
 	// Process complete blocks (delimited by \n\n)

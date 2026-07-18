@@ -5,14 +5,13 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/tagging"
 )
 
-// TaggingFilter 打标过滤器（InboundFilter）
-// 读取 Policy 中的 TaggingPolicies，按条件匹配后将标签注入 GatewayContext.Tags
-// Order=12，位于 auth(10) 之后、rate_limit(20) 之前
+// TaggingFilter applies tagging policies from Policy and injects tags into GatewayContext.Tags.
+// Order=12, after auth(10), before rate_limit(20).
 type TaggingFilter struct {
 	engine *tagging.TaggingEngine
 }
 
-// NewTaggingFilter 创建 TaggingFilter
+// NewTaggingFilter creates a TaggingFilter.
 func NewTaggingFilter() *TaggingFilter {
 	return &TaggingFilter{engine: tagging.NewTaggingEngine()}
 }

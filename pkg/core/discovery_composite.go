@@ -7,19 +7,19 @@ import (
 	"go.uber.org/zap"
 )
 
-// CompositeDiscovery 优先级组合退避发现器
+// CompositeDiscovery is a priority-ordered fallback discovery.
 type CompositeDiscovery struct {
 	discoveries []Discovery
 }
 
-// NewCompositeDiscovery 创建 CompositeDiscovery
+// NewCompositeDiscovery creates a CompositeDiscovery.
 func NewCompositeDiscovery(discoveries []Discovery) *CompositeDiscovery {
 	return &CompositeDiscovery{
 		discoveries: discoveries,
 	}
 }
 
-// List 按照优先级顺序查询服务发现实例，遇到第一个成功且有实例的则直接返回
+// List queries discovery instances in priority order, returning the first successful non-empty result.
 func (c *CompositeDiscovery) List(ctx context.Context, model string) ([]*Endpoint, error) {
 	var lastErr error
 	for _, d := range c.discoveries {
@@ -49,7 +49,7 @@ func (c *CompositeDiscovery) List(ctx context.Context, model string) ([]*Endpoin
 	return nil, fmt.Errorf("no endpoints found for model: %s", model)
 }
 
-// Watch 监听第一个能找到实例或非空的发现器的服务变化
+// Watch watches the first discovery that yields instances or a non-empty result.
 func (c *CompositeDiscovery) Watch(ctx context.Context, model string) (<-chan []*Endpoint, error) {
 	var lastErr error
 	for _, d := range c.discoveries {
@@ -77,7 +77,7 @@ func (c *CompositeDiscovery) Watch(ctx context.Context, model string) (<-chan []
 	return nil, fmt.Errorf("no discovery client available for model: %s", model)
 }
 
-// Close 关闭所有的服务发现实例
+// Close closes all discovery instances.
 func (c *CompositeDiscovery) Close() error {
 	var firstErr error
 	for _, d := range c.discoveries {

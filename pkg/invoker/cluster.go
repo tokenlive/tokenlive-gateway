@@ -13,7 +13,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// DefaultRetryStrategy 默认全局重试策略
+// DefaultRetryStrategy is the global default retry policy.
 var DefaultRetryStrategy = &policy.RetryPolicy{
 	Retry:       0,
 	BackoffType: "fixed",
@@ -21,7 +21,7 @@ var DefaultRetryStrategy = &policy.RetryPolicy{
 	ErrorCodes:  []string{},
 }
 
-// ClusterInvoker 编排器：Discovery + Router + LB + retry
+// ClusterInvoker orchestrates Discovery + Router + LB + retry.
 type ClusterInvoker struct {
 	discovery         core.Discovery
 	routerChain       []core.Router
@@ -52,7 +52,7 @@ func NewClusterInvoker(
 		discovery:         discovery,
 		routerChain:       routers,
 		loadBalancers:     lbs,
-		defaultLBStrategy: "round_robin", // 默认 round_robin
+		defaultLBStrategy: "round_robin",
 		retryStrategy:     retry,
 		cbManager:         cbManager,
 		stateStore:        stateStore,
@@ -61,30 +61,30 @@ func NewClusterInvoker(
 	}
 }
 
-// SetDefaultLBStrategy 设置默认的负载均衡策略（用于覆盖默认 of round_robin）
+// SetDefaultLBStrategy overrides the default LB strategy (round_robin).
 func (ci *ClusterInvoker) SetDefaultLBStrategy(strategy string) {
 	if strategy != "" {
 		ci.defaultLBStrategy = strategy
 	}
 }
 
-// SetEnableActive 设置是否开启主动健康检测状态判断
+// SetEnableActive enables active health-check status in routing decisions.
 func (ci *ClusterInvoker) SetEnableActive(enable bool) {
 	ci.enableActive = enable
 }
 
-// 失败惩罚延迟的默认参数。
+// Default failure-penalty parameters for latency stats.
 const (
-	defaultFailurePenalty  = 3.0              // 历史平均 × 3
-	defaultFailureMax      = 30 * time.Second // 惩罚上限
-	minFailurePenalty      = 1.0              // 倍数下限，>= 1 以免"奖赏"失败
-	defaultLatencyWindowLL = 5 * time.Minute  // 最低延迟策略默认窗口
+	defaultFailurePenalty  = 3.0              // hist avg × 3
+	defaultFailureMax      = 30 * time.Second // penalty cap
+	minFailurePenalty      = 1.0              // floor so failure is never "rewarded"
+	defaultLatencyWindowLL = 5 * time.Minute  // default window for least_latency
 )
 
-// recordFailurePenalty 将失败请求作为"代理延迟"写入延迟统计序列。
-// 代理延迟 = 该端点历史平均 × 惩罚倍数（无样本用上限值），写入对应 metric 的序列
-// （total 写 RecordLatency，ttft 写 RecordTTFT）。可经 latency_failure_penalty=0 关闭。
-// 这样失败端点的 latency 统计不再虚低，避免恢复期被 least_latency 盲目选中。
+// recordFailurePenalty records a failed call as a synthetic latency sample.
+// Penalty = endpoint hist avg × multiplier (or maxPenalty if no samples).
+// Written to RecordLatency (total) or RecordTTFT (ttft). Disable with latency_failure_penalty=0.
+// Keeps failed endpoints from looking artificially fast under least_latency during recovery.
 func (ci *ClusterInvoker) recordFailurePenalty(gctx *core.GatewayContext) {
 	if gctx == nil || gctx.SelectedEndpoint == nil {
 		return
@@ -92,7 +92,7 @@ func (ci *ClusterInvoker) recordFailurePenalty(gctx *core.GatewayContext) {
 	params := lbParams(gctx)
 	multiplier, maxPenalty := resolveFailurePenaltyConfig(params)
 	if multiplier == 0 {
-		// 显式关闭失败计入
+		// Explicitly disabled
 		return
 	}
 	if multiplier < minFailurePenalty {
@@ -102,7 +102,6 @@ func (ci *ClusterInvoker) recordFailurePenalty(gctx *core.GatewayContext) {
 	window, metric := resolveLatencyConfig(params)
 	epID := gctx.SelectedEndpoint.ID
 
-	// 历史平均读取：按 metric 选序列
 	histAvg := func() (time.Duration, error) {
 		if metric == "ttft" {
 			return ci.stateStore.GetAvgTTFT(gctx.Ctx, epID, window)
@@ -111,7 +110,7 @@ func (ci *ClusterInvoker) recordFailurePenalty(gctx *core.GatewayContext) {
 	}
 	avg, err := histAvg()
 	if err != nil || avg <= 0 {
-		// 无历史样本，用上限值作为惩罚
+		// No history: use max penalty
 		ci.writePenalty(gctx, metric, maxPenalty)
 		return
 	}
@@ -122,7 +121,7 @@ func (ci *ClusterInvoker) recordFailurePenalty(gctx *core.GatewayContext) {
 	ci.writePenalty(gctx, metric, penalty)
 }
 
-// writePenalty 按指标把惩罚延迟写入对应序列。
+// writePenalty writes the penalty into the series for the given metric.
 func (ci *ClusterInvoker) writePenalty(gctx *core.GatewayContext, metric string, penalty time.Duration) {
 	epID := gctx.SelectedEndpoint.ID
 	if metric == "ttft" {
@@ -138,7 +137,7 @@ func (ci *ClusterInvoker) writePenalty(gctx *core.GatewayContext, metric string,
 	}
 }
 
-// lbParams 安全取出 LoadBalancePolicy.Params。
+// lbParams safely returns LoadBalancePolicy.Params.
 func lbParams(gctx *core.GatewayContext) map[string]interface{} {
 	if gctx == nil || gctx.Policy == nil || gctx.Policy.LoadBalancePolicy == nil {
 		return nil
@@ -146,7 +145,7 @@ func lbParams(gctx *core.GatewayContext) map[string]interface{} {
 	return gctx.Policy.LoadBalancePolicy.Params
 }
 
-// resolveLatencyConfig 从 Params 读取 latency_window（默认 5min）与 latency_metric（默认 total）。
+// resolveLatencyConfig reads latency_window (default 5m) and latency_metric (default total).
 func resolveLatencyConfig(params map[string]interface{}) (window time.Duration, metric string) {
 	window = defaultLatencyWindowLL
 	metric = "total"
@@ -177,8 +176,8 @@ func resolveLatencyConfig(params map[string]interface{}) (window time.Duration, 
 	return
 }
 
-// resolveFailurePenaltyConfig 从 Params 读取失败惩罚倍数与上限。
-// multiplier=0 表示显式关闭失败计入。
+// resolveFailurePenaltyConfig reads failure penalty multiplier and max from Params.
+// multiplier=0 disables failure-as-latency recording.
 func resolveFailurePenaltyConfig(params map[string]interface{}) (multiplier float64, maxPenalty time.Duration) {
 	multiplier = defaultFailurePenalty
 	maxPenalty = defaultFailureMax
@@ -212,12 +211,12 @@ func resolveFailurePenaltyConfig(params map[string]interface{}) (multiplier floa
 	return
 }
 
-// RouterChain 返回路由器链，用于测试断言
+// RouterChain returns the router chain (for tests).
 func (ci *ClusterInvoker) RouterChain() []core.Router {
 	return ci.routerChain
 }
 
-// Invoke 执行集群调用（带重试）
+// Invoke runs a cluster call with retry.
 func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 	excluded := make(map[string]bool)
 	var lastErr error
@@ -231,7 +230,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 	var hasPhysicalCall bool
 	var lastSelectedEndpointID string
 
-	// 解析并应用 TotalTimeout (请求总超时，毫秒，默认非流式 60s，流式 10分钟)
+	// TotalTimeout in ms: default 60s non-stream, 10m stream
 	totalTimeout := 60000
 	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy.TotalTimeout > 0 {
 		totalTimeout = gctx.Policy.InvocationPolicy.RetryPolicy.TotalTimeout
@@ -242,17 +241,17 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 	totalCtx, totalCancel := context.WithTimeout(oldCtx, time.Duration(totalTimeout)*time.Millisecond)
 	defer func() {
 		totalCancel()
-		gctx.Ctx = oldCtx // 恢复旧的 Context，避免影响跨模型 fallback 降级链的后续请求
+		// Restore so cross-model fallback chain is not affected
+		gctx.Ctx = oldCtx
 	}()
 	gctx.Ctx = totalCtx
 
-	// 动态获取最大重试次数
 	maxRetries := ci.retryStrategy.Retry
 	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
 		maxRetries = gctx.Policy.InvocationPolicy.RetryPolicy.Retry
 	}
 
-	// 解析重试策略（提到循环外，供 defer 闭包捕获）
+	// Resolve retry policy outside the loop for defer capture
 	var rp *policy.RetryPolicy
 	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
 		rp = gctx.Policy.InvocationPolicy.RetryPolicy
@@ -291,7 +290,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return lastErr
 		}
 
-		// 1. 优先过滤在此次调用历史中已经失败的局部排除端点 (excluded)
+		// Drop endpoints already failed in this request
 		var filtered []*core.Endpoint
 		for _, ep := range endpoints {
 			if !excluded[ep.ID] {
@@ -304,7 +303,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return lastErr
 		}
 
-		// 2. 运行 Router chain 过滤熔断、优先级等
+		// Router chain (circuit breaker, priority, etc.)
 		gctx.Logger(ci.logger).Info("router chain: starting",
 			zap.String("model", gctx.Model),
 			zap.Int("filtered_count", len(filtered)),
@@ -344,7 +343,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return gctx.FatalErr
 		}
 
-		// 动态选择 LoadBalancer
+		// Pick LoadBalancer dynamically
 		var lb core.LoadBalancer
 		lbStrategy := ci.defaultLBStrategy
 		if gctx.Policy != nil && gctx.Policy.LoadBalancePolicy != nil {
@@ -360,7 +359,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			lb = ci.loadBalancers["round_robin"]
 		}
 		if lb == nil {
-			// 防御性：若无 round_robin 则取 map 中任意一个
+			// Fallback: any registered LB
 			for name, v := range ci.loadBalancers {
 				lbStrategy = name
 				lb = v
@@ -372,7 +371,6 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return lastErr
 		}
 
-		// LoadBalancer 选择
 		var invoker core.Invoker
 		if lbStrategy == "round_robin" && lastSelectedEndpointID != "" {
 			nextEp := nextEndpointAfter(filtered, excluded, lastSelectedEndpointID)
@@ -399,7 +397,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		selectedEp := invoker.Endpoint()
 		if selectedEp != nil {
 			lastSelectedEndpointID = selectedEp.ID
-			// 真正决定使用该 Endpoint 发送流量之前，先抢占可能需要的半开探路许可
+			// Acquire half-open probe permits before sending traffic
 			serviceKey := selectedEp.Provider + ":" + selectedEp.Model
 			if !ci.cbManager.AcquireHalfOpenPermit(serviceKey, ci.enableActive) {
 				if !rp.IsExcludeFailedEndpoint() {
@@ -426,7 +424,6 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			}
 		}
 
-		// 执行调用
 		err = invoker.Invoke(gctx)
 		if err != nil && gctx.UpstreamError == nil {
 			gctx.UpstreamError = err
@@ -471,8 +468,7 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 				ci.cbManager.RecordSuccess(gctx, gctx.SelectedEndpoint)
 			}
 			ci.stateStore.RecordLatency(gctx.Ctx, gctx.SelectedEndpoint.ID, time.Since(gctx.UpstreamConnect))
-			// 流式请求记录首包耗时到独立 TTFT 序列，供 latency_metric=ttft 的最低延迟策略查询。
-			// 非流式请求 TTFT 为 0，跳过。
+			// Stream: record TTFT for latency_metric=ttft. Non-stream TTFT is 0, skip.
 			if gctx.TTFT > 0 {
 				if err := ci.stateStore.RecordTTFT(gctx.Ctx, gctx.SelectedEndpoint.ID, gctx.TTFT); err != nil {
 					gctx.Logger(ci.logger).Warn("record ttft failed",
@@ -486,26 +482,23 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		lastErr = err
 
-		// 打印警告日志，包含尝试次数和错误详情
 		gctx.Logger(ci.logger).Warn("endpoint invocation failed",
 			zap.String("endpoint", gctx.SelectedEndpoint.ID),
 			zap.Int("attempt", attempt),
 			zap.Error(err),
 		)
 
-		// 记录熔断失败 (不论后续是否可以重试，该 attempt 的失败都应当记录到熔断器中)
+		// Always record failure for the breaker, even if we will not retry
 		ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, err)
 
-		// 失败计入延迟统计：用"历史平均×惩罚倍数"作为代理延迟写入，
-		// 避免失败端点 latency 统计虚低、恢复期被盲目选中。可经 latency_failure_penalty=0 关闭。
+		// Synthetic latency so failed endpoints are not preferred by least_latency
 		ci.recordFailurePenalty(gctx)
 
-		// 流式已发首字节，不能重试
+		// Stream already sent first byte: no retry
 		if gctx.TTFT > 0 {
 			return err
 		}
 
-		// 检查是否应该重试
 		shouldRetry := false
 		retryReason := ""
 		statusCode := getStatusCode(gctx.UpstreamResponse)
@@ -536,7 +529,6 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return core.ErrNoAvailableEndpoint
 		}
 
-		// 触发重试前打印详细日志
 		policyType := "static"
 		if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
 			policyType = "dynamic"
@@ -572,7 +564,7 @@ func (ci *ClusterInvoker) Endpoint() *core.Endpoint {
 	return nil
 }
 
-// endpointIDs 提取 endpoint ID 列表，用于日志输出
+// endpointIDs returns endpoint IDs for logging.
 func endpointIDs(endpoints []*core.Endpoint) []string {
 	ids := make([]string, len(endpoints))
 	for i, ep := range endpoints {

@@ -14,12 +14,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// TokenLimitExecutor 针对 Token (TPM) 的限流执行器
+// TokenLimitExecutor enforces token (TPM) rate limits.
 type TokenLimitExecutor struct {
 	stateStore core.StateStore
 }
 
-// NewTokenLimitExecutor 创建 TokenLimitExecutor 实例
+// NewTokenLimitExecutor creates a TokenLimitExecutor.
 func NewTokenLimitExecutor(ss core.StateStore) *TokenLimitExecutor {
 	return &TokenLimitExecutor{stateStore: ss}
 }
@@ -139,7 +139,7 @@ func (e *TokenLimitExecutor) Refund(ctx context.Context, gctx *core.GatewayConte
 	return nil
 }
 
-// EstimateInputTokens 粗略估算 input token 数（支持策略化估算，默认每 4 字节约 1 token）
+// EstimateInputTokens estimates input tokens (policy estimator or ~1 token per 4 bytes).
 func EstimateInputTokens(gctx *core.GatewayContext, lp *policy.LimitPolicy) int64 {
 	if lp != nil && lp.Estimator != nil {
 		switch lp.Estimator.Type {
@@ -169,11 +169,11 @@ type chatRequest struct {
 	Messages []chatMessage `json:"messages"`
 }
 
-// CountChatInputTokens 精准计算 chat completion input 的 token 数 (针对 tiktoken 库)
+// CountChatInputTokens counts chat-completion input tokens via tiktoken.
 func CountChatInputTokens(messages []chatMessage, model string) int64 {
 	tkm, err := tiktoken.EncodingForModel(model)
 	if err != nil {
-		// 未知模型退避使用 cl100k_base
+		// Unknown model: fall back to cl100k_base.
 		tkm, err = tiktoken.GetEncoding("cl100k_base")
 		if err != nil {
 			return 0
@@ -189,7 +189,7 @@ func CountChatInputTokens(messages []chatMessage, model string) int64 {
 		tokensPerMessage = 3
 		tokensPerName = 1
 	} else {
-		// 现代模型通用默认值
+		// Default for modern models.
 		tokensPerMessage = 3
 		tokensPerName = 1
 	}
@@ -204,17 +204,17 @@ func CountChatInputTokens(messages []chatMessage, model string) int64 {
 			numTokens += tokensPerName
 		}
 	}
-	numTokens += 3 // assistant prefix 偏置
+	numTokens += 3 // assistant-prefix bias
 	return int64(numTokens)
 }
 
-// EstimateOutputTokens 获取该租户/模型在滑动窗口下的 Output EMA 估算值
+// EstimateOutputTokens returns the output-token EMA for tenant/model (default 200).
 func EstimateOutputTokens(ctx context.Context, ss core.StateStore, tenant, userID, model string) int64 {
 	if ss == nil {
 		return 200
 	}
 
-	// 1. 优先使用租户级特定模型的 EMA
+	// Prefer tenant-scoped model EMA.
 	tenantKey := tenant
 	if tenantKey == "" {
 		tenantKey = userID
@@ -226,12 +226,11 @@ func EstimateOutputTokens(ctx context.Context, ss core.StateStore, tenant, userI
 		}
 	}
 
-	// 2. 退避至模型全局级 EMA
+	// Fall back to global model EMA.
 	val, err := ss.GetEMA(ctx, "model:global:"+model)
 	if err == nil && val > 0 {
 		return int64(val)
 	}
 
-	// 3. 兜底默认值
 	return 200
 }

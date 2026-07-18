@@ -2,7 +2,7 @@ package core
 
 import "context"
 
-// ProviderType Provider 类型
+// ProviderType is the provider type.
 type ProviderType string
 
 const (
@@ -12,7 +12,7 @@ const (
 	ProviderJoyCode   ProviderType = "joycode"
 )
 
-// ProtocolFamily 端点协议簇,用于路由阶段匹配 RequestType
+// ProtocolFamily is the endpoint protocol family for RequestType matching.
 type ProtocolFamily string
 
 const (
@@ -22,7 +22,7 @@ const (
 	ProtocolJoyCode   ProtocolFamily = "joycode"
 )
 
-// Provider 协议适配层（Capability-based）
+// Provider is the capability-based protocol adapter.
 type Provider interface {
 	Name() string
 	Type() ProviderType

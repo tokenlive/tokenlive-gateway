@@ -7,12 +7,12 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
 
-// 变量插值模式：${prefix.key}
+// Variable pattern: ${prefix.key}
 var placeholderRe = regexp.MustCompile(`\$\{(\w+)\.([^}]+)\}`)
 
-// Interpolator 变量插值引擎，将模板字符串中的 ${prefix.key} 替换为实际值
+// Interpolator replaces ${prefix.key} placeholders with values.
 //
-// 支持的变量前缀：
+// Supported prefixes:
 //
 //	${header.X-Name}  → gctx.GetHeader("X-Name")
 //	${query.param}    → gctx.GetQuery("param")
@@ -23,8 +23,8 @@ var placeholderRe = regexp.MustCompile(`\$\{(\w+)\.([^}]+)\}`)
 //	${tag.xxx}        → gctx.Tags["xxx"]
 type Interpolator struct{}
 
-// Interpolate 将模板字符串中的变量占位符替换为 GatewayContext 中的实际值
-// 对于不含 ${} 的纯静态字符串，直接返回原值，零正则开销
+// Interpolate replaces placeholders from GatewayContext.
+// Static strings without ${} return as-is (no regex).
 func (i *Interpolator) Interpolate(gctx *core.GatewayContext, template string) string {
 	if !strings.Contains(template, "${") {
 		return template

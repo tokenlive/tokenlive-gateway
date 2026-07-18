@@ -24,7 +24,7 @@ import (
 
 	"github.com/tokenlive/tokenlive-gateway/internal/service"
 
-	// 空导入触发 provider init() 注册
+	// Blank import registers providers via init().
 	_ "github.com/tokenlive/tokenlive-gateway/pkg/llm/providers"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -34,8 +34,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// NewGatewayDataStores 创建 StateStore 和 CompensationQueue。
-// 根据 state_store 配置或 Redis 状态确定是使用 Redis 实现还是内存实现。
+// NewGatewayDataStores creates StateStore and CompensationQueue.
+// Chooses Redis or in-memory based on state_store config / Redis availability.
 func NewGatewayDataStores(v *viper.Viper, rdb *redis.Client) (core.StateStore, compensation.Queue, error) {
 	stateStoreMode := v.GetString("gateway.state_store")
 	if stateStoreMode == "" {
@@ -59,9 +59,9 @@ func NewGatewayDataStores(v *viper.Viper, rdb *redis.Client) (core.StateStore, c
 	return stateStore, compQueue, nil
 }
 
-// NewGatewayConfigManager 从 viper 创建分层配置管理器（独立 provider，便于注入到
-// 多个组件，例如 LLMHandler 与 GatewayEngine 共享同一份 ConfigManager）。
-// 若没有 models 配置返回错误。
+// NewGatewayConfigManager builds a layered ConfigManager from viper
+// (shared provider for LLMHandler and GatewayEngine).
+// Returns error if models config is missing.
 func NewGatewayConfigManager(
 	v *viper.Viper,
 	logger *log.Logger,
@@ -92,10 +92,10 @@ func NewGatewayConfigManager(
 	return config.NewConfigManager(gwCfg, redisSrc, logger.Logger), nil
 }
 
-// ProvideGatewayProvider 根据配置创建统一的 GatewayProvider
+// ProvideGatewayProvider creates the unified GatewayProvider from config.
 func ProvideGatewayProvider(v *viper.Viper, rdb *redis.Client) (config.GatewayProvider, error) {
 	configSource := v.GetString("gateway.config_source")
-	// 自动探测以向下兼容
+	// Auto-detect for backward compatibility.
 	if configSource == "" {
 		if rdb != nil {
 			configSource = "redis"
@@ -126,13 +126,13 @@ func ProvideGatewayProvider(v *viper.Viper, rdb *redis.Client) (config.GatewayPr
 		tlsSkipVerify := v.GetBool("gateway.admin_tls_skip_verify")
 		return config.NewHTTPGatewayProvider(adminURL, syncToken, tlsSkipVerify), nil
 	default:
-		// 兜底为 RedisProvider (rdb 可以为 nil)
+		// Fall back to RedisProvider (rdb may be nil).
 		apiKeyPepper := v.GetString("llm.api_key_pepper")
 		return config.NewRedisGatewayProviderWithAPIKeyPepper(rdb, apiKeyPepper), nil
 	}
 }
 
-// NewGatewayEngine 创建 Engine（直接从 viper 读取配置，使用共享的 Redis client，支持 ClickHouse 审计落库）
+// NewGatewayEngine creates the Engine from viper, shared Redis client, and optional ClickHouse audit sink.
 func NewGatewayEngine(
 	v *viper.Viper,
 	logger *log.Logger,
@@ -149,21 +149,21 @@ func NewGatewayEngine(
 		return nil, nil, fmt.Errorf("init otel metrics: %w", otelErr)
 	}
 
-	// 创建 MetricsRegistry（显式依赖注入）
+	// Explicit DI for MetricsRegistry.
 	metricsRegistry, regErr := telemetry.NewMetricsRegistry(otel.GetMeterProvider())
 	if regErr != nil {
 		otelCleanup()
 		return nil, nil, fmt.Errorf("create metrics registry: %w", regErr)
 	}
 
-	// 读取 auth 配置（可选）
+	// Optional auth config.
 	validKeys := readAuthKeys(v)
 	enableAuth := v.GetBool("llm.enable_auth") || len(validKeys) > 0
 
 	configSource := v.GetString("gateway.config_source")
 	stateStoreMode := v.GetString("gateway.state_store")
 
-	// 自动探测以向下兼容
+	// Auto-detect for backward compatibility.
 	if configSource == "" {
 		if rdb != nil {
 			configSource = "redis"
@@ -179,7 +179,7 @@ func NewGatewayEngine(
 		}
 	}
 
-	// 快速失败校验 (Fail-Fast)
+	// Fail-fast validation.
 	if configSource == "redis" && rdb == nil {
 		return nil, nil, fmt.Errorf("config_source is set to 'redis', but redis is not configured or failed to connect")
 	}
@@ -187,7 +187,7 @@ func NewGatewayEngine(
 		return nil, nil, fmt.Errorf("state_store is set to 'redis', but redis is not configured or failed to connect")
 	}
 
-	// 详细输出数据源及策略获取的配置信息
+	// Log policy/config source details.
 	adminURL := v.GetString("gateway.admin_url")
 	if adminURL == "" {
 		adminURL = os.Getenv("ADMIN_SERVER_URL")
@@ -216,7 +216,7 @@ func NewGatewayEngine(
 	var providerImpls map[string]core.Provider
 
 	if v.IsSet("models") {
-		// model-centric 格式：models（含 endpoints） + providers
+		// Model-centric format: models (with endpoints) + providers.
 		gwCfg, err = config.Load(v)
 		if err != nil {
 			return nil, nil, fmt.Errorf("load gateway config: %w", err)
@@ -225,10 +225,8 @@ func NewGatewayEngine(
 			return nil, nil, fmt.Errorf("validate gateway config: %w", err)
 		}
 
-		// 构建 EngineConfig 和 Provider 实例
 		engineConfig, providerImpls, _, _ = buildFromRelationalConfig(gwCfg, enableAuth)
 
-		// 注册 endpoints
 		staticDiscovery = core.NewStaticDiscovery()
 		resolved := config.Resolve(gwCfg)
 		if err := registerEndpointsFromResolvedEndpoints(staticDiscovery, resolved); err != nil {
@@ -247,19 +245,18 @@ func NewGatewayEngine(
 	registry := core.NewProviderRegistry(providerImpls)
 	gwDiscovery = core.NewAssemblingDiscovery(serviceDiscovery, registry)
 
-	// 创建状态存储和补偿队列（使用共享 client）
 	stateStore, compQueue, err := NewGatewayDataStores(v, rdb)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create data stores: %w", err)
 	}
 
-	// 读取本地兜底 policies 配置（冷启动容灾）
+	// Local fallback policies for cold-start resilience.
 	var localPolicies []*policy.Policy
 	if v.IsSet("policies") {
 		_ = v.UnmarshalKey("policies", &localPolicies)
 	}
 
-	// 读取可配置优先级链条
+	// Configurable policy priority chain.
 	var priorityChain []string
 	if v.IsSet("policy.priority_chain") {
 		_ = v.UnmarshalKey("policy.priority_chain", &priorityChain)
@@ -268,21 +265,18 @@ func NewGatewayEngine(
 		priorityChain = []string{"global", "tenant", "user", "model", "tenant_model", "user_model"}
 	}
 
-	// 创建 PolicyService，直接传入统一的 GatewayProvider
 	policyService := service.NewPolicyService(provider, localPolicies, priorityChain, logger)
 
-	// 创建 Engine，将 policyService 作为 core.PolicyProvider 接口注入
+	// Inject policyService as core.PolicyProvider.
 	engine := core.NewEngine(engineConfig, gwDiscovery, stateStore, policyService, logger.Logger)
 
-	// 注入熔断器共享 Redis 客户端和指标
+	// Shared Redis client + metrics for circuit breaker.
 	if rdb != nil {
 		engine.CircuitBreakerManager().SetRDB(rdb)
 	}
-	// 注入熔断器指标发射器
 	cbMetrics := core.NewCircuitBreakerMetrics(metricsRegistry.CircuitBreakerState)
 	engine.CircuitBreakerManager().SetMetrics(cbMetrics)
 
-	// 注入可选组件
 	if compQueue != nil {
 		engine.SetCompQueue(compQueue)
 	}
@@ -290,16 +284,15 @@ func NewGatewayEngine(
 	engine.SetStaticDiscovery(staticDiscovery)
 	engine.SetInvokerBuilder(invoker.NewBuilder())
 
-	// 注入别名解析服务
 	aliasService := service.NewAliasService(rdb, logger)
 	engine.SetAliasService(aliasService)
 
-	// 启动 Redis 版本轮询（新格式配置）
+	// Redis version polling for new-format config.
 	if configMgr != nil {
 		go configMgr.StartRedisPolling(engine.Context())
 	}
 
-	// 注册 Router 工厂
+	// Register Router factories.
 	engine.RegisterRouterFactory("capability", func(cfg core.RouterConfig, _ core.StateStore, _ *zap.Logger) core.Router {
 		return &routers.CapabilityRouter{}
 	})
@@ -316,7 +309,7 @@ func NewGatewayEngine(
 		return routers.NewTagRouter(l)
 	})
 
-	// 注册 LoadBalancer 工厂
+	// Register LoadBalancer factories.
 	engine.RegisterLoadBalancerFactory("round_robin", func(_ core.StateStore) core.LoadBalancer {
 		return lbs.NewRoundRobin()
 	})
@@ -350,7 +343,7 @@ func NewGatewayEngine(
 		return lbs.NewEndpointAffinityLoadBalancer(ss)
 	})
 
-	// 注册 InboundFilter
+	// Register InboundFilters.
 	engine.RegisterFilter("auth", inbound.NewAuthFilter())
 	engine.RegisterFilter("session_reader", inbound.NewSessionReaderFilter("X-Session-ID"))
 	engine.RegisterFilter("credits_check", inbound.NewCreditsCheckFilter(apiKeyService))
@@ -359,7 +352,7 @@ func NewGatewayEngine(
 	engine.RegisterFilter("rate_limit", rateLimitFilter)
 	engine.RegisterFilter("validate", inbound.NewValidateFilter(modelService))
 
-	// 注册 OutboundFilter
+	// Register OutboundFilters.
 	engine.RegisterFilter("token_settlement", outbound.NewTokenSettlementFilter(stateStore, apiKeyService, logger.Logger))
 	engine.RegisterFilter("sticky_session", outbound.NewStickySessionFilter(stateStore, 5*time.Minute))
 	engine.RegisterFilter("metrics", outbound.NewMetricsFilter(
@@ -371,7 +364,7 @@ func NewGatewayEngine(
 
 	engine.RegisterFilter("status_collector", outbound.NewStatusCollectorFilter(rdb, engine.CircuitBreakerManager(), adminURL, syncToken, logger.Logger))
 
-	// 注册 Event Publisher 过滤器
+	// Register Event Publisher filter.
 	var eventsCfg events.PublisherConfig
 	if v.IsSet("events") {
 		_ = v.UnmarshalKey("events", &eventsCfg)
@@ -381,10 +374,10 @@ func NewGatewayEngine(
 	eventPubFilter.SetDiscovery(engine.Discovery())
 	engine.RegisterFilter("event_publisher", eventPubFilter)
 
-	// 注入事件发布器到 Engine，供 InvokerDependencyResolver.Publisher() 使用
+	// For InvokerDependencyResolver.Publisher().
 	engine.SetPublisher(eventPublisher)
 
-	// 熔断器状态变更时直接发布事件（Closed→Open）
+	// Publish events on circuit breaker state changes (Closed→Open).
 	engine.CircuitBreakerManager().SetEventHandler(func(evt core.CBEvent) {
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -392,7 +385,7 @@ func NewGatewayEngine(
 
 			provider := evt.ProviderName
 
-			// 如果是服务级熔断，且缓存的 provider 为空，尝试从 key（provider:model）中拆分
+			// Service-level CB: if provider empty, parse from key (provider:model).
 			if provider == "" && strings.Contains(evt.Key, ":") {
 				parts := strings.Split(evt.Key, ":")
 				if len(parts) > 0 {
@@ -419,11 +412,11 @@ func NewGatewayEngine(
 				Message:      transitionStr + "circuit breaker opened: " + evt.Key,
 				Timestamp:    time.Now().Unix(),
 			}
-			// 如果是实例级熔断，我们将 EndpointID 设为 key
+			// Instance-level CB: EndpointID is the key.
 			if !strings.Contains(evt.Key, ":") {
 				evtOps.EndpointID = evt.Key
 				evtOps.EndpointCode = evt.EndpointCode
-				// 尝试从 StaticDiscovery 查找 endpoint code
+				// Resolve endpoint code from StaticDiscovery if missing.
 				if evtOps.EndpointCode == "" {
 					if ep := findEndpointByID(staticDiscovery, evt.Key); ep != nil {
 						evtOps.EndpointCode = ep.Code
@@ -437,7 +430,6 @@ func NewGatewayEngine(
 		}()
 	})
 
-	// 初始化引擎
 	if err := engine.Init(); err != nil {
 		otelCleanup()
 		if eventPublisher != nil {
@@ -446,11 +438,11 @@ func NewGatewayEngine(
 		return nil, nil, fmt.Errorf("engine init: %w", err)
 	}
 
-	// 启动后台任务
+	// Background tasks.
 	engine.StartHealthCheck(engine.Context(), 30*time.Second, v.GetBool("llm.enable_active_health_check"))
 	engine.StartCircuitBreakerProbe(engine.Context(), 5*time.Second)
 
-	// 启动 HTTP 轮询同步（如果是 HTTPGatewayProvider）
+	// HTTP poll sync when using HTTPGatewayProvider.
 	if httpProv, ok := provider.(*config.HTTPGatewayProvider); ok {
 		pollInterval := v.GetDuration("config_poll_interval")
 		if pollInterval <= 0 {
@@ -459,7 +451,7 @@ func NewGatewayEngine(
 		poller := config.NewHTTPConfigPoller(httpProv, pollInterval, logger.Logger)
 
 		go poller.Start(engine.Context(),
-			// 1) 路由配置更新回调
+			// 1) Routing config update callback.
 			func(ctx context.Context, gwCfg *config.GatewayConfig) error {
 				engineConfig, providerImpls, _, _ := buildFromRelationalConfig(gwCfg, enableAuth)
 				if err := engine.UpdateConfig(engineConfig); err != nil {
@@ -469,12 +461,12 @@ func NewGatewayEngine(
 				configMgr.UpdateYAMLConfig(gwCfg)
 				return nil
 			},
-			// 2) 策略配置更新回调
+			// 2) Policy config update callback.
 			func(ctx context.Context) error {
 				policyService.PurgeCache()
 				return nil
 			},
-			// 3) API Key 更新回调
+			// 3) API Key update callback.
 			func(ctx context.Context) error {
 				apiKeyService.PurgeCache()
 				return nil
@@ -482,7 +474,7 @@ func NewGatewayEngine(
 		)
 	}
 
-	// 启动 Redis 订阅实时刷新缓存（针对 RedisGatewayProvider 等 Redis 存储模式）
+	// Redis pub/sub for live cache refresh (RedisGatewayProvider, etc.).
 	if rdb != nil {
 		go func() {
 			var retryDelay = 1 * time.Second
@@ -499,14 +491,14 @@ func NewGatewayEngine(
 
 				pubsub := rdb.Subscribe(engine.Context(), "aigw:channel:policy_update", "aigw:channel:apikey_update")
 
-				// 尝试接收第一条确认消息以检测是否支持此命令
+				// First receive confirms whether Pub/Sub is supported.
 				_, err := pubsub.Receive(engine.Context())
 				if err != nil {
 					_ = pubsub.Close()
 					errMsg := err.Error()
 					if strings.Contains(errMsg, "unknown command") || strings.Contains(errMsg, "not allowed") || strings.Contains(errMsg, "ERR unknown") {
 						logger.Logger.Warn("Redis Pub/Sub is not supported by current Redis server (unknown command). Falling back to local cache TTL expiration.", zap.Error(err))
-						return // 遇到不支持命令，彻底退出，不再重试
+						return // Unsupported command: exit permanently, no retry.
 					}
 
 					retryCount++
@@ -528,7 +520,7 @@ func NewGatewayEngine(
 					continue
 				}
 
-				// 订阅成功，重置重试计数
+				// Subscribed; reset retry backoff.
 				retryCount = 0
 				retryDelay = 1 * time.Second
 				logger.Logger.Info("Successfully subscribed to Redis policy & apikey update channels")
@@ -560,14 +552,14 @@ func NewGatewayEngine(
 				}
 				_ = pubsub.Close()
 
-				// 如果是因为上下文退出引起的关闭，正常结束
+				// Context cancelled: exit cleanly.
 				select {
 				case <-engine.Context().Done():
 					return
 				default:
 				}
 
-				// 重新进入外层 loop 进行重新订阅
+				// Re-enter outer loop to resubscribe.
 				time.Sleep(1 * time.Second)
 			}
 		}()
@@ -584,7 +576,6 @@ func NewGatewayEngine(
 		}
 	}
 
-	// cleanup 函数
 	cleanup := func() {
 		if compWorker != nil {
 			compWorker.Close()
@@ -602,7 +593,7 @@ func NewGatewayEngine(
 
 }
 
-// buildFromRelationalConfig 从 model-centric 配置构建 EngineConfig 和 Provider 实例
+// buildFromRelationalConfig builds EngineConfig and Provider instances from model-centric config.
 func buildFromRelationalConfig(
 	gwCfg *config.GatewayConfig,
 	hasAuth bool,
@@ -615,7 +606,7 @@ func buildFromRelationalConfig(
 	resolved := config.Resolve(gwCfg)
 	knownModels := config.KnownModels(gwCfg)
 
-	// 按 provider 分组收集 models
+	// Group models by provider.
 	providerModels := make(map[string][]string)
 	for modelCode, eps := range resolved {
 		for _, re := range eps {
@@ -623,7 +614,7 @@ func buildFromRelationalConfig(
 		}
 	}
 
-	// 构建 ProviderConfig 列表（去重）
+	// Build deduplicated ProviderConfig list.
 	providerConfigMap := make(map[string]*core.ProviderConfig)
 	for _, eps := range resolved {
 		for _, re := range eps {
@@ -633,7 +624,7 @@ func buildFromRelationalConfig(
 					core.RequestTypeEmbedding,
 				}
 				switch re.ProviderProtocol {
-case "openai":
+				case "openai":
 					caps = append(caps, core.RequestTypeResponses)
 				case "anthropic":
 					caps = []core.RequestType{core.RequestTypeMessages}
@@ -652,7 +643,7 @@ case "openai":
 		providerConfigs = append(providerConfigs, *pc)
 	}
 
-	// 创建 Provider 实例
+	// Create Provider instances.
 	providerImpls := make(map[string]core.Provider)
 	for providerName := range providerConfigMap {
 		var firstRE config.ResolvedEndpoint
@@ -681,14 +672,14 @@ case "openai":
 		providerImpls[providerName] = p
 	}
 
-	// 优先读取配置文件中定义的 pipelines
+	// Prefer pipelines defined in config file.
 	for name, pcfg := range gwCfg.Pipelines {
 		engineConfig.Pipelines[name] = pcfg
 	}
 
-	// 1. 创建通用的 chat_completion pipeline
-	// 注意：inbound filters 顺序需与 config/local.yml 中静态 pipelines 保持一致，
-	// 其中 rate_limit 必须包含在内，否则限流过滤器不会进入执行链导致限流静默失效。
+	// 1. Default chat_completion pipeline.
+	// Inbound filter order must match static pipelines in config/local.yml;
+	// rate_limit must be in the chain or rate limiting silently never runs.
 	inboundFilters := []string{"session_reader", "tagging", "credits_check", "rate_limit", "validate"}
 	if hasAuth {
 		inboundFilters = append([]string{"auth"}, inboundFilters...)
@@ -707,7 +698,7 @@ case "openai":
 		}
 	}
 
-	// 2. 创建通用的 embedding pipeline
+	// 2. Default embedding pipeline.
 	if _, exists := engineConfig.Pipelines["embedding"]; !exists {
 		engineConfig.Pipelines["embedding"] = &core.PipelineConfig{
 			Name:         "embedding",
@@ -721,7 +712,7 @@ case "openai":
 		}
 	}
 
-	// 3. 创建通用的 messages pipeline (Anthropic 原生协议)
+	// 3. Default messages pipeline (Anthropic native protocol).
 	if _, exists := engineConfig.Pipelines["messages"]; !exists {
 		engineConfig.Pipelines["messages"] = &core.PipelineConfig{
 			Name:         "messages",
@@ -735,7 +726,7 @@ case "openai":
 		}
 	}
 
-	// 5. 创建通用的 responses pipeline
+	// 5. Default responses pipeline.
 	if _, exists := engineConfig.Pipelines["responses"]; !exists {
 		engineConfig.Pipelines["responses"] = &core.PipelineConfig{
 			Name:         "responses",
@@ -756,7 +747,7 @@ case "openai":
 	return engineConfig, providerImpls, providerConfigs, knownModels
 }
 
-// registerEndpointsFromResolvedEndpoints 从 resolved endpoints 注册端点到 StaticDiscovery
+// registerEndpointsFromResolvedEndpoints registers resolved endpoints onto StaticDiscovery.
 func registerEndpointsFromResolvedEndpoints(sd *core.StaticDiscovery, resolved map[string][]config.ResolvedEndpoint) error {
 	for modelName, eps := range resolved {
 		endpoints := make([]*core.Endpoint, 0, len(eps))
@@ -800,10 +791,10 @@ func registerEndpointsFromResolvedEndpoints(sd *core.StaticDiscovery, resolved m
 	return nil
 }
 
-// defaultTimeout 默认超时
+// defaultTimeout is the default request timeout.
 const defaultTimeout = 60 * time.Second
 
-// readAuthKeys 从配置读取 API Key 映射
+// readAuthKeys reads API key map from config.
 func readAuthKeys(v *viper.Viper) map[string]string {
 	keys := make(map[string]string)
 	if v.IsSet("gateway.auth.valid_keys") {
@@ -814,7 +805,7 @@ func readAuthKeys(v *viper.Viper) map[string]string {
 	return keys
 }
 
-// findEndpointByID 从 StaticDiscovery 中查找指定 ID 的端点
+// findEndpointByID looks up an endpoint by ID in StaticDiscovery.
 func findEndpointByID(sd *core.StaticDiscovery, endpointID string) *core.Endpoint {
 	if sd == nil {
 		return nil

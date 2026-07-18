@@ -31,9 +31,9 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// HandleWebSocketRequest 处理 WebSocket 双向流 Responses 协议请求
+// HandleWebSocketRequest handles the WebSocket bidirectional streaming Responses protocol.
 func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) {
-	// 1. 握手前解析 model 参数
+	// 1. Parse model parameter before handshake
 	modelName := r.URL.Query().Get("model")
 	if modelName == "" {
 		e.logger.Error("ws handshake failed: missing model query parameter")
@@ -41,7 +41,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 2. 初始化握手上下文并前置校验
+	// 2. Initialize handshake context and pre-validate
 	gctx := AcquireContext(w, r)
 	defer ReleaseContext(gctx)
 
@@ -49,7 +49,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 	gctx.Model = modelName
 	gctx.OriginalModel = modelName
 
-	// 提取中间件注入的 Tenant 和 UserID
+	// Extract tenant and UserID injected by middleware
 	if tenant, ok := r.Context().Value("tenant").(string); ok {
 		gctx.Tenant = tenant
 	} else if tenantStr := r.Header.Get("X-Tenant-Id"); tenantStr != "" {
@@ -68,7 +68,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		gctx.UserTenant = utStr
 	}
 
-	// 匹配管线
+	// Match pipeline
 	pipe := e.matchPipeline(gctx.RequestType)
 	if pipe == nil {
 		e.logger.Error("no pipeline matched for responses ws", zap.String("model", modelName))
@@ -76,7 +76,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 解析策略
+	// Resolve policy
 	if e.policyProvider != nil {
 		policy, err := e.policyProvider.GetPolicy(gctx.Ctx, gctx.Tenant, gctx.UserID, gctx.Model)
 		if err != nil {
@@ -87,7 +87,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		gctx.Policy = policy
 	}
 
-	// 执行 auth 过滤器
+	// Execute auth filter
 	for _, f := range pipe.InboundFilters {
 		if f.Name() == "auth" {
 			if err := f.OnRequest(gctx); err != nil {
@@ -98,7 +98,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// 3. 路由选择端点并向主上游发起握手建连 (支持握手重试)
+	// 3. Route, select endpoint, and dial upstream (supports handshake retry)
 	upstreamConn, selectedEp, err := e.selectEndpointAndConnect(gctx, pipe)
 	if err != nil {
 		e.logger.Error("failed to connect to upstream ws", zap.Error(err))
@@ -106,7 +106,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 4. 升级客户端连接
+	// 4. Upgrade client connection
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		upstreamConn.Close()
@@ -114,7 +114,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 5. 包装并发安全的连接与初始化追踪器
+	// 5. Wrap concurrent-safe connections and initialize tracker
 	safeClient := NewSafeWebSocketConn(clientConn)
 	safeUpstream := NewSafeWebSocketConn(upstreamConn)
 	tracker := NewWSSessionTracker()
@@ -126,7 +126,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		zap.String("endpoint", selectedEp.ID),
 	)
 
-	// 双向透传生命周期控制
+	// Bidirectional passthrough lifecycle control
 	sessionCtx, cancel := context.WithCancel(gctx.Ctx)
 	defer cancel()
 
@@ -150,10 +150,10 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 					return
 				}
 
-				// 拦截并审计 client 的帧 (主要是 response.create)
+				// Intercept and audit client frames (primarily response.create)
 				intercepted, err := e.handleClientEvent(payload, gctx, pipe, tracker, safeClient)
 				if err != nil {
-					// 拦截报错直接下发给客户端，不转发给上游
+					// Intercept error sent directly to client; not forwarded to upstream
 					errEvent := map[string]interface{}{
 						"type": "error",
 						"error": map[string]interface{}{
@@ -196,7 +196,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 					return
 				}
 
-				// 拦截并审计 upstream 的帧
+				// Intercept and audit upstream frames
 				e.handleUpstreamEvent(payload, tracker, pipe)
 
 				err = safeClient.WriteMessage(msgType, payload)
@@ -208,7 +208,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		}
 	}()
 
-	// 阻塞等待连接关闭或协程退出
+	// Block until connection closes or goroutines exit
 	select {
 	case sessionErr := <-errChan:
 		e.logger.Warn("responses ws session terminated", zap.Error(sessionErr))
@@ -216,11 +216,11 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		e.logger.Info("responses ws session context done")
 	}
 
-	// 6. 连接断开清理
+	// 6. Connection disconnect cleanup
 	safeClient.Close()
 	safeUpstream.Close()
 
-	// 7. 处理异常断连下的未决 Turn 结算 (方案 3)
+	// 7. Settle unsettled turns on abnormal disconnect
 	unsettledTurns := tracker.GetUnsettledTurns()
 	for _, turn := range unsettledTurns {
 		e.logger.Warn("settling unsettled turn due to premature client disconnect",
@@ -229,12 +229,12 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 		)
 
 		if turn.Gctx != nil {
-			// 将 Gctx 标识为 Stream 结算
+			// Mark Gctx as stream settlement
 			turn.Gctx.IsStream = true
-			// SentTextTokens 累计下发字节数，此处做最终字数降级扣费
+			// SentTextTokens accumulates sent bytes; used here for final char-based billing
 			turn.Gctx.TransmittedChars = turn.SentTextTokens
 
-			// 执行 Outbound 结算，由结算拦截器自动处理
+			// Execute Outbound settlement (handled by settlement interceptor)
 			for _, f := range pipe.OutboundFilters {
 				_ = f.OnResponse(turn.Gctx)
 			}
@@ -243,7 +243,7 @@ func (e *Engine) HandleWebSocketRequest(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// selectEndpointAndConnect 路由、负载均衡选择端点，并完成拨号 (包含握手重试)
+// selectEndpointAndConnect routes, load-balances, selects an endpoint, and dials upstream (including handshake retry).
 func (e *Engine) selectEndpointAndConnect(gctx *GatewayContext, pipe *Pipeline) (*websocket.Conn, *Endpoint, error) {
 	routerNames := []string{"capability", "circuit_breaker"}
 	lbStrategy := "round_robin"
@@ -261,7 +261,7 @@ func (e *Engine) selectEndpointAndConnect(gctx *GatewayContext, pipe *Pipeline) 
 	}
 	e.mu.RUnlock()
 
-	// 最大重试次数
+	// Max retry count
 	maxRetries := 2
 	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
 		maxRetries = gctx.Policy.InvocationPolicy.RetryPolicy.Retry
@@ -293,7 +293,7 @@ func (e *Engine) selectEndpointAndConnect(gctx *GatewayContext, pipe *Pipeline) 
 			}
 		}
 
-		// 3. 过滤已故障/已重试的 Endpoint
+		// 3. Filter out failed/retried endpoints
 		var filtered []*Endpoint
 		for _, ep := range endpoints {
 			if !excluded[ep.ID] {
@@ -305,7 +305,7 @@ func (e *Engine) selectEndpointAndConnect(gctx *GatewayContext, pipe *Pipeline) 
 			continue
 		}
 
-		// 4. Load Balancer 选择
+		// 4. Load Balancer selection
 		lb := e.resolveLoadBalancer(lbStrategy)
 		if lb == nil {
 			lastErr = fmt.Errorf("no load balancer strategy %q available", lbStrategy)
@@ -323,7 +323,7 @@ func (e *Engine) selectEndpointAndConnect(gctx *GatewayContext, pipe *Pipeline) 
 			continue
 		}
 
-		// 5. 将选中的端点 URL 转换为 WSS 格式
+		// 5. Convert selected endpoint URL to WS(S)
 		wssURL, err := convertHTTPToWS(selectedEp.URL, selectedEp.ProviderProtocol, selectedEp.Model)
 		if err != nil {
 			excluded[selectedEp.ID] = true
@@ -331,13 +331,13 @@ func (e *Engine) selectEndpointAndConnect(gctx *GatewayContext, pipe *Pipeline) 
 			continue
 		}
 
-		// 构建鉴权 Header，使用网关该 Endpoint 对应的真实 APIKey，防止凭证泄漏
+		// Auth headers use the endpoint API key (never client credentials)
 		headers := make(http.Header)
 		if selectedEp.APIKey != "" {
 			headers.Set("Authorization", "Bearer "+selectedEp.APIKey)
 		}
 
-		// 6. 进行 Dial 握手
+		// 6. Dial upstream
 		dialer := websocket.Dialer{
 			HandshakeTimeout: 5 * time.Second,
 		}
@@ -357,20 +357,21 @@ func (e *Engine) selectEndpointAndConnect(gctx *GatewayContext, pipe *Pipeline) 
 	return nil, nil, fmt.Errorf("ws handshake failed after retries: %w", lastErr)
 }
 
-// handleClientEvent 拦截解析客户端消息，执行交互级 Inbound 拦截 (如限流和额度预扣)
+// handleClientEvent intercepts client frames and runs per-turn inbound filters (rate limit / prepaid).
+// Returns (intercepted, err): if intercepted, the frame is not forwarded upstream.
 func (e *Engine) handleClientEvent(payload []byte, parentGctx *GatewayContext, pipe *Pipeline, tracker *WSSessionTracker, safeClient *SafeWebSocketConn) (bool, error) {
 	var header struct {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(payload, &header); err != nil {
 		e.logger.Warn("failed to parse client message json", zap.Error(err))
-		return false, nil // 无法解析的帧不拦截，原样传给上游处理
+		return false, nil // unparseable frames pass through to upstream
 	}
 
 	e.logger.Info("handleClientEvent received event", zap.String("type", header.Type))
 
 	if header.Type == "response.create" {
-		// 1. 初始化独立的 Turn 上下文
+		// 1. Per-turn context
 		turnCtx := AcquireContext(parentGctx.ResponseWriter, parentGctx.Request)
 		turnCtx.Ctx = parentGctx.Ctx
 		turnCtx.Tenant = parentGctx.Tenant
@@ -381,7 +382,7 @@ func (e *Engine) handleClientEvent(payload []byte, parentGctx *GatewayContext, p
 		turnCtx.RequestType = RequestTypeResponses
 		turnCtx.RawBody = payload
 
-		// 2. 执行 Inbound 过滤器进行限流和预扣费
+		// 2. Inbound filters (rate limit / prepaid)
 		var filterErr error
 		for _, f := range pipe.InboundFilters {
 			if err := f.OnRequest(turnCtx); err != nil {
@@ -393,10 +394,10 @@ func (e *Engine) handleClientEvent(payload []byte, parentGctx *GatewayContext, p
 		if filterErr != nil {
 			e.logger.Warn("filter validation failed on response.create", zap.Error(filterErr))
 			ReleaseContext(turnCtx)
-			return true, filterErr // 拦截该帧，不发给上游，并抛出错误事件以写回客户端
+			return true, filterErr // block frame; caller writes error event to client
 		}
 
-		// 3. 校验通过，在 Tracker 中建立未决 Turn 跟踪
+		// 3. Track unsettled turn until response.done
 		tempID := generateTempID()
 		turn := &ActiveTurn{
 			TempID:        tempID,
@@ -405,7 +406,7 @@ func (e *Engine) handleClientEvent(payload []byte, parentGctx *GatewayContext, p
 			Model:         turnCtx.Model,
 			StartTime:     time.Now(),
 			PrePaidAmount: turnCtx.Cost,
-			Gctx:          turnCtx, // 保存 GatewayContext 资源指针，用于后续 Done 时实扣和多退少补
+			Gctx:          turnCtx, // kept for final settlement on done / disconnect
 		}
 		tracker.AddTurn(tempID, turn)
 		e.logger.Info("added temp turn to tracker", zap.String("temp_id", tempID))
@@ -414,7 +415,7 @@ func (e *Engine) handleClientEvent(payload []byte, parentGctx *GatewayContext, p
 	return false, nil
 }
 
-// handleUpstreamEvent 拦截解析上游回传帧，管理 Response ID 状态绑定与流式字节数统计
+// handleUpstreamEvent intercepts upstream frames: bind response IDs and count streamed bytes for billing.
 func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, pipe *Pipeline) {
 	var ev struct {
 		Type       string `json:"type"`
@@ -440,7 +441,7 @@ func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, 
 
 	e.logger.Info("handleUpstreamEvent received event", zap.String("type", ev.Type), zap.String("resp_id", ev.Response.ID), zap.String("resp_id_outer", ev.ResponseID))
 
-	// 1. response.created: 将最早的临时 ID 与正式的 response.id 关联
+	// 1. response.created: associate earliest temp ID with official response.id
 	if ev.Type == "response.created" && ev.Response.ID != "" {
 		turn := tracker.AssociateLatestTempID(ev.Response.ID)
 		if turn != nil {
@@ -450,7 +451,7 @@ func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, 
 		}
 	}
 
-	// 2. *.delta 事件: 统计下发流量用于异常断连粗估计费
+	// 2. *.delta: accumulate transmitted chars for disconnect billing fallback
 	if strings.Contains(ev.Type, ".delta") {
 		textDelta := ev.Delta
 		if textDelta == "" && ev.Part.Delta != "" {
@@ -475,7 +476,7 @@ func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, 
 		}
 	}
 
-	// 3. response.done: 触发最终的 Outbound 差额结算
+	// 3. response.done: final outbound settlement (true-up prepaid credits)
 	if ev.Type == "response.done" {
 		responseID := ev.Response.ID
 		if responseID == "" {
@@ -486,12 +487,10 @@ func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, 
 			if turn := tracker.RemoveTurn(responseID); turn != nil {
 				turn.IsSettled = true
 				if turn.Gctx != nil {
-					// 填充最终的使用量
 					turn.Gctx.InputTokens = ev.Response.Usage.InputTokens
 					turn.Gctx.OutputTokens = ev.Response.Usage.OutputTokens
 
 					e.logger.Info("triggering outbound filters on response.done", zap.String("response_id", responseID), zap.Int("input", turn.Gctx.InputTokens), zap.Int("output", turn.Gctx.OutputTokens))
-					// 触发 Outbound 链对该交互进行多退少补的结算
 					for _, f := range pipe.OutboundFilters {
 						_ = f.OnResponse(turn.Gctx)
 					}
@@ -504,7 +503,7 @@ func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, 
 	}
 }
 
-// convertHTTPToWS 将 HTTP(S) 的 Endpoint URL 转换为 WS(S) 格式，并拼装 Responses 协议查询路径
+// convertHTTPToWS converts an HTTP(S) endpoint URL to WS(S) and appends the Responses path.
 func convertHTTPToWS(httpURL string, protocol string, model string) (string, error) {
 	wsURL := httpURL
 	if strings.HasPrefix(wsURL, "https://") {

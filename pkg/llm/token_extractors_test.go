@@ -84,3 +84,12 @@ func TestAnthropicTokenExtractor_InvalidJSON(t *testing.T) {
 		t.Errorf("expected (0, 0, 0, 0), got (%d, %d, %d, %d)", pt, ct, cached, cc)
 	}
 }
+
+// 非流式整体响应：无 type 字段，顶层 usage。归一化 total = 100 + 60 + 40 = 200。
+func TestAnthropicTokenExtractor_NonStreamWholeBody(t *testing.T) {
+	data := `{"id":"msg-1","type":"message","role":"assistant","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":60,"cache_creation_input_tokens":40}}`
+	pt, ct, cached, cc := AnthropicTokenExtractor(data)
+	if pt != 200 || ct != 20 || cached != 60 || cc != 40 {
+		t.Errorf("expected (200, 20, 60, 40), got (%d, %d, %d, %d)", pt, ct, cached, cc)
+	}
+}

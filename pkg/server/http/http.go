@@ -66,7 +66,7 @@ func (s *Server) Start(ctx context.Context) error {
 		Handler: s,
 	}
 
-	// 根据 TLS 配置选择启动方式
+	// Start with TLS when configured.
 	if s.tlsConfig != nil && s.tlsConfig.Enabled {
 		s.logger.Sugar().Infof("HTTPS server starting on %s:%d", s.host, s.port)
 		if err := s.httpSrv.ListenAndServeTLS(s.tlsConfig.CertFile, s.tlsConfig.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -7,19 +7,19 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// CircuitBreakerMetrics 熔断器指标发射器
+// CircuitBreakerMetrics emits circuit breaker metrics.
 type CircuitBreakerMetrics struct {
 	state metric.Int64Gauge
 }
 
-// NewCircuitBreakerMetrics 创建熔断器指标发射器
+// NewCircuitBreakerMetrics creates a circuit breaker metrics emitter.
 func NewCircuitBreakerMetrics(state metric.Int64Gauge) *CircuitBreakerMetrics {
 	return &CircuitBreakerMetrics{
 		state: state,
 	}
 }
 
-// RecordState 记录熔断器状态变更
+// RecordState records a circuit breaker state change.
 func (m *CircuitBreakerMetrics) RecordState(key string, modelCode string, state CircuitState) {
 	if m == nil || m.state == nil {
 		return
@@ -41,10 +41,9 @@ func (m *CircuitBreakerMetrics) RecordState(key string, modelCode string, state 
 	)
 }
 
-// isEndpointKey 判断是否为 instance 级别的熔断器 key
-// 规则：包含 "endpoint-" 前缀或无 ":" 分隔符
+// isEndpointKey checks whether the key is instance-level (no colon separator).
 func isEndpointKey(key string) bool {
-	// endpoint ID 格式通常不包含 ":"，而 service key 格式为 "provider:model"
+	// endpoint IDs typically have no ":"; service keys are "provider:model"
 	return !containsColon(key)
 }
 

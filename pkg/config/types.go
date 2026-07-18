@@ -7,38 +7,38 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
 
-// ModelConfig 模型定义（一等入口，model-centric）
+// ModelConfig is a model-centric model definition.
 type ModelConfig struct {
-	RequestTypes []string         `mapstructure:"request_types" yaml:"request_types" json:"request_types"` // 可选，API 列表
-	Endpoints    []EndpointConfig `mapstructure:"endpoints" yaml:"endpoints" json:"endpoints"`         // 该 model 的所有可用 endpoint
+	RequestTypes []string         `mapstructure:"request_types" yaml:"request_types" json:"request_types"` // Optional API list
+	Endpoints    []EndpointConfig `mapstructure:"endpoints" yaml:"endpoints" json:"endpoints"`         // Endpoints for this model
 }
 
-// ProviderConfig Provider 基础设施定义（不含 endpoints）
+// ProviderConfig is provider infrastructure (no endpoints).
 type ProviderConfig struct {
 	Protocol   string        `mapstructure:"protocol" yaml:"protocol" json:"protocol"`       // openai / anthropic
-	APIKey     string        `mapstructure:"api_key" yaml:"api_key" json:"api_key"`         // 默认 API key
-	Timeout    time.Duration `mapstructure:"timeout" yaml:"timeout" json:"timeout"`         // 默认超时
-	MaxRetries int           `mapstructure:"max_retries" yaml:"max_retries" json:"max_retries"` // 默认重试次数
+	APIKey     string        `mapstructure:"api_key" yaml:"api_key" json:"api_key"`         // Default API key
+	Timeout    time.Duration `mapstructure:"timeout" yaml:"timeout" json:"timeout"`         // Default timeout
+	MaxRetries int           `mapstructure:"max_retries" yaml:"max_retries" json:"max_retries"` // Default max retries
 }
 
-// EndpointConfig endpoint 配置（挂在 model 下，引用 provider）
+// EndpointConfig is under a model and references a provider.
 type EndpointConfig struct {
-	ID        string            `mapstructure:"id" yaml:"id" json:"id,omitempty"`                             // 可选，端点唯一 ID
-	Code      string            `mapstructure:"code" yaml:"code" json:"code,omitempty"`                         // 可选，端点业务编码
-	Provider  string            `mapstructure:"provider" yaml:"provider" json:"provider"`                 // 引用 provider name（必填）
-	URL       string            `mapstructure:"url" yaml:"url" json:"url"`                           // 上游地址（必填）
-	RealModel string            `mapstructure:"real_model" yaml:"real_model" json:"real_model,omitempty"`             // 可选，覆盖 model 的 real_model
-	APIKey    string            `mapstructure:"api_key" yaml:"api_key" json:"api_key,omitempty"`                   // 可选，覆盖 provider 的 api_key
-	AuthType  string            `mapstructure:"auth_type" yaml:"auth_type" json:"auth_type,omitempty"`             // 认证类型
-	Protocol  string            `mapstructure:"protocol" yaml:"protocol" json:"protocol,omitempty"`                 // 可选，覆盖 provider 的 protocol
-	Timeout   time.Duration     `mapstructure:"timeout" yaml:"timeout" json:"timeout,omitempty"`                   // 可选，覆盖 provider 的 timeout
-	Priority  int               `mapstructure:"priority" yaml:"priority" json:"priority"`                 // failover 优先级，值越小越优先
-	Weight    int               `mapstructure:"weight" yaml:"weight" json:"weight"`                     // 同优先级内的负载均衡权重
-	Headers   map[string]string `mapstructure:"headers" yaml:"headers" json:"headers,omitempty"`                   // 自定义 Header
-	Metadata  map[string]string `mapstructure:"metadata" yaml:"metadata" json:"metadata,omitempty"` // 元数据
+	ID        string            `mapstructure:"id" yaml:"id" json:"id,omitempty"`                             // Optional unique endpoint ID
+	Code      string            `mapstructure:"code" yaml:"code" json:"code,omitempty"`                         // Optional business code
+	Provider  string            `mapstructure:"provider" yaml:"provider" json:"provider"`                 // Provider name (required)
+	URL       string            `mapstructure:"url" yaml:"url" json:"url"`                           // Upstream URL (required)
+	RealModel string            `mapstructure:"real_model" yaml:"real_model" json:"real_model,omitempty"`             // Optional override of model real_model
+	APIKey    string            `mapstructure:"api_key" yaml:"api_key" json:"api_key,omitempty"`                   // Optional override of provider api_key
+	AuthType  string            `mapstructure:"auth_type" yaml:"auth_type" json:"auth_type,omitempty"`             // Auth type
+	Protocol  string            `mapstructure:"protocol" yaml:"protocol" json:"protocol,omitempty"`                 // Optional override of provider protocol
+	Timeout   time.Duration     `mapstructure:"timeout" yaml:"timeout" json:"timeout,omitempty"`                   // Optional override of provider timeout
+	Priority  int               `mapstructure:"priority" yaml:"priority" json:"priority"`                 // Failover priority (lower first)
+	Weight    int               `mapstructure:"weight" yaml:"weight" json:"weight"`                     // LB weight within same priority
+	Headers   map[string]string `mapstructure:"headers" yaml:"headers" json:"headers,omitempty"`                   // Custom headers
+	Metadata  map[string]string `mapstructure:"metadata" yaml:"metadata" json:"metadata,omitempty"` // Metadata
 }
 
-// GatewayConfig 网关配置（model-centric 两层结构）
+// GatewayConfig is model-centric two-layer gateway config.
 type GatewayConfig struct {
 	Models    map[string]ModelConfig          `mapstructure:"models" yaml:"models" json:"models"`
 	Providers map[string]ProviderConfig       `mapstructure:"providers" yaml:"providers" json:"providers"`
@@ -46,8 +46,8 @@ type GatewayConfig struct {
 	Pipelines map[string]*core.PipelineConfig `mapstructure:"pipelines" yaml:"pipelines" json:"pipelines,omitempty"`
 }
 
-// ResolvedEndpoint 解析后的 endpoint（扁平化，每个 endpoint 自描述完整路由信息）
-// timeout 字段为毫秒
+// ResolvedEndpoint is a flattened, self-describing endpoint.
+// Timeout is in milliseconds.
 type ResolvedEndpoint struct {
 	ID                 string            `json:"id,omitempty"`
 	Code               string            `json:"code,omitempty"`
@@ -58,7 +58,7 @@ type ResolvedEndpoint struct {
 	APIKey             string            `json:"api_key"`
 	AuthType           string            `json:"auth_type,omitempty"`
 	URL                string            `json:"url"`
-	Timeout            int64             `json:"timeout"` // 毫秒
+	Timeout            int64             `json:"timeout"` // ms
 	MaxRetries         int               `json:"max_retries"`
 	Priority           int               `json:"priority"`
 	Weight             int               `json:"weight"`
@@ -71,7 +71,7 @@ type ResolvedEndpoint struct {
 	CacheCreationPrice *float64          `json:"cache_creation_price,omitempty"`
 }
 
-// UnmarshalJSON 兼容 Admin/Redis 侧不同命名风格的端点 ID 与编码字段。
+// UnmarshalJSON accepts Admin/Redis endpoint ID/code field aliases.
 func (r *ResolvedEndpoint) UnmarshalJSON(data []byte) error {
 	type Alias ResolvedEndpoint
 	aux := &struct {
@@ -103,7 +103,7 @@ func (r *ResolvedEndpoint) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalJSON 允许从 JSON 中的时间字符串（如 "60s"）解析 Timeout 字段。
+// UnmarshalJSON parses Timeout from duration strings (e.g. "60s").
 func (c *ProviderConfig) UnmarshalJSON(data []byte) error {
 	type Alias ProviderConfig
 	aux := &struct {
@@ -130,7 +130,7 @@ func (c *ProviderConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalJSON 允许从 JSON 中的时间字符串（如 "60s"）解析 Timeout 字段。
+// UnmarshalJSON parses Timeout from duration strings (e.g. "60s").
 func (c *EndpointConfig) UnmarshalJSON(data []byte) error {
 	type Alias EndpointConfig
 	aux := &struct {

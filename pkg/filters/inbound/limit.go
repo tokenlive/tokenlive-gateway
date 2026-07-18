@@ -11,7 +11,7 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
 
-// RateLimitFilter 限流过滤器，基于动态 Policy 进行令牌桶限流
+// RateLimitFilter applies token-bucket rate limiting based on dynamic Policy.
 type RateLimitFilter struct {
 	stateStore   core.StateStore
 	eventHandler RateLimitEventHandler
@@ -20,12 +20,12 @@ type RateLimitFilter struct {
 // RateLimitEventHandler is called when a rate limit is triggered.
 type RateLimitEventHandler func(tenant, model, policyID, policyName, limitType string)
 
-// SetEventHandler 注入限流事件回调
+// SetEventHandler injects the rate-limit event callback.
 func (f *RateLimitFilter) SetEventHandler(handler RateLimitEventHandler) {
 	f.eventHandler = handler
 }
 
-// NewRateLimitFilter 创建 RateLimitFilter 并向工厂注册其执行器
+// NewRateLimitFilter creates a RateLimitFilter and registers its executors with the factory.
 func NewRateLimitFilter(ss core.StateStore) *RateLimitFilter {
 	if ss != nil {
 		core.DefaultLimitExecutorFactory.Register("request", limiter.NewRequestLimitExecutor(ss))
@@ -45,11 +45,11 @@ func (f *RateLimitFilter) OnRequest(gctx *core.GatewayContext) error {
 	}
 
 	for _, lp := range p.LimitPolicies {
-		// 自治条件判断
+		// check autonomous conditions
 		if !MatchLimitPolicyConditions(gctx, lp) {
-			continue // 条件不匹配，跳过本条限流策略
+			continue // condition not matched, skip this limit policy
 		}
-		// 估算并写入初始预估 InputTokens，防止流响应异常中断时统计归零退费
+		// estimate initial InputTokens to prevent zero-stat refund on stream interruption
 		if (lp.Type == "token" || lp.Type == "cost") && gctx.InputTokens == 0 {
 			gctx.InputTokens = int(limiter.EstimateInputTokens(gctx, lp))
 		}
@@ -92,7 +92,7 @@ func (f *RateLimitFilter) OnRequest(gctx *core.GatewayContext) error {
 					gctx.Tags["rate_limit_policy_name"] = lp.Name
 					gctx.Tags["rate_limit_policy_id"] = lp.ID
 				}
-				// 限流触发时直接发事件，此时 policy 信息完整
+				// rate limit triggered, policy info is complete at this point
 				if f.eventHandler != nil {
 					if httpErr, ok := err.(*limiter.HTTPError); ok && httpErr.Code == http.StatusTooManyRequests {
 						f.eventHandler(gctx.Tenant, gctx.Model, lp.ID, lp.Name, lp.Type)
@@ -108,11 +108,11 @@ func (f *RateLimitFilter) OnRequest(gctx *core.GatewayContext) error {
 func MatchLimitPolicyConditions(gctx *core.GatewayContext, lp *policy.LimitPolicy) bool {
 	for _, cond := range lp.Conditions {
 		if cond.Type == "" {
-			continue // 忽略空条件对象
+			continue // skip empty condition
 		}
 		m := matcher.DefaultTagMatcherFactory.Get(strings.ToLower(cond.Type))
 		if m == nil || !m.Match(gctx.Ctx, cond, gctx) {
-			return false // 任一有效条件不满足，即匹配失败
+			return false // any unmet valid condition means match failure
 		}
 	}
 	return true

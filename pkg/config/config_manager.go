@@ -24,8 +24,8 @@ func NewConfigManager(yamlCfg *GatewayConfig, redisSrc *RedisConfigSource, logge
 	}
 }
 
-// GetEndpoints 返回指定 model 的所有 resolved endpoints。
-// 优先从 Redis 读取，miss 时回退到 YAML 配置。
+// GetEndpoints returns resolved endpoints for a model.
+// Prefers Redis; falls back to YAML on miss.
 func (m *ConfigManager) GetEndpoints(ctx context.Context, modelCode string) []ResolvedEndpoint {
 	if m.redisSrc != nil {
 		if endpoints, ok := m.redisSrc.GetEndpoints(ctx, modelCode); ok && len(endpoints) > 0 {
@@ -54,8 +54,8 @@ func (m *ConfigManager) AllKnownModels() map[string]bool {
 	return known
 }
 
-// OwnerOf 返回某个 model 在配置中的归属 provider 名称，未命中返回空字符串。
-// 多 provider 时取首个（与 GetEndpoints 顺序一致）。
+// OwnerOf returns the owning provider name for a model, or "" if none.
+// With multiple providers, returns the first (same order as GetEndpoints).
 func (m *ConfigManager) OwnerOf(ctx context.Context, model string) string {
 	eps := m.GetEndpoints(ctx, model)
 	if len(eps) == 0 {
@@ -77,7 +77,7 @@ func (m *ConfigManager) StartRedisPolling(ctx context.Context) {
 	m.redisSrc.StartPolling(ctx)
 }
 
-// UpdateYAMLConfig 热更新内存中的静态 YAML 配置
+// UpdateYAMLConfig hot-reloads in-memory static YAML config.
 func (m *ConfigManager) UpdateYAMLConfig(yamlCfg *GatewayConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

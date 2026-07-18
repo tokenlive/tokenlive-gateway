@@ -17,30 +17,30 @@ import (
 	"go.uber.org/zap"
 )
 
-// RouterFactory 创建 Router 的工厂函数
+// RouterFactory creates a Router.
 type RouterFactory func(cfg RouterConfig, stateStore StateStore, logger *zap.Logger) Router
 
-// LoadBalancerFactory 创建 LoadBalancer 的工厂函数
+// LoadBalancerFactory creates a LoadBalancer.
 type LoadBalancerFactory func(stateStore StateStore) LoadBalancer
 
-// AliasResolver 将 model alias 解析为真实 model_code
+// AliasResolver resolves model aliases to real model_code.
 type AliasResolver interface {
 	Resolve(ctx context.Context, model string) (string, error)
 }
 
-// RouterConfig Router 配置
+// RouterConfig holds Router configuration.
 type RouterConfig struct {
 	Name string            `yaml:"name"`
 	Tags map[string]string `yaml:"tags,omitempty"`
 }
 
-// Engine 管线组装与请求处理编排器
+// Engine assembles pipelines and orchestrates request processing.
 type Engine struct {
 	config          *EngineConfig
 	discovery       Discovery
 	pipelines       map[string]*Pipeline
 	stateStore      StateStore
-	cbManager       *CircuitBreakerManager // 进程级熔断管理器，基于独立内存存储
+	cbManager       *CircuitBreakerManager // process-level circuit breaker manager with independent in-memory store
 	policyProvider  policy.PolicyProvider
 	logger          *zap.Logger
 	filterRegistry  map[string]interface{}
@@ -48,11 +48,11 @@ type Engine struct {
 	lbFactories     map[string]LoadBalancerFactory
 	mu              sync.RWMutex
 
-	// 生命周期
+	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// 可选组件（通过 setter 注入）
+	// Optional components (injected via setters)
 	compQueue               compensation.Queue
 	providers               map[string]Provider
 	staticDiscovery         *StaticDiscovery
@@ -62,7 +62,7 @@ type Engine struct {
 	publisher               events.Publisher
 }
 
-// NewEngine 创建 Engine
+// NewEngine creates an Engine.
 func NewEngine(config *EngineConfig, discovery Discovery, stateStore StateStore, policyProvider policy.PolicyProvider, logger *zap.Logger) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	cb := NewCircuitBreakerManager()
@@ -82,64 +82,64 @@ func NewEngine(config *EngineConfig, discovery Discovery, stateStore StateStore,
 	}
 }
 
-// RegisterFilter 注册 Filter 到注册表，buildPipeline 时按名称查找。
-// 必须在 Init() 之前调用。
+// RegisterFilter registers a Filter to the registry, looked up by name during buildPipeline.
+// Must be called before Init().
 func (e *Engine) RegisterFilter(name string, filter interface{}) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.filterRegistry[name] = filter
 }
 
-// RegisterRouterFactory 注册 Router 工厂，Init()/buildPipeline 时按名称创建 Router。
+// RegisterRouterFactory registers a Router factory, created by name during Init()/buildPipeline.
 func (e *Engine) RegisterRouterFactory(name string, factory RouterFactory) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.routerFactories[name] = factory
 }
 
-// RegisterLoadBalancerFactory 注册 LoadBalancer 工厂，Init()/buildPipeline 时按名称创建 LB。
+// RegisterLoadBalancerFactory registers a LoadBalancer factory, created by name during Init()/buildPipeline.
 func (e *Engine) RegisterLoadBalancerFactory(name string, factory LoadBalancerFactory) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.lbFactories[name] = factory
 }
 
-// SetCompQueue 注入补偿队列（可选，Init 之前调用）
+// SetCompQueue injects the compensation queue (optional, call before Init).
 func (e *Engine) SetCompQueue(q compensation.Queue) {
 	e.compQueue = q
 }
 
-// SetProviders 注入 Provider 实现（可选，用于 HealthCheck）
+// SetProviders injects Provider implementations (optional, used for HealthCheck).
 func (e *Engine) SetProviders(providers map[string]Provider) {
 	e.providers = providers
 }
 
-// SetStaticDiscovery 注入静态发现（可选，用于 HealthCheck 更新健康状态）
+// SetStaticDiscovery injects static discovery (optional, used for HealthCheck status updates).
 func (e *Engine) SetStaticDiscovery(sd *StaticDiscovery) {
 	e.staticDiscovery = sd
 }
 
-// SetInvokerBuilder 注入 Invoker 构造器
+// SetInvokerBuilder injects the Invoker builder.
 func (e *Engine) SetInvokerBuilder(ib InvokerBuilder) {
 	e.invokerBuilder = ib
 }
 
-// SetAliasService 注入别名解析服务（可选，Init 之前调用）
+// SetAliasService injects the alias resolver (optional, call before Init).
 func (e *Engine) SetAliasService(as AliasResolver) {
 	e.aliasService = as
 }
 
-// SetPublisher 注入事件发布器（可选，Init 之前调用）
+// SetPublisher injects the event publisher (optional, call before Init).
 func (e *Engine) SetPublisher(pub events.Publisher) {
 	e.publisher = pub
 }
 
-// Context 返回 Engine 的生命周期 context，用于后台 goroutine 优雅退出
+// Context returns the Engine lifecycle context for graceful goroutine shutdown.
 func (e *Engine) Context() context.Context {
 	return e.ctx
 }
 
-// Close 优雅关闭 Engine，顺序：cancel → compQueue → stateStore → discovery
+// Close gracefully shuts down the Engine in order: cancel → compQueue → stateStore → discovery.
 func (e *Engine) Close() error {
 	var errs []error
 	if e.cancel != nil {
@@ -153,7 +153,7 @@ func (e *Engine) Close() error {
 	return errors.Join(errs...)
 }
 
-// StartHealthCheck 启动后台 Provider 健康检查与 Endpoint 自适应健康检查 goroutine
+// StartHealthCheck starts background Provider and adaptive Endpoint health check goroutines.
 func (e *Engine) StartHealthCheck(ctx context.Context, interval time.Duration, enableActive bool) {
 	e.enableActiveHealthCheck = enableActive
 	if e.staticDiscovery == nil {
@@ -162,7 +162,7 @@ func (e *Engine) StartHealthCheck(ctx context.Context, interval time.Duration, e
 	e.staticDiscovery.StartHealthCheck(ctx, e.providers, e.cbManager, e.logger, interval, enableActive)
 }
 
-// StartCircuitBreakerProbe 启动后台熔断状态探测，定期对 Open 状态的熔断器进行状态求值，更新 Redis 缓存
+// StartCircuitBreakerProbe starts background circuit breaker state probing, periodically evaluating Open breakers and updating Redis cache.
 func (e *Engine) StartCircuitBreakerProbe(ctx context.Context, interval time.Duration) {
 	if e.cbManager == nil {
 		return
@@ -196,7 +196,7 @@ func (e *Engine) probeCircuitBreakerStates() {
 		if oldState != newState {
 			e.cbManager.onStateChange(k, oldState, newState)
 		}
-		// 定期刺探：即使状态未变化也刷新指标（确保 Grafana 实时性）
+		// Periodic probe: refresh metrics even if state unchanged (ensures Grafana real-time visibility)
 		if e.cbManager.metrics != nil {
 			entry.mu.Lock()
 			mc := entry.modelCode
@@ -212,7 +212,7 @@ func (e *Engine) probeCircuitBreakerStates() {
 	}
 }
 
-// Init 从配置构建所有 Pipeline
+// Init builds all Pipelines from config.
 func (e *Engine) Init() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -230,7 +230,7 @@ func (e *Engine) Init() error {
 	return nil
 }
 
-// UpdateConfig 原子替换 Pipeline（热加载）
+// UpdateConfig atomically replaces Pipelines (hot reload).
 func (e *Engine) UpdateConfig(newConfig *EngineConfig) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -249,18 +249,18 @@ func (e *Engine) UpdateConfig(newConfig *EngineConfig) error {
 	return nil
 }
 
-// HandleRequest HTTP 请求入口
+// HandleRequest is the HTTP request entry point.
 func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	gctx := AcquireContext(w, r)
 	defer ReleaseContext(gctx)
 
-	// 1. 解析请求
+	// 1. Parse request
 	if err := e.parseRequest(gctx); err != nil {
 		e.writeError(w, http.StatusBadRequest, err, gctx)
 		return
 	}
 
-	// 1.5 别名解析：将 model alias 解析为真实 model_code
+	// 1.5 Alias resolution: resolve model alias to real model_code
 	if e.aliasService != nil && gctx.Model != "" {
 		resolved, err := e.aliasService.Resolve(gctx.Ctx, gctx.Model)
 		if err != nil {
@@ -270,14 +270,14 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		gctx.Model = resolved
 	}
 
-	// 2. 匹配 Pipeline
+	// 2. Match Pipeline
 	pipe := e.matchPipeline(gctx.RequestType)
 	if pipe == nil {
 		e.writeError(w, http.StatusInternalServerError, fmt.Errorf("no pipeline matched for request type: %s", gctx.RequestType), gctx)
 		return
 	}
 
-	// 2.5 匹配 & 合并 Policy
+	// 2.5 Match & merge Policy
 	if e.policyProvider != nil {
 		policy, err := e.policyProvider.GetPolicy(gctx.Ctx, gctx.Tenant, gctx.UserID, gctx.Model)
 		if err != nil {
@@ -287,11 +287,11 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		gctx.Policy = policy
 	}
 
-	// 3. 执行 InboundFilters
+	// 3. Execute InboundFilters
 	for _, f := range pipe.InboundFilters {
 		if err := f.OnRequest(gctx); err != nil {
 			gctx.Err = err
-			// Inbound 拦截报错时，执行声明了 InboundSafe 的 OutboundFilters
+			// On Inbound rejection, execute OutboundFilters that declare InboundSafe
 			for _, outf := range pipe.OutboundFilters {
 				if _, ok := outf.(InboundSafeFilter); ok {
 					_ = outf.OnResponse(gctx)
@@ -302,7 +302,7 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. 执行 Invoker (支持动态模型降级)
+	// 4. Execute Invoker (supports dynamic model fallback)
 	invoker := pipe.Invoker
 	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.Type != "" {
 		if matchedInvoker, ok := pipe.Invokers[gctx.Policy.InvocationPolicy.Type]; ok {
@@ -325,7 +325,7 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			if invokeErr == nil {
 				break
 			}
-			// 流式已发首字节，不能降级
+			// First byte already sent for streaming; cannot fallback
 			if gctx.TTFT > 0 {
 				break
 			}
@@ -341,27 +341,27 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		gctx.Err = invoker.Invoke(gctx)
 	}
 
-	// 5. 执行 OutboundFilters
+	// 5. Execute OutboundFilters
 	for _, f := range pipe.OutboundFilters {
 		if ferr := f.OnResponse(gctx); ferr != nil {
 			gctx.Logger(e.logger).Error("outbound filter error",
 				zap.String("filter", f.Name()),
 				zap.Error(ferr),
 			)
-			// Critical OutboundFilter 失败 → 补偿入队
+			// Critical OutboundFilter failure → enqueue compensation
 			if e.compQueue != nil && pipe.CriticalOutboundFilters[f.Name()] {
 				e.enqueueCompensation(gctx, f.Name(), ferr)
 			}
 		}
 	}
 
-	// 6. 写响应
+	// 6. Write response
 	if gctx.Err == nil && gctx.RequestType == RequestTypeResponses && gctx.TTFT > 0 && gctx.GetTagValue("response_completed_sent") != "true" {
 		gctx.Err = fmt.Errorf("upstream stream closed prematurely without completion event")
 	}
 
 	if gctx.Err != nil {
-		// 如果首包已经发出，不能在流尾追加 JSON 错误，否则会导致客户端解析错 (malformed response)
+		// If first byte already sent, cannot append JSON error at stream tail (would cause malformed response)
 		if gctx.TTFT > 0 {
 			gctx.Logger(e.logger).Error("stream reading interrupted, connection silently closed", zap.Error(gctx.Err))
 			if gctx.RequestType == RequestTypeResponses {
@@ -400,7 +400,7 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 					_, _ = fmt.Fprintf(gctx.ResponseWriter, "%s", payload)
 				}
 			} else {
-				// 尝试写入最后一帧 SSE error 事件，把真实错误带给客户端
+				// Attempt to write a final SSE error frame to deliver the real error to the client
 				formatter := ErrorFormatterForRequestType(gctx.RequestType)
 				payload := formatter.FormatSSE(e.getErrorCode(gctx.Err), gctx.Err)
 				_, _ = fmt.Fprintf(gctx.ResponseWriter, "%s", payload)
@@ -415,7 +415,7 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 流式响应已由 ProviderInvoker 写入，非流式需要写 JSON
+	// Stream responses are written by ProviderInvoker; non-stream needs JSON write
 	if !gctx.IsStream {
 		if gctx.Response != nil {
 			e.writeJSON(w, gctx.Response)
@@ -428,7 +428,7 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// enqueueCompensation 构建补偿任务并入队（失败仅日志，不阻塞请求）
+// enqueueCompensation builds and enqueues a compensation task (failure is logged, does not block request).
 func (e *Engine) enqueueCompensation(gctx *GatewayContext, filterName string, filterErr error) {
 	task := &compensation.CompensationTask{
 		ID:         fmt.Sprintf("%s-%s-%d", filterName, gctx.Model, time.Now().UnixNano()),
@@ -453,7 +453,7 @@ func (e *Engine) enqueueCompensation(gctx *GatewayContext, filterName string, fi
 	}
 }
 
-// ===== InvokerDependencyResolver 接口实现 =====
+// ===== InvokerDependencyResolver interface implementation =====
 
 func (e *Engine) Discovery() Discovery                          { return e.discovery }
 func (e *Engine) StateStore() StateStore                        { return e.stateStore }

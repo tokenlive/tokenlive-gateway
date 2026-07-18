@@ -81,7 +81,7 @@ func NewLog(conf *viper.Viper) *Logger {
 			MessageKey:     "msg",
 			StacktraceKey:  "stacktrace",
 			LineEnding:     zapcore.DefaultLineEnding,
-			EncodeLevel:    zapcore.LowercaseLevelEncoder, // 无颜色
+			EncodeLevel:    zapcore.LowercaseLevelEncoder, // no color for files
 			EncodeTime:     timeEncoder,
 			EncodeDuration: zapcore.SecondsDurationEncoder,
 			EncodeCaller:   zapcore.FullCallerEncoder,
@@ -108,17 +108,17 @@ func NewLog(conf *viper.Viper) *Logger {
 	var cores []zapcore.Core
 	mode := conf.GetString("log.mode")
 
-	// 1. 控制台输出
+	// Console output.
 	if mode == "console" || mode == "both" || mode == "" {
 		cores = append(cores, zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), level))
 	}
 
-	// 2. 主日志文件输出
+	// Main log file.
 	if mode == "file" || mode == "both" || mode == "" {
 		cores = append(cores, zapcore.NewCore(fileEncoder, zapcore.AddSync(&hook), level))
 	}
 
-	// 3. 独立错误日志文件输出
+	// Separate error log file (warn+).
 	if (mode == "file" || mode == "both" || mode == "") && errHook != nil {
 		cores = append(cores, zapcore.NewCore(
 			fileEncoder,

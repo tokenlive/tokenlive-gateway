@@ -8,13 +8,13 @@ import (
 	"strings"
 )
 
-// writeError 写 JSON 错误响应
+// writeError writes a JSON error response.
 func (e *Engine) writeError(w http.ResponseWriter, code int, err error, gctx *GatewayContext) {
 	if code == 0 {
 		code = http.StatusInternalServerError
 	}
 
-	// 动态检测熔断降级返回配置
+	// Dynamic circuit breaker degrade response config
 	if gctx != nil && gctx.Policy != nil && len(gctx.Policy.CircuitBreakPolicies) > 0 {
 		degrade := gctx.Policy.CircuitBreakPolicies[0].DegradeConfig
 		if degrade != nil && degrade.ResponseBody != "" {
@@ -40,7 +40,7 @@ func (e *Engine) writeError(w http.ResponseWriter, code int, err error, gctx *Ga
 	_ = json.NewEncoder(w).Encode(formatter.Format(code, err))
 }
 
-// writeJSON 写 JSON 响应，强制写入 Content-Length 头确保传输完整
+// writeJSON writes a JSON response, forcing Content-Length header for transfer integrity.
 func (e *Engine) writeJSON(w http.ResponseWriter, v interface{}) {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -53,9 +53,9 @@ func (e *Engine) writeJSON(w http.ResponseWriter, v interface{}) {
 	_, _ = w.Write(data)
 }
 
-// getErrorCode 从 error 中提取 HTTP 状态码
+// getErrorCode extracts the HTTP status code from an error.
 func (e *Engine) getErrorCode(err error) int {
-	// 1. 检查是否实现了 Code() int 方法（接口断言）
+	// 1. Check if error implements Code() int method (interface assertion)
 	type codeGetter interface {
 		Code() int
 	}
@@ -66,7 +66,7 @@ func (e *Engine) getErrorCode(err error) int {
 		}
 	}
 
-	// 2. 通过 reflect 检查 error 是否有 Code int 字段（如 filters.HTTPError）
+	// 2. Use reflect to check if error has a Code int field (e.g. filters.HTTPError)
 	v := reflect.ValueOf(err)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
@@ -81,7 +81,7 @@ func (e *Engine) getErrorCode(err error) int {
 		}
 	}
 
-	// 3. 直接检查常见错误类型
+	// 3. Check common error types directly
 	errMsg := err.Error()
 	switch {
 	case strings.Contains(errMsg, "upstream error: status "):
@@ -103,7 +103,7 @@ func (e *Engine) getErrorCode(err error) int {
 	}
 }
 
-// getInboundFilter 从注册表获取 InboundFilter
+// getInboundFilter retrieves an InboundFilter from the registry.
 func (e *Engine) getInboundFilter(name string) (InboundFilter, bool) {
 	f, ok := e.filterRegistry[name]
 	if !ok {
@@ -113,7 +113,7 @@ func (e *Engine) getInboundFilter(name string) (InboundFilter, bool) {
 	return inf, ok
 }
 
-// getOutboundFilter 从注册表获取 OutboundFilter
+// getOutboundFilter retrieves an OutboundFilter from the registry.
 func (e *Engine) getOutboundFilter(name string) (OutboundFilter, bool) {
 	f, ok := e.filterRegistry[name]
 	if !ok {

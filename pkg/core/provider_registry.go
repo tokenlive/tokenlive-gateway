@@ -43,7 +43,7 @@ func RegisteredProviderTypes() []ProviderType {
 	return types
 }
 
-// RequestInvoker 专有请求调用处理器，负责特定厂商的特定接口类型
+// RequestInvoker handles a provider-specific request type.
 type RequestInvoker interface {
 	Invoke(gctx *GatewayContext, p Provider) error
 }
@@ -53,7 +53,7 @@ var (
 	invokerMu       sync.RWMutex
 )
 
-// RegisterRequestInvoker 注册一个请求调用器
+// RegisterRequestInvoker registers a request invoker.
 func RegisterRequestInvoker(providerType ProviderType, requestType RequestType, invoker RequestInvoker) {
 	invokerMu.Lock()
 	defer invokerMu.Unlock()
@@ -64,7 +64,7 @@ func RegisterRequestInvoker(providerType ProviderType, requestType RequestType, 
 	invokerRegistry[key] = invoker
 }
 
-// GetRequestInvoker 获取一个注册的请求调用器
+// GetRequestInvoker returns a registered request invoker.
 func GetRequestInvoker(providerType ProviderType, requestType RequestType) (RequestInvoker, bool) {
 	invokerMu.RLock()
 	defer invokerMu.RUnlock()
@@ -73,13 +73,13 @@ func GetRequestInvoker(providerType ProviderType, requestType RequestType) (Requ
 	return invoker, ok
 }
 
-// ProviderRegistry 管理实例化的 Provider 单例，确保根据提供者名称和 URL 复用
+// ProviderRegistry caches Provider instances by name+URL.
 type ProviderRegistry struct {
 	impls   map[string]Provider
 	implsMu sync.RWMutex
 }
 
-// NewProviderRegistry 创建 ProviderRegistry
+// NewProviderRegistry creates a ProviderRegistry.
 func NewProviderRegistry(initialImpls map[string]Provider) *ProviderRegistry {
 	if initialImpls == nil {
 		initialImpls = make(map[string]Provider)
@@ -89,7 +89,7 @@ func NewProviderRegistry(initialImpls map[string]Provider) *ProviderRegistry {
 	}
 }
 
-// GetOrCreateProvider 根据 Endpoint 获取或按需构建 Provider
+// GetOrCreateProvider returns or builds a Provider for the endpoint.
 func (pr *ProviderRegistry) GetOrCreateProvider(ep *Endpoint) Provider {
 	if ep == nil || ep.Provider == "" || ep.ProviderProtocol == "" {
 		return nil
@@ -105,7 +105,7 @@ func (pr *ProviderRegistry) GetOrCreateProvider(ep *Endpoint) Provider {
 
 	pr.implsMu.Lock()
 	defer pr.implsMu.Unlock()
-	// 双检锁
+	// Double-checked locking.
 	if cached, ok = pr.impls[providerCacheKey]; ok {
 		return cached
 	}
@@ -116,7 +116,7 @@ func (pr *ProviderRegistry) GetOrCreateProvider(ep *Endpoint) Provider {
 		return nil
 	}
 
-	// 动态实例化
+	// Instantiate on demand.
 	impl := factory(ep.Provider, ep.URL, ep.APIKey, []string{ep.Model})
 	pr.impls[providerCacheKey] = impl
 	return impl

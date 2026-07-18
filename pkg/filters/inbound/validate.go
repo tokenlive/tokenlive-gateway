@@ -8,17 +8,17 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
 
-// ModelValidator 校验 model 是否存在且合法（区分租户 ToB 与个人 ToC）
+// ModelValidator validates whether a model exists and is legal (distinguishes tenant ToB from individual ToC).
 type ModelValidator interface {
 	ValidateModel(ctx context.Context, model string, tenant string, userID string) (bool, error)
 }
 
-// ValidateFilter 请求校验过滤器，校验 model 是否存在且合法
+// ValidateFilter validates the request model.
 type ValidateFilter struct {
 	validator ModelValidator
 }
 
-// NewValidateFilter 创建 ValidateFilter
+// NewValidateFilter creates a ValidateFilter.
 func NewValidateFilter(validator ModelValidator) *ValidateFilter {
 	return &ValidateFilter{validator: validator}
 }
@@ -31,7 +31,7 @@ func (f *ValidateFilter) OnRequest(gctx *core.GatewayContext) error {
 		return &HTTPError{Code: http.StatusBadRequest, Message: "model is required"}
 	}
 
-	// toC 场景：tenant 为空时回退使用 userTenant（用户所属租户）
+	// toC: fall back to userTenant when tenant is empty
 	tenant := gctx.Tenant
 	if tenant == "" {
 		tenant = gctx.UserTenant
@@ -74,7 +74,7 @@ func (f *ValidateFilter) OnRequest(gctx *core.GatewayContext) error {
 func (f *ValidateFilter) validateAnthropicMessages(body []byte) error {
 	var req struct {
 		Messages  []json.RawMessage `json:"messages"`
-		MaxTokens *int              `json:"max_tokens"` // 指针区分缺省 vs 显式 0
+		MaxTokens *int              `json:"max_tokens"` // pointer to distinguish omitted vs explicit 0
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return &HTTPError{Code: http.StatusBadRequest, Message: "invalid JSON body"}

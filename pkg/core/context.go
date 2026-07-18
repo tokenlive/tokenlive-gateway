@@ -12,13 +12,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// ErrGatewayFirstByteTimeout 表示由于网关超时策略（连接超时+首字节超时）导致的主动断开错误
+// ErrGatewayFirstByteTimeout indicates an active disconnect caused by gateway timeout policy (connect timeout + first-byte timeout).
 var ErrGatewayFirstByteTimeout = errors.New("gateway policy timeout: first byte timeout (connect timeout + ttft timeout exceeded)")
 
-// GatewayContext 贯穿整个管线的请求上下文
-// 不实现 context.Context 接口（强类型字段优先）
+// GatewayContext is the request context threaded through the entire pipeline.
+// Does not implement context.Context (strong-typed fields preferred).
 type GatewayContext struct {
-	// ===== 请求常量（不可变） =====
+	// ===== Request constants (immutable) =====
 	Ctx            context.Context
 	Request        *http.Request
 	ResponseWriter http.ResponseWriter
@@ -27,7 +27,7 @@ type GatewayContext struct {
 	OriginalModel  string
 	IsStream       bool
 
-	// InboundFilter 填充
+	// Populated by InboundFilter
 	APIKey      string
 	APIKeyID    string
 	APIKeyHash  string
@@ -37,11 +37,11 @@ type GatewayContext struct {
 	UserTenant  string // User's tenant (for toC scenario, used for model filtering)
 	SessionID   string
 
-	// ===== 决策结果（Fallback 可重写 Model） =====
+	// ===== Decision results (Fallback may rewrite Model) =====
 	Model  string
 	Policy *policy.Policy
 
-	// ===== Per-attempt（ResetAttempt 清空） =====
+	// ===== Per-attempt (ResetAttempt clears these) =====
 	SelectedInvoker  Invoker
 	SelectedEndpoint *Endpoint
 	UpstreamConnect  time.Time
@@ -49,40 +49,40 @@ type GatewayContext struct {
 	UpstreamBody     []byte
 	UpstreamError    error
 	TTFT             time.Duration
-	FatalErr         error // 致命错误，一旦设置，将跳过重试和降级，直接终止并返回该错误
+	FatalErr         error // Fatal error; when set, skips retry and fallback, terminates immediately
 
-	// ===== 累积字段 =====
+	// ===== Cumulative fields =====
 	AttemptCount  int
 	FallbackChain []string
 	History       []AttemptRecord
 	StartTime     time.Time
 
-	// ===== 动态标签（InboundFilter 打标，全链路可读） =====
+	// ===== Dynamic tags (labeled by InboundFilter, readable across the pipeline) =====
 	Tags            map[string]string
-	InjectedHeaders map[string]string // 运行期染色注入的请求头（用于在 Invoker 阶段追加至上游请求）
+	InjectedHeaders map[string]string // request headers injected at runtime (appended to upstream request in Invoker phase)
 
-	// ===== 最终结果 =====
-	PolicyEventEmitted  bool `json:"-"` // ClusterInvoker 内已发出策略错误事件后置 true，OutboundFilter 据此抑制兜底事件
+	// ===== Final results =====
+	PolicyEventEmitted  bool `json:"-"` // Set true after ClusterInvoker emits a policy-error event; OutboundFilter suppresses fallback event accordingly
 	InputTokens         int
 	OutputTokens        int
-	CachedTokens        int // 缓存命中/读取 Token 数
-	CacheCreationTokens int // 缓存创建/写入 Token 数
-	TransmittedChars    int // 已下发至客户端的响应字符数（用于异常断连时估算 Token）
+	CachedTokens        int // tokens from cache hit/read
+	CacheCreationTokens int // tokens from cache creation/write
+	TransmittedChars    int // response chars sent to client (used to estimate tokens on abnormal disconnect)
 	Cost                float64
 	Response            interface{}
 	Err                 error
 	cancelTTFTimer      func()
 }
 
-// perAttemptTagKeys 每次重试需要清空的动态标签 key 集中维护于此。
-// 新增 per-attempt 标签时请同步登记，避免重试时旧值泄漏。
+// perAttemptTagKeys lists dynamic tag keys cleared on each retry.
+// Register new per-attempt tags here to prevent stale value leakage on retry.
 var perAttemptTagKeys = []string{
 	"response_id",
 	"response_model",
 	"response_completed_sent",
 }
 
-// ResetAttempt 清空 per-attempt 字段及 token 统计，防止重试时旧值残留
+// ResetAttempt clears per-attempt fields and token stats to prevent stale values on retry.
 func (c *GatewayContext) ResetAttempt() {
 	c.SelectedInvoker = nil
 	c.SelectedEndpoint = nil
@@ -90,9 +90,9 @@ func (c *GatewayContext) ResetAttempt() {
 	c.UpstreamResponse = nil
 	c.UpstreamBody = nil
 	c.UpstreamError = nil
-	// TTFT 不重置 —— 一旦置位表示已发首字节
+	// TTFT is not reset — once set, the first byte has been sent
 
-	// 清空本次尝试的 token 统计，避免重试时旧值污染最终结果
+	// Clear token stats for this attempt to avoid polluting final results
 	c.InputTokens = 0
 	c.OutputTokens = 0
 	c.CachedTokens = 0
@@ -102,7 +102,7 @@ func (c *GatewayContext) ResetAttempt() {
 	c.Response = nil
 	c.Err = nil
 
-	// 清空单次尝试相关的动态标签
+	// Clear dynamic tags related to this attempt
 	if c.Tags != nil {
 		for _, k := range perAttemptTagKeys {
 			delete(c.Tags, k)
@@ -110,7 +110,7 @@ func (c *GatewayContext) ResetAttempt() {
 	}
 }
 
-// RecordAttempt 推一条 attempt 记录
+// RecordAttempt appends an attempt record to history.
 func (c *GatewayContext) RecordAttempt(success bool) {
 	rec := AttemptRecord{
 		Model:      c.Model,
@@ -147,12 +147,12 @@ func getErrorString(err error) string {
 	return ""
 }
 
-// ===== 池化 =====
+// ===== Pooling =====
 var ctxPool = sync.Pool{
 	New: func() any { return &GatewayContext{} },
 }
 
-// AcquireContext 从池中获取并初始化 GatewayContext
+// AcquireContext gets and initializes a GatewayContext from the pool.
 func AcquireContext(w http.ResponseWriter, r *http.Request) *GatewayContext {
 	gctx := ctxPool.Get().(*GatewayContext)
 	gctx.Ctx = r.Context()
@@ -164,13 +164,13 @@ func AcquireContext(w http.ResponseWriter, r *http.Request) *GatewayContext {
 	return gctx
 }
 
-// ReleaseContext 归还 GatewayContext 到池
+// ReleaseContext returns a GatewayContext to the pool.
 func ReleaseContext(gctx *GatewayContext) {
 	*gctx = GatewayContext{}
 	ctxPool.Put(gctx)
 }
 
-// GetHeader 获取指定 HTTP Header 键的所有属性（支持多值匹配）
+// GetHeader returns all values for the given HTTP header key (supports multi-value).
 func (c *GatewayContext) GetHeader(key string) []string {
 	if c.Request == nil {
 		return nil
@@ -185,7 +185,7 @@ func (c *GatewayContext) GetHeader(key string) []string {
 	return actual
 }
 
-// GetQuery 获取指定 URL Query 参数的所有属性（支持多值匹配）
+// GetQuery returns all values for the given URL query parameter (supports multi-value).
 func (c *GatewayContext) GetQuery(key string) []string {
 	if c.Request == nil || c.Request.URL == nil {
 		return nil
@@ -193,7 +193,7 @@ func (c *GatewayContext) GetQuery(key string) []string {
 	return c.Request.URL.Query()[key]
 }
 
-// GetCookie 获取指定 Cookie 键的值
+// GetCookie returns the value of the given cookie key.
 func (c *GatewayContext) GetCookie(key string) string {
 	if c.Request == nil {
 		return ""
@@ -205,7 +205,7 @@ func (c *GatewayContext) GetCookie(key string) string {
 	return cookie.Value
 }
 
-// GetSystemValue 提取系统内置上下文变量（如 "user", "model"）
+// GetSystemValue extracts built-in context variables (e.g. "user", "model").
 func (c *GatewayContext) GetSystemValue(key string) string {
 	switch key {
 	case "model":
@@ -216,7 +216,7 @@ func (c *GatewayContext) GetSystemValue(key string) string {
 	return ""
 }
 
-// GetTagValue 获取动态标签值
+// GetTagValue returns the value of a dynamic tag.
 func (c *GatewayContext) GetTagValue(key string) string {
 	if c.Tags == nil {
 		return ""
@@ -224,7 +224,7 @@ func (c *GatewayContext) GetTagValue(key string) string {
 	return c.Tags[key]
 }
 
-// Logger 返回带 Trace ID 的 logger。如果 context 中有 "zapLogger"，则使用 context 中的 logger，否则返回传入的默认 logger。
+// Logger returns a logger with Trace ID. Uses the logger from context if "zapLogger" is present, otherwise returns the provided default.
 func (c *GatewayContext) Logger(defaultLogger *zap.Logger) *zap.Logger {
 	if c.Ctx != nil {
 		if zl := c.Ctx.Value("zapLogger"); zl != nil {
@@ -236,12 +236,12 @@ func (c *GatewayContext) Logger(defaultLogger *zap.Logger) *zap.Logger {
 	return defaultLogger
 }
 
-// RegisterTTFTimer 注册单次尝试的首字超时定时器取消闭包。
+// RegisterTTFTimer registers the cancel closure for the per-attempt first-byte timeout timer.
 func (c *GatewayContext) RegisterTTFTimer(cancel func()) {
 	c.cancelTTFTimer = cancel
 }
 
-// TriggerFirstByte 触发首字节返回事件，记录首包耗时 TTFT 并停止首包定时器。
+// TriggerFirstByte records TTFT and stops the first-byte timer on the first byte event.
 func (c *GatewayContext) TriggerFirstByte() {
 	if c.TTFT == 0 {
 		c.TTFT = time.Since(c.StartTime)

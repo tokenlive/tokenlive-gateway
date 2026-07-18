@@ -5,7 +5,7 @@ import (
 	"strconv"
 )
 
-// CircuitBreakPolicy 熔断隔离策略
+// CircuitBreakPolicy configures circuit breaking / isolation.
 type CircuitBreakPolicy struct {
 	ID                          string             `yaml:"id" json:"id"`
 	Name                        string             `yaml:"name" json:"name"`
@@ -19,8 +19,8 @@ type CircuitBreakPolicy struct {
 	MessagePolicy               *ErrorParserPolicy `yaml:"message_policy" json:"message_policy"`
 	FailureRateThreshold        float64            `yaml:"failure_rate_threshold" json:"failure_rate_threshold"`
 	SlowCallRateThreshold       float64            `yaml:"slow_call_rate_threshold" json:"slow_call_rate_threshold"`
-	SlowCallDurationThreshold   int                `yaml:"slow_call_duration_threshold" json:"slow_call_duration_threshold"` // 毫秒
-	WaitDurationInOpenState     int                `yaml:"wait_duration_in_open_state" json:"wait_duration_in_open_state"`   // 毫秒
+	SlowCallDurationThreshold   int                `yaml:"slow_call_duration_threshold" json:"slow_call_duration_threshold"` // ms
+	WaitDurationInOpenState     int                `yaml:"wait_duration_in_open_state" json:"wait_duration_in_open_state"`   // ms
 	AllowedCallsInHalfOpenState int                `yaml:"allowed_calls_in_half_open_state" json:"allowed_calls_in_half_open_state"`
 	ForceOpen                   int                `yaml:"force_open" json:"force_open"`
 	OutlierMaxPercent           int                `yaml:"outlier_max_percent" json:"outlier_max_percent"`
@@ -29,14 +29,14 @@ type CircuitBreakPolicy struct {
 	SlowCallMetric              string             `yaml:"slow_call_metric" json:"slow_call_metric"` // e.g. "TTFT"
 }
 
-// DegradeConfig 熔断降级返回配置
+// DegradeConfig is the response returned when the circuit is open.
 type DegradeConfig struct {
 	ResponseCode int               `yaml:"response_code" json:"response_code"`
 	Attributes   map[string]string `yaml:"attributes" json:"attributes"`
 	ResponseBody string            `yaml:"response_body" json:"response_body"`
 }
 
-// UnmarshalJSON 兼容 Redis/Admin 侧历史小驼峰熔断策略字段。
+// UnmarshalJSON accepts camelCase fields from Redis/Admin.
 func (c *CircuitBreakPolicy) UnmarshalJSON(data []byte) error {
 	type Alias CircuitBreakPolicy
 	aux := &struct {
@@ -125,7 +125,7 @@ func (c *CircuitBreakPolicy) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalJSON 兼容 responseCode/responseBody 小驼峰字段。
+// UnmarshalJSON accepts camelCase responseCode/responseBody.
 func (d *DegradeConfig) UnmarshalJSON(data []byte) error {
 	type Alias DegradeConfig
 	aux := &struct {
@@ -177,14 +177,14 @@ func decodeForceOpen(raw json.RawMessage) int {
 	return 0
 }
 
-// GetErrorCodes 获取熔断策略的错误码
+// GetErrorCodes implements ErrorPolicy.
 func (c *CircuitBreakPolicy) GetErrorCodes() []string { return c.ErrorCodes }
 
-// GetErrorMessages 获取熔断策略的错误消息
+// GetErrorMessages implements ErrorPolicy.
 func (c *CircuitBreakPolicy) GetErrorMessages() []string { return c.ErrorMessages }
 
-// GetCodePolicy 获取熔断策略的错误码解析策略
+// GetCodePolicy implements ErrorPolicy.
 func (c *CircuitBreakPolicy) GetCodePolicy() *ErrorParserPolicy { return c.CodePolicy }
 
-// GetMessagePolicy 获取熔断策略的错误消息解析策略
+// GetMessagePolicy implements ErrorPolicy.
 func (c *CircuitBreakPolicy) GetMessagePolicy() *ErrorParserPolicy { return c.MessagePolicy }

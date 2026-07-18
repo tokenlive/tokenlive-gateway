@@ -2,14 +2,35 @@ package llm
 
 import (
 	"encoding/json"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
 
-// TokenExtractor 从 SSE 事件数据中提取 input、output、cached 和 cacheCreation token 数量。
-// 返回 (0, 0, 0, 0) 表示该事件不包含 token 信息。
+// ApplyUsage writes extracted token counts into gctx, guarding each field with >0 so a
+// zero-bearing frame never overwrites a real value from an earlier one. Shared by the
+// streaming path (SSEInterceptWriter) and the non-streaming handlers so token write-back
+// semantics live in one place.
+func ApplyUsage(gctx *core.GatewayContext, in, out, cached, cacheCreated int) {
+	if in > 0 {
+		gctx.InputTokens = in
+	}
+	if out > 0 {
+		gctx.OutputTokens = out
+	}
+	if cached > 0 {
+		gctx.CachedTokens = cached
+	}
+	if cacheCreated > 0 {
+		gctx.CacheCreationTokens = cacheCreated
+	}
+}
+
+// TokenExtractor extracts input, output, cached, and cacheCreation token counts from SSE event data.
+// Returns (0, 0, 0, 0) when the event carries no token information.
 type TokenExtractor func(data string) (inputTokens, outputTokens, cachedTokens, cacheCreationTokens int)
 
-// OpenAITokenExtractor 从 OpenAI usage JSON 中提取 token 数量，包括缓存命中 token。
-// 格式: {"usage":{"prompt_tokens":N,"completion_tokens":N,"prompt_tokens_details":{"cached_tokens":N}}}
+// OpenAITokenExtractor extracts token counts from OpenAI usage JSON, including cached tokens.
+// Format: {"usage":{"prompt_tokens":N,"completion_tokens":N,"prompt_tokens_details":{"cached_tokens":N}}}
 func OpenAITokenExtractor(data string) (int, int, int, int) {
 	var payload struct {
 		Usage *struct {
@@ -30,14 +51,16 @@ func OpenAITokenExtractor(data string) (int, int, int, int) {
 	return payload.Usage.PromptTokens, payload.Usage.CompletionTokens, cached, 0
 }
 
-// AnthropicTokenExtractor 从 Anthropic SSE 事件数据中提取 token 数量，包括缓存读取与写入。
-// 处理 message_start (input_tokens) 和 message_delta (output_tokens)。
+// AnthropicTokenExtractor extracts token counts from Anthropic usage data, including cache read and cache creation.
+// Accepts either a streaming SSE event (message_start / message_delta) or a whole non-streaming
+// response body (no "type" field, top-level "usage"), so streaming and non-streaming paths share one extractor.
 //
-// 重要语义：与 OpenAI 不同，Anthropic 的 input_tokens 仅表示「未命中缓存的输入」，
-// cache_read_input_tokens 和 cache_creation_input_tokens 是额外单独计量的部分。
-// 为了让下游计费公式（nonCached = InputTokens - Cached - CacheCreation）对所有 provider 通用，
-// 这里将返回的 inputTokens 统一为「总输入」= input_tokens + cache_read + cache_creation，
-// 使其与 OpenAI 的 prompt_tokens（已含 cached_tokens）语义对齐。
+// Key semantic difference from OpenAI: Anthropic's input_tokens represents only "uncached input",
+// while cache_read_input_tokens and cache_creation_input_tokens are metered separately.
+// To make the downstream billing formula (nonCached = InputTokens - Cached - CacheCreation)
+// universally applicable across all providers, this function normalizes the returned
+// inputTokens to "total input" = input_tokens + cache_read + cache_creation,
+// aligning it with OpenAI's prompt_tokens (which already includes cached_tokens).
 func AnthropicTokenExtractor(data string) (int, int, int, int) {
 	var event struct {
 		Type    string `json:"type"`
@@ -67,7 +90,7 @@ func AnthropicTokenExtractor(data string) (int, int, int, int) {
 			u := event.Message.Usage
 			cached = u.CacheReadInputTokens
 			cacheCreated = u.CacheCreationInputTokens
-			// 归一化为总输入（含缓存读取与缓存写入），对齐 OpenAI 语义
+			// Normalize to total input (including cache read + cache creation), aligning with OpenAI semantics
 			in = u.InputTokens + cached + cacheCreated
 		}
 	case "message_delta":
@@ -76,19 +99,29 @@ func AnthropicTokenExtractor(data string) (int, int, int, int) {
 			out = u.OutputTokens
 			cached = u.CacheReadInputTokens
 			cacheCreated = u.CacheCreationInputTokens
-			// 仅当本帧确实携带了输入信息时才输出总输入；
-			// message_delta 通常只更新 output，input 相关字段为 0，此时返回 0 避免覆盖 message_start 的值
+			// Only report total input when this frame actually carries input info;
+			// message_delta typically only updates output, so input fields are 0.
+			// Returning 0 avoids overwriting the value from message_start.
 			if u.InputTokens > 0 || cached > 0 || cacheCreated > 0 {
 				in = u.InputTokens + cached + cacheCreated
 			}
+		}
+	default:
+		// Whole non-streaming response body: no "type" field, top-level "usage".
+		if event.Usage != nil {
+			u := event.Usage
+			out = u.OutputTokens
+			cached = u.CacheReadInputTokens
+			cacheCreated = u.CacheCreationInputTokens
+			in = u.InputTokens + cached + cacheCreated
 		}
 	}
 
 	return in, out, cached, cacheCreated
 }
 
-// GeminiTokenExtractor 从 Gemini generateContent/streamGenerateContent 响应中提取 token。
-// 格式: {"usageMetadata":{"promptTokenCount":N,"candidatesTokenCount":N,"totalTokenCount":N}}
+// GeminiTokenExtractor extracts tokens from Gemini generateContent/streamGenerateContent responses.
+// Format: {"usageMetadata":{"promptTokenCount":N,"candidatesTokenCount":N,"totalTokenCount":N}}
 func GeminiTokenExtractor(data string) (int, int, int, int) {
 	var payload struct {
 		UsageMetadata *struct {
@@ -102,7 +135,8 @@ func GeminiTokenExtractor(data string) (int, int, int, int) {
 	return payload.UsageMetadata.PromptTokenCount, payload.UsageMetadata.CandidatesTokenCount, 0, 0
 }
 
-// ExtractContentLength 提取增量响应文本字符长度（用于流式异常中断时进行 token 数估算）
+// ExtractContentLength extracts the character length of incremental response text
+// (used for token estimation when a streaming response is interrupted).
 func ExtractContentLength(protocol string, data string) int {
 	if data == "" || data == "[DONE]" {
 		return 0
@@ -136,7 +170,7 @@ func ExtractContentLength(protocol string, data string) int {
 			}
 			return total
 		}
-	default: // 默认按 OpenAI 格式解析
+	default: // Parse using OpenAI format by default
 		var payload struct {
 			Choices []struct {
 				Delta struct {

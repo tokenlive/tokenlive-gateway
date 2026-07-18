@@ -7,39 +7,39 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// MetricsRegistry 指标注册中心，集中管理所有业务指标的定义、视图配置
+// MetricsRegistry holds business metric definitions and views.
 type MetricsRegistry struct {
-	// 业务指标
+	// Business metrics
 	RequestDuration metric.Float64Histogram
 	RequestTotal    metric.Int64Counter
 	TokensTotal     metric.Int64Counter
 	CostTotal       metric.Float64Counter
 	RequestTTFT     metric.Float64Histogram
 
-	// 熔断器指标
+	// Circuit breaker metrics
 	CircuitBreakerState metric.Int64Gauge
 }
 
-// LabelContract 指标标签契约，定义所有指标的标签维度
+// LabelContract defines metric label dimensions.
 type LabelContract struct {
 	Model    string // gctx.Model
-	Provider string // gctx.SelectedEndpoint.Provider (空字符串表示未选中)
+	Provider string // gctx.SelectedEndpoint.Provider (empty if none)
 	Status   string // "success" | "error"
 	Stream   string // "true" | "false"
-	Tenant   string // 租户染色结果（"others" 表示未开启白名单）
-	Type     string // Token 类型专用: "input" | "output" | "cached" | "cache_creation"
+	Tenant   string // Tenant tag ("others" if whitelist off)
+	Type     string // Token type: "input" | "output" | "cached" | "cache_creation"
 
-	// 内部缓存，避免重复转换为 OTel 属性
+	// Cached OTel attributes
 	attrs []attribute.KeyValue
 }
 
-// ToAttributes 转换为 OTel 属性切片，结果会被缓存
+// ToAttributes returns cached OTel attributes.
 func (lc *LabelContract) ToAttributes() []attribute.KeyValue {
 	if lc.attrs != nil {
 		return lc.attrs
 	}
 
-	// 基础标签（所有指标通用）
+	// Base labels (all metrics)
 	lc.attrs = []attribute.KeyValue{
 		attribute.String("model", lc.Model),
 		attribute.String("provider", lc.Provider),
@@ -48,7 +48,7 @@ func (lc *LabelContract) ToAttributes() []attribute.KeyValue {
 		attribute.String("tenant", lc.Tenant),
 	}
 
-	// Token 类型标签（仅 Token 指标使用）
+	// Token type label (token metrics only)
 	if lc.Type != "" {
 		lc.attrs = append(lc.attrs, attribute.String("type", lc.Type))
 	}
@@ -56,7 +56,7 @@ func (lc *LabelContract) ToAttributes() []attribute.KeyValue {
 	return lc.attrs
 }
 
-// ToAttributesWithoutType 返回不含 type 标签的属性切片（用于非 Token 指标）
+// ToAttributesWithoutType omits the type label (non-token metrics).
 func (lc *LabelContract) ToAttributesWithoutType() []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("model", lc.Model),
@@ -67,11 +67,11 @@ func (lc *LabelContract) ToAttributesWithoutType() []attribute.KeyValue {
 	}
 }
 
-// NewMetricsRegistry 创建指标注册中心，自动配置视图和注册所有指标
+// NewMetricsRegistry creates the registry and registers all metrics.
 func NewMetricsRegistry(provider metric.MeterProvider) (*MetricsRegistry, error) {
 	meter := provider.Meter("github.com/tokenlive/tokenlive-gateway")
 
-	// 1. 注册请求延迟直方图
+	// 1. Request latency histogram
 	requestDuration, err := meter.Float64Histogram(
 		"gateway_request_duration_seconds",
 		metric.WithDescription("Request duration in seconds"),
@@ -81,7 +81,7 @@ func NewMetricsRegistry(provider metric.MeterProvider) (*MetricsRegistry, error)
 		return nil, fmt.Errorf("failed to register gateway_request_duration_seconds: %w", err)
 	}
 
-	// 2. 注册请求计数器
+	// 2. Request counter
 	requestTotal, err := meter.Int64Counter(
 		"gateway_request_total",
 		metric.WithDescription("Total requests"),
@@ -90,7 +90,7 @@ func NewMetricsRegistry(provider metric.MeterProvider) (*MetricsRegistry, error)
 		return nil, fmt.Errorf("failed to register gateway_request_total: %w", err)
 	}
 
-	// 3. 注册 Token 计数器
+	// 3. Token counter
 	tokensTotal, err := meter.Int64Counter(
 		"gateway_tokens_total",
 		metric.WithDescription("Total tokens"),
@@ -99,7 +99,7 @@ func NewMetricsRegistry(provider metric.MeterProvider) (*MetricsRegistry, error)
 		return nil, fmt.Errorf("failed to register gateway_tokens_total: %w", err)
 	}
 
-	// 4. 注册费用计数器
+	// 4. Cost counter
 	costTotal, err := meter.Float64Counter(
 		"gateway_cost_total",
 		metric.WithDescription("Total cost in USD"),
@@ -108,7 +108,7 @@ func NewMetricsRegistry(provider metric.MeterProvider) (*MetricsRegistry, error)
 		return nil, fmt.Errorf("failed to register gateway_cost_total: %w", err)
 	}
 
-	// 5. 注册 TTFT 直方图
+	// 5. TTFT histogram
 	requestTTFT, err := meter.Float64Histogram(
 		"gateway_ttft_seconds",
 		metric.WithDescription("Time to first token in seconds for stream requests"),
@@ -118,7 +118,7 @@ func NewMetricsRegistry(provider metric.MeterProvider) (*MetricsRegistry, error)
 		return nil, fmt.Errorf("failed to register gateway_ttft_seconds: %w", err)
 	}
 
-	// 6. 注册熔断器状态 Gauge
+	// 6. Circuit breaker state gauge
 	circuitBreakerState, err := meter.Int64Gauge(
 		"gateway_circuit_breaker_state",
 		metric.WithDescription("Circuit breaker state (0=Closed, 1=Open, 2=HalfOpen)"),

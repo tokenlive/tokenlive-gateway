@@ -4,13 +4,13 @@ import (
 	"context"
 )
 
-// AssemblingDiscovery 装饰器，自动为底层的 Endpoint 装配运行时 Provider 实例
+// AssemblingDiscovery is a decorator that automatically assembles runtime Provider instances onto endpoints.
 type AssemblingDiscovery struct {
 	inner    Discovery
 	registry *ProviderRegistry
 }
 
-// NewAssemblingDiscovery 创建 AssemblingDiscovery
+// NewAssemblingDiscovery creates an AssemblingDiscovery.
 func NewAssemblingDiscovery(inner Discovery, registry *ProviderRegistry) *AssemblingDiscovery {
 	return &AssemblingDiscovery{
 		inner:    inner,
@@ -18,7 +18,7 @@ func NewAssemblingDiscovery(inner Discovery, registry *ProviderRegistry) *Assemb
 	}
 }
 
-// List 获取端点列表并装配 ProviderImpl
+// List retrieves endpoints and assembles ProviderImpl.
 func (ad *AssemblingDiscovery) List(ctx context.Context, model string) ([]*Endpoint, error) {
 	endpoints, err := ad.inner.List(ctx, model)
 	if err != nil {
@@ -33,7 +33,7 @@ func (ad *AssemblingDiscovery) List(ctx context.Context, model string) ([]*Endpo
 	return endpoints, nil
 }
 
-// Watch 监听端点列表变化并装配 ProviderImpl
+// Watch watches endpoint list changes and assembles ProviderImpl.
 func (ad *AssemblingDiscovery) Watch(ctx context.Context, model string) (<-chan []*Endpoint, error) {
 	ch, err := ad.inner.Watch(ctx, model)
 	if err != nil {
@@ -68,7 +68,7 @@ func (ad *AssemblingDiscovery) Watch(ctx context.Context, model string) (<-chan 
 	return out, nil
 }
 
-// Close 关闭服务发现
+// Close closes the discovery service.
 func (ad *AssemblingDiscovery) Close() error {
 	return ad.inner.Close()
 }

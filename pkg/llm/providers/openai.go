@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,10 +8,10 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
-	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
+	"github.com/tokenlive/tokenlive-gateway/pkg/llm/upstream"
 
 	"go.uber.org/zap"
 )
@@ -27,9 +26,7 @@ func init() {
 	core.RegisterRequestInvoker(core.ProviderOpenAI, core.RequestTypeMessages, &openaiMessagesInvoker{})
 }
 
-const defaultTimeout = 60 * time.Second
-
-// OpenAIProvider 实现 core.Provider 接口，适配 OpenAI 兼容 API。
+// OpenAIProvider implements core.Provider, adapting OpenAI-compatible APIs.
 type OpenAIProvider struct {
 	name    string
 	baseURL string
@@ -38,7 +35,7 @@ type OpenAIProvider struct {
 	models  []string
 }
 
-// NewOpenAIProvider 创建 OpenAI provider 实例。
+// NewOpenAIProvider creates an OpenAI provider instance.
 func NewOpenAIProvider(name, baseURL, apiKey string, models []string) *OpenAIProvider {
 	return &OpenAIProvider{
 		name:    name,
@@ -53,7 +50,7 @@ func (p *OpenAIProvider) Name() string            { return p.name }
 func (p *OpenAIProvider) Type() core.ProviderType { return core.ProviderOpenAI }
 func (p *OpenAIProvider) ValidateConfig() error   { return nil }
 
-// RequestTypes 返回该 provider 支持的请求类型列表。
+// RequestTypes returns the request types supported by this provider.
 func (p *OpenAIProvider) RequestTypes() []core.RequestType {
 	return []core.RequestType{
 		core.RequestTypeChatCompletion,
@@ -63,7 +60,7 @@ func (p *OpenAIProvider) RequestTypes() []core.RequestType {
 	}
 }
 
-// HealthCheck 通过 GET /models 探测上游服务是否可达。
+// HealthCheck probes upstream reachability via GET /models.
 func (p *OpenAIProvider) HealthCheck(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models", nil)
 	if err != nil {
@@ -83,7 +80,7 @@ func (p *OpenAIProvider) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// Invoke 根据请求类型分发到对应的 RequestInvoker 处理器。
+// Invoke dispatches to the corresponding RequestInvoker handler based on request type.
 func (p *OpenAIProvider) Invoke(gctx *core.GatewayContext) error {
 	invoker, ok := core.GetRequestInvoker(p.Type(), gctx.RequestType)
 	if !ok {
@@ -92,49 +89,14 @@ func (p *OpenAIProvider) Invoke(gctx *core.GatewayContext) error {
 	return invoker.Invoke(gctx, p)
 }
 
-// doRequest 统一处理 POST 请求（chat completion、embedding 等）。
+// doRequest handles POST requests uniformly (chat completion, embedding, etc.).
+// Transport details are handled by upstream.Call; this function only prepares auth headers / protocol-specific body
+// and selects Consume or Handoff.
 func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string) error {
-	// 动态解析超时，如果没有配置具体首字超时，则使用最大超时时间进行等待
-	totalTimeout := 60000
-	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy.TotalTimeout > 0 {
-		totalTimeout = gctx.Policy.InvocationPolicy.RetryPolicy.TotalTimeout
-	} else if gctx.IsStream {
-		totalTimeout = 600000
-	}
-
-	firstByteTimeout := totalTimeout
-	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
-		p := gctx.Policy.InvocationPolicy.RetryPolicy
-		if p.ConnectTimeout > 0 || p.TtftTimeout > 0 {
-			firstByteTimeout = p.ConnectTimeout + p.TtftTimeout
-		}
-	}
-
-	singleCtx, singleCancel := context.WithCancelCause(gctx.Ctx)
-	shouldCancel := true
-	defer func() {
-		if shouldCancel {
-			singleCancel(nil)
-		}
-	}()
-
-	// 注册首包前定时器
-	timer := time.AfterFunc(time.Duration(firstByteTimeout)*time.Millisecond, func() {
-		if gctx.TTFT == 0 {
-			singleCancel(core.ErrGatewayFirstByteTimeout)
-		}
-	})
-	defer timer.Stop()
-
-	gctx.RegisterTTFTimer(func() {
-		timer.Stop()
-	})
-
-	// 流式请求注入 stream_options 以确保上游在最后一个 SSE chunk 返回 usage 统计
 	body := gctx.RawBody
 	if gctx.IsStream {
-		// 为了防止不支持该特性的第三方 OpenAI 兼容端点（如火山引擎等）报错 InvalidParameter，
-		// 我们只有在明确请求官方 OpenAI 或是本地测试时才注入 stream_options
+		// To prevent third-party OpenAI-compatible endpoints (e.g. Volcano Engine) from erroring with InvalidParameter,
+		// only inject stream_options when explicitly targeting official OpenAI or local testing.
 		isOfficialOrTest := strings.Contains(p.baseURL, "api.openai.com") ||
 			strings.Contains(p.baseURL, "127.0.0.1") ||
 			strings.Contains(p.baseURL, "localhost")
@@ -143,103 +105,43 @@ func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string) e
 		}
 	}
 
-	req, err := http.NewRequestWithContext(singleCtx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	h := make(http.Header)
+	h.Set("Content-Type", "application/json")
+	h.Set("Authorization", "Bearer "+p.apiKey)
 
-	var ua string
-	if gctx.Request != nil {
-		ua = gctx.Request.Header.Get("User-Agent")
-	}
-	if ua == "" {
-		ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-	}
-	req.Header.Set("User-Agent", ua)
-
-	if gctx.SelectedEndpoint != nil && len(gctx.SelectedEndpoint.Headers) > 0 {
-		for k, v := range gctx.SelectedEndpoint.Headers {
-			req.Header.Set(k, v)
-		}
-	}
-
-	if len(gctx.InjectedHeaders) > 0 {
-		for k, v := range gctx.InjectedHeaders {
-			req.Header.Set(k, v)
-		}
-	}
-
-	var endpointID string
-	if gctx.SelectedEndpoint != nil {
-		endpointID = gctx.SelectedEndpoint.ID
-	}
-	gctx.Logger(zap.L()).Debug("sending request to upstream with headers",
-		zap.String("endpoint_id", endpointID),
-		zap.String("url", req.URL.String()),
-		zap.Any("headers", req.Header),
-	)
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		if context.Cause(singleCtx) == core.ErrGatewayFirstByteTimeout {
-			return fmt.Errorf("upstream request timeout (gateway policy active disconnect, first byte timeout): %w", err)
-		}
-		return fmt.Errorf("upstream request: %w", err)
-	}
-
-	shouldCloseBody := true
-	defer func() {
-		if shouldCloseBody {
-			resp.Body.Close()
-		}
-	}()
-
-	gctx.UpstreamResponse = resp
-
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		gctx.UpstreamBody = respBody
-		gctx.Logger(zap.L()).Warn("upstream error details",
-			zap.String("endpoint_id", endpointID),
-			zap.Int("status", resp.StatusCode),
-			zap.String("req_body", string(body)),
-			zap.String("resp_body", string(respBody)),
-		)
-		return fmt.Errorf("upstream error: status %d, body: %s", resp.StatusCode, string(respBody))
-	}
-
+	// For Messages translation / Responses downgrade to chat, body is handed off to the translation invoker
+	streamMode := upstream.Consume
 	if gctx.IsStream {
-		idleTimeout := 0
-		if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.RetryPolicy != nil {
-			idleTimeout = gctx.Policy.InvocationPolicy.RetryPolicy.IdleTimeout
+		if gctx.RequestType == core.RequestTypeMessages ||
+			(gctx.RequestType == core.RequestTypeResponses && strings.HasSuffix(endpoint, "/chat/completions")) {
+			streamMode = upstream.Handoff
 		}
-		if idleTimeout > 0 {
-			resp.Body = llm.WrapIdleTimeoutReader(resp.Body, time.Duration(idleTimeout)*time.Millisecond, func() { singleCancel(nil) })
-		}
+	}
 
-		contentType := resp.Header.Get("Content-Type")
-		if !strings.Contains(contentType, "text/event-stream") {
-			body, _ := io.ReadAll(resp.Body)
-			gctx.UpstreamBody = body
-			return fmt.Errorf("upstream stream request returned non-stream content-type: %s, body: %s", contentType, string(body))
-		}
-		if gctx.RequestType == core.RequestTypeMessages || (gctx.RequestType == core.RequestTypeResponses && strings.HasSuffix(endpoint, "/chat/completions")) {
-			shouldCloseBody = false
-			shouldCancel = false
-			resp.Body = &cancelReadCloser{
-				ReadCloser: resp.Body,
-				cancel:     func() { singleCancel(nil) },
-			}
-			return nil
-		}
+	resp, err := upstream.Call(gctx, upstream.Request{
+		Client: p.client,
+		URL:    endpoint,
+		Body:   body,
+		Header: h,
+		Stream: streamMode,
+	})
+	if err != nil {
+		return err
+	}
+
+	if streamMode == upstream.Handoff {
+		// Translation layer handles Close; body is already attached to gctx.UpstreamResponse
+		return nil
+	}
+
+	defer resp.Body.Close()
+	if gctx.IsStream {
 		return handleOpenAIStream(gctx, resp)
 	}
 	return handleOpenAINonStream(gctx, resp)
 }
 
-// handleOpenAIStream 处理 SSE 流式响应，通过 SSEInterceptWriter 拦截字节流并提取 token 统计。
+// handleOpenAIStream handles SSE streaming responses, intercepting the byte stream via SSEInterceptWriter to extract token stats.
 func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -259,7 +161,7 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			// 1. 嗅探所有帧中的 SSE 错误事件
+			// 1. Sniff SSE error events from all frames
 			events := parser.Feed(buf[:n])
 			for _, ev := range events {
 				if gctx.RequestType == core.RequestTypeResponses && gctx.GetTagValue("response_id") == "" {
@@ -357,7 +259,7 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 			}
 
 			if !headersSent {
-				// 2. 嗅探第一帧原始数据是不是普通 JSON 错误
+				// 2. Sniff first frame raw data for plain JSON error
 				trimmed := strings.TrimSpace(string(buf[:n]))
 				if strings.HasPrefix(trimmed, "{") {
 					var errJSON struct {
@@ -381,7 +283,7 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 					return fmt.Errorf("upstream stream returned JSON error body: %s", trimmed)
 				}
 
-				// 正常数据，发送头部并开始写入
+				// Normal data — send headers and start writing
 				writer.Header().Set("Content-Type", "text/event-stream")
 				writer.Header().Set("Cache-Control", "no-cache")
 				writer.Header().Set("Connection", "keep-alive")
@@ -415,7 +317,7 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 	return nil
 }
 
-// handleOpenAINonStream 处理非流式响应，解析 JSON 并提取 usage 信息。
+// handleOpenAINonStream handles non-streaming responses, parsing JSON and extracting usage info.
 func handleOpenAINonStream(gctx *core.GatewayContext, resp *http.Response) error {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -430,24 +332,13 @@ func handleOpenAINonStream(gctx *core.GatewayContext, resp *http.Response) error
 	}
 	gctx.Response = result
 
-	if usage, ok := result["usage"].(map[string]interface{}); ok {
-		if pt, ok := usage["prompt_tokens"].(float64); ok {
-			gctx.InputTokens = int(pt)
-		}
-		if ct, ok := usage["completion_tokens"].(float64); ok {
-			gctx.OutputTokens = int(ct)
-		}
-		if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
-			if cached, ok := details["cached_tokens"].(float64); ok {
-				gctx.CachedTokens = int(cached)
-			}
-		}
-	}
+	in, out, cached, cacheCreated := llm.OpenAITokenExtractor(string(body))
+	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
 	return nil
 }
 
-// ensureStreamUsage 在流式请求体中注入 stream_options.include_usage = true，
-// 使上游 OpenAI 兼容 API 在最后一个 SSE chunk 中返回 usage 统计。
+// ensureStreamUsage injects stream_options.include_usage = true into the streaming request body,
+// so the upstream OpenAI-compatible API returns usage stats in the final SSE chunk.
 func ensureStreamUsage(body []byte) []byte {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
@@ -459,7 +350,7 @@ func ensureStreamUsage(body []byte) []byte {
 	}
 	if raw, ok := m["stream_options"]; ok {
 		if err := json.Unmarshal(raw, &opts); err == nil && opts.IncludeUsage != nil && *opts.IncludeUsage {
-			return body // 已有 include_usage: true，无需修改
+			return body // already has include_usage: true, no modification needed
 		}
 	}
 
@@ -471,16 +362,5 @@ func ensureStreamUsage(body []byte) []byte {
 	return out
 }
 
-// 编译期接口断言
+// Compile-time interface assertion
 var _ core.Provider = (*OpenAIProvider)(nil)
-
-type cancelReadCloser struct {
-	io.ReadCloser
-	cancel context.CancelFunc
-}
-
-func (c *cancelReadCloser) Close() error {
-	err := c.ReadCloser.Close()
-	c.cancel()
-	return err
-}

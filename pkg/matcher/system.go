@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// SystemTagMatcher 匹配内置的系统上下文参数 (model, user)
+// SystemTagMatcher matches built-in context params (model, user).
 type SystemTagMatcher struct{}
 
 func (m *SystemTagMatcher) Match(ctx context.Context, cond *TagCondition, reqCtx RequestContext) bool {

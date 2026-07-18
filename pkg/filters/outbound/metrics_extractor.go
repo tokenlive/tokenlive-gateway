@@ -5,35 +5,35 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/telemetry"
 )
 
-// MetricsExtractor 从 GatewayContext 提取指标标签
+// MetricsExtractor extracts metric labels from GatewayContext.
 type MetricsExtractor interface {
 	ExtractLabels(gctx *core.GatewayContext) telemetry.LabelContract
 }
 
-// DefaultMetricsExtractor 默认标签提取器实现
+// DefaultMetricsExtractor is the default label extractor.
 type DefaultMetricsExtractor struct{}
 
-// ExtractLabels 从 gctx 提取通用标签
+// ExtractLabels extracts common labels from gctx.
 func (e *DefaultMetricsExtractor) ExtractLabels(gctx *core.GatewayContext) telemetry.LabelContract {
-	// 1. 状态标签
+	// 1. status label
 	status := "success"
 	if gctx.Err != nil {
 		status = "error"
 	}
 
-	// 2. 流式标签
+	// 2. stream label
 	stream := "false"
 	if gctx.IsStream {
 		stream = "true"
 	}
 
-	// 3. Provider 标签
+	// 3. provider label
 	provider := ""
 	if gctx.SelectedEndpoint != nil {
 		provider = gctx.SelectedEndpoint.Provider
 	}
 
-	// 4. 租户染色（符合 CONTEXT.md 的去中心化策略元数据染色）
+	// 4. tenant label (decentralized policy metadata tagging)
 	tenant := "others"
 	if gctx.Policy != nil && gctx.Policy.EnableMetricsReporting {
 		if gctx.Tenant != "" {
@@ -50,7 +50,7 @@ func (e *DefaultMetricsExtractor) ExtractLabels(gctx *core.GatewayContext) telem
 	}
 }
 
-// ExtractTokenLabels 提取 Token 指标专用标签（包含 type 维度）
+// ExtractTokenLabels extracts token-specific labels (includes type dimension).
 func (e *DefaultMetricsExtractor) ExtractTokenLabels(gctx *core.GatewayContext, tokenType string) telemetry.LabelContract {
 	labels := e.ExtractLabels(gctx)
 	labels.Type = tokenType

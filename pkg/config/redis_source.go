@@ -40,8 +40,8 @@ func NewRedisConfigSource(client redis.Cmdable, pollInterval time.Duration, logg
 	}
 }
 
-// GetEndpoints 返回指定 model 的 resolved endpoints（从 Redis 缓存或远程读取）
-// model 参数应为 model_code
+// GetEndpoints returns resolved endpoints for a model (cache or Redis).
+// modelCode should be a model_code.
 func (r *RedisConfigSource) GetEndpoints(ctx context.Context, modelCode string) ([]ResolvedEndpoint, bool) {
 	r.mu.RLock()
 	if endpoints, ok := r.cache[modelCode]; ok {
@@ -77,7 +77,7 @@ func (r *RedisConfigSource) fetchFromRedis(ctx context.Context, modelCode string
 		return nil, 0, err
 	}
 
-	// 如果 endpoints 配置不存在，返回 redis.Nil 错误，以模拟缓存未命中行为
+	// Missing endpoints key → redis.Nil (cache miss).
 	if err := endpointsCmd.Err(); err != nil {
 		return nil, 0, err
 	}
@@ -155,14 +155,13 @@ func (r *RedisConfigSource) KnownModels() map[string]bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// 从 Redis 的 aigw:config:model_versions Hash 获取所有模型列表
-	// Admin 在同步模型配置时会维护这个 Hash（key: model_code, value: version）
+	// List models from aigw:config:model_versions (key: model_code, value: version).
 	modelCodes, err := r.client.HKeys(ctx, store.RedisKeyConfigModelVersions).Result()
 	if err != nil {
 		r.logger.Warn("fetch model versions from redis failed, fallback to cache",
 			zap.Error(err),
 			zap.String("key", store.RedisKeyConfigModelVersions))
-		// 失败时回退到已缓存的模型
+		// On failure, return models already in local cache.
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		result := make(map[string]bool, len(r.cache))
@@ -172,8 +171,7 @@ func (r *RedisConfigSource) KnownModels() map[string]bool {
 		return result
 	}
 
-	// 批量检查这些模型是否有实际的 endpoints 配置
-	// 使用 pipeline 提高性能
+	// Keep only models that have an endpoints key (pipeline for speed).
 	result := make(map[string]bool, len(modelCodes))
 	if len(modelCodes) == 0 {
 		return result
@@ -186,7 +184,6 @@ func (r *RedisConfigSource) KnownModels() map[string]bool {
 	}
 	_, _ = pipe.Exec(ctx)
 
-	// 只返回有 endpoints 配置的模型
 	for code, cmd := range cmds {
 		if cmd.Val() > 0 {
 			result[code] = true
