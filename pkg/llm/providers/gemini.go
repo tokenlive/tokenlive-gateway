@@ -144,29 +144,7 @@ func (p *GeminiProvider) handleGenerateContentNonStream(gctx *core.GatewayContex
 }
 
 func (p *GeminiProvider) handleGenerateContentStream(gctx *core.GatewayContext, resp *http.Response) error {
-	writer := llm.NewSSEInterceptWriter(gctx, llm.WithTokenExtractor(llm.GeminiTokenExtractor))
-	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.WriteHeader(http.StatusOK)
-
-	buf := make([]byte, 4096)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := writer.Write(buf[:n]); werr != nil {
-				return werr
-			}
-			writer.Flush()
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("read upstream stream: %w", err)
-		}
-	}
-	return nil
+	return llm.PassthroughStream(gctx, resp, llm.GeminiTokenExtractor)
 }
 
 var _ core.Provider = (*GeminiProvider)(nil)

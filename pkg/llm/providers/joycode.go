@@ -328,7 +328,8 @@ func (p *JoyCodeProvider) doAnthropicMessagesDirect(gctx *core.GatewayContext, m
 	}
 
 	if gctx.IsStream {
-		// Use Anthropic SSE passthrough handler directly; handleMessagesStream closes resp.Body itself.
+		defer resp.Body.Close()
+		// Use Anthropic SSE passthrough handler directly.
 		return p.handleMessagesStream(gctx, resp)
 	}
 
@@ -349,31 +350,7 @@ func (p *JoyCodeProvider) doAnthropicMessagesDirect(gctx *core.GatewayContext, m
 
 // handleMessagesStream transparently passes through Anthropic SSE format streams
 func (p *JoyCodeProvider) handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error {
-	writer := llm.NewSSEInterceptWriter(gctx, llm.WithTokenExtractor(llm.AnthropicTokenExtractor))
-	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.WriteHeader(http.StatusOK)
-
-	buf := make([]byte, 4096)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := writer.Write(buf[:n]); werr != nil {
-				resp.Body.Close()
-				return werr
-			}
-			writer.Flush()
-		}
-		if err != nil {
-			resp.Body.Close()
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("read upstream stream: %w", err)
-		}
-	}
-	return nil
+	return llm.PassthroughStream(gctx, resp, llm.AnthropicTokenExtractor)
 }
 
 // ==========================================
