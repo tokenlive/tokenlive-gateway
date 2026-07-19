@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -67,7 +68,11 @@ func (p *JoyCodeProvider) RequestTypes() []core.RequestType {
 func (p *JoyCodeProvider) HealthCheck(ctx context.Context) error {
 	var endpoint string
 	if strings.HasPrefix(p.baseURL, "https://") {
-		endpoint = signJoyCodeGatewayURL(p.baseURL, "modelList")
+		var err error
+		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "modelList")
+		if err != nil {
+			return err
+		}
 	} else {
 		endpoint = p.baseURL + "/api/saas/models/v2/modelList"
 	}
@@ -213,7 +218,11 @@ func (i *joycodeMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) error {
 	var endpoint string
 	if strings.HasPrefix(p.baseURL, "https://") {
-		endpoint = signJoyCodeGatewayURL(p.baseURL, "chat_completions")
+		var err error
+		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "chat_completions")
+		if err != nil {
+			return err
+		}
 	} else {
 		endpoint = p.baseURL + "/api/saas/openai/v2/chat/completions"
 	}
@@ -256,7 +265,11 @@ func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) 
 func (p *JoyCodeProvider) invokeAnthropic(gctx *core.GatewayContext, model string) error {
 	var endpoint string
 	if strings.HasPrefix(p.baseURL, "https://") {
-		endpoint = signJoyCodeGatewayURL(p.baseURL, "anthropic_completions")
+		var err error
+		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "anthropic_completions")
+		if err != nil {
+			return err
+		}
 	} else {
 		endpoint = p.baseURL + "/api/saas/anthropic/v1/messages"
 	}
@@ -310,7 +323,11 @@ func (p *JoyCodeProvider) invokeAnthropic(gctx *core.GatewayContext, model strin
 func (p *JoyCodeProvider) doAnthropicMessagesDirect(gctx *core.GatewayContext, model string) error {
 	var endpoint string
 	if strings.HasPrefix(p.baseURL, "https://") {
-		endpoint = signJoyCodeGatewayURL(p.baseURL, "anthropic_completions")
+		var err error
+		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "anthropic_completions")
+		if err != nil {
+			return err
+		}
 	} else {
 		endpoint = p.baseURL + "/api/saas/anthropic/v1/messages"
 	}
@@ -499,17 +516,28 @@ func adaptThinkingBehavior(body []byte) []byte {
 // Compile-time interface assertion
 var _ core.Provider = (*JoyCodeProvider)(nil)
 
-func signJoyCodeGatewayURL(baseURL, functionID string) string {
+func signJoyCodeGatewayURL(baseURL, functionID string) (string, error) {
 	baseURL = strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
 	t := time.Now().UnixNano() / int64(time.Millisecond)
-	stringToSign := fmt.Sprintf("joycode_ide&%s&%d", functionID, t)
-	key := []byte("0691a3f0b37b4a85aeb63ad0fc7db3ed")
+
+	appID := os.Getenv("JOYCODE_APPID")
+	if appID == "" {
+		return "", fmt.Errorf("JOYCODE_APPID environment variable is missing")
+	}
+
+	signKey := os.Getenv("JOYCODE_SIGN_KEY")
+	if signKey == "" {
+		return "", fmt.Errorf("JOYCODE_SIGN_KEY environment variable is missing")
+	}
+
+	stringToSign := fmt.Sprintf("%s&%s&%d", appID, functionID, t)
+	key := []byte(signKey)
 
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(stringToSign))
 	sign := hex.EncodeToString(mac.Sum(nil))
 
-	return fmt.Sprintf("%s/api?appid=joycode_ide&functionId=%s&t=%d&sign=%s", baseURL, functionID, t, sign)
+	return fmt.Sprintf("%s/api?appid=%s&functionId=%s&t=%d&sign=%s", baseURL, appID, functionID, t, sign), nil
 }
 
 func getLoginTypeForPtKey(ptKey string) string {

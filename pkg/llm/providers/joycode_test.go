@@ -293,3 +293,29 @@ func parseSSEOpenAIEvents(t *testing.T, body string) (events []map[string]interf
 	}
 	return events, hasDone
 }
+
+func TestJoyCode_SignGatewayURL(t *testing.T) {
+	// 1. Missing environment variables should return an error
+	t.Setenv("JOYCODE_APPID", "")
+	t.Setenv("JOYCODE_SIGN_KEY", "")
+	_, err := signJoyCodeGatewayURL("https://joycode-api-saas.jd.com", "chat_completions")
+	if err == nil {
+		t.Fatal("expected error when JOYCODE_APPID and JOYCODE_SIGN_KEY are missing")
+	}
+
+	// 2. Setting environment variables should succeed and return a signed URL
+	t.Setenv("JOYCODE_APPID", "joycode_ide")
+	t.Setenv("JOYCODE_SIGN_KEY", "0691a3f0b37b4a85aeb63ad0fc7db3ed")
+
+	urlStr, err := signJoyCodeGatewayURL("https://joycode-api-saas.jd.com", "chat_completions")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(urlStr, "appid=joycode_ide") {
+		t.Errorf("expected URL to contain appid=joycode_ide, got: %s", urlStr)
+	}
+	if !strings.Contains(urlStr, "sign=") {
+		t.Errorf("expected URL to contain sign, got: %s", urlStr)
+	}
+}
