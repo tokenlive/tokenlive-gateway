@@ -93,6 +93,7 @@ func translateResponsesNonStreamResponse(gctx *core.GatewayContext) error {
 		return err
 	}
 	gctx.Response = result
+	llm.ApplyUsage(gctx, res.Usage.InputTokens, res.Usage.OutputTokens, 0, 0)
 	return nil
 }
 
