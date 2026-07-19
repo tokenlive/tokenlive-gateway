@@ -16,6 +16,7 @@ func init() {
 		return NewAnthropicProvider(name, baseURL, apiKey, models)
 	})
 	core.RegisterRequestInvoker(core.ProviderAnthropic, core.RequestTypeMessages, &anthropicMessagesInvoker{})
+	core.RegisterRequestInvoker(core.ProviderAnthropic, core.RequestTypeResponses, &anthropicResponsesInvoker{})
 }
 
 // AnthropicProvider implements core.Provider, adapting the Anthropic Messages API.
@@ -42,8 +43,9 @@ func (p *AnthropicProvider) Type() core.ProviderType { return core.ProviderAnthr
 func (p *AnthropicProvider) ValidateConfig() error   { return nil }
 
 // RequestTypes returns the request types supported by this provider.
+// Responses is served via protocol translation (Responses <-> Messages).
 func (p *AnthropicProvider) RequestTypes() []core.RequestType {
-	return []core.RequestType{core.RequestTypeMessages}
+	return []core.RequestType{core.RequestTypeMessages, core.RequestTypeResponses}
 }
 
 // HealthCheck probes upstream reachability via POST /v1/messages.

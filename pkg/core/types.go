@@ -67,6 +67,11 @@ func (ep *Endpoint) SupportsRequestType(rt RequestType) bool {
 		}
 	}
 
+	// Endpoints declaring messages can serve responses via protocol translation.
+	if ep.declaresRequestType(RequestTypeMessages) && rt == RequestTypeResponses {
+		return true
+	}
+
 	return false
 }
 
@@ -87,7 +92,8 @@ func (ep *Endpoint) protocolSupportsRequestType(rt RequestType) bool {
 			return true
 		}
 	case ProtocolAnthropic:
-		return rt == RequestTypeMessages
+		// responses is served by the anthropicResponsesInvoker protocol translation.
+		return rt == RequestTypeMessages || rt == RequestTypeResponses
 	case ProtocolGemini:
 		return rt == RequestTypeGeminiGenerateContent
 	case ProtocolJoyCode:

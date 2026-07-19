@@ -8,9 +8,11 @@ import (
 
 // StreamChunkMeta is side-channel info (tokens, etc.) during stream translate.
 type StreamChunkMeta struct {
-	InputTokens      int
-	OutputTokens     int
-	TransmittedChars int
+	InputTokens         int
+	OutputTokens        int
+	CachedTokens        int
+	CacheCreationTokens int
+	TransmittedChars    int
 	// EmitDone true: caller should write data: [DONE]
 	EmitDone bool
 	// ErrorMessage non-empty: emit OpenAI error chunk (or equivalent)

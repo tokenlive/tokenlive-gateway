@@ -169,8 +169,8 @@ func TestAnthropicMessagesInvoker_CustomHeaders(t *testing.T) {
 func TestAnthropicProvider_RequestTypes(t *testing.T) {
 	p := NewAnthropicProvider("anthropic", "", "", nil)
 	caps := p.RequestTypes()
-	if len(caps) != 1 || caps[0] != core.RequestTypeMessages {
-		t.Errorf("expected [messages], got %v", caps)
+	if len(caps) != 2 || caps[0] != core.RequestTypeMessages || caps[1] != core.RequestTypeResponses {
+		t.Errorf("expected [messages responses], got %v", caps)
 	}
 }
 
