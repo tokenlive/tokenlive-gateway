@@ -120,6 +120,32 @@ func AnthropicTokenExtractor(data string) (int, int, int, int) {
 	return in, out, cached, cacheCreated
 }
 
+// ResponsesTokenExtractor extracts token counts from Responses API SSE events.
+// Usage is nested under response.usage in terminal events (response.completed/response.done),
+// not at the top level like Chat Completions chunks.
+func ResponsesTokenExtractor(data string) (int, int, int, int) {
+	var payload struct {
+		Response *struct {
+			Usage *struct {
+				InputTokens        int `json:"input_tokens"`
+				OutputTokens       int `json:"output_tokens"`
+				InputTokensDetails *struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"input_tokens_details"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(data), &payload); err != nil || payload.Response == nil || payload.Response.Usage == nil {
+		return 0, 0, 0, 0
+	}
+	u := payload.Response.Usage
+	cached := 0
+	if u.InputTokensDetails != nil {
+		cached = u.InputTokensDetails.CachedTokens
+	}
+	return u.InputTokens, u.OutputTokens, cached, 0
+}
+
 // GeminiTokenExtractor extracts tokens from Gemini generateContent/streamGenerateContent responses.
 // Format: {"usageMetadata":{"promptTokenCount":N,"candidatesTokenCount":N,"totalTokenCount":N}}
 func GeminiTokenExtractor(data string) (int, int, int, int) {

@@ -153,7 +153,12 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 		}
 	}()
 
-	writer := llm.NewSSEInterceptWriter(gctx)
+	// Native responses passthrough nests usage under response.usage; chat uses top-level usage.
+	var writerOpts []llm.SSEOption
+	if gctx.RequestType == core.RequestTypeResponses {
+		writerOpts = append(writerOpts, llm.WithTokenExtractor(llm.ResponsesTokenExtractor))
+	}
+	writer := llm.NewSSEInterceptWriter(gctx, writerOpts...)
 
 	buf := make([]byte, 4096)
 	headersSent := false
