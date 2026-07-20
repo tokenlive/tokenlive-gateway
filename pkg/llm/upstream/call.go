@@ -157,7 +157,7 @@ func Call(gctx *core.GatewayContext, req Request) (*http.Response, error) {
 		}
 
 		contentType := resp.Header.Get("Content-Type")
-		if !strings.Contains(contentType, "text/event-stream") {
+		if !strings.Contains(strings.ToLower(contentType), "text/event-stream") {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			timer.Stop()
