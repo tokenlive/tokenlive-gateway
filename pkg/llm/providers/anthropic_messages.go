@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
+	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/upstream"
 )
 

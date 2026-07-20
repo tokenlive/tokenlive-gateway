@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"sort"
-	"strings"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
