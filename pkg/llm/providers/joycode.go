@@ -340,7 +340,7 @@ func (p *JoyCodeProvider) doAnthropicMessagesDirect(gctx *core.GatewayContext, m
 		endpoint = p.baseURL + "/api/saas/anthropic/v1/messages"
 	}
 
-	adaptedBody := injectJoyCodePayload(adaptThinkingBehavior(gctx.RawBody))
+	adaptedBody := injectJoyCodePayload(adaptThinkingBehavior(cleanThinkingInHistory(gctx.RawBody)))
 	resp, err := upstream.Call(gctx, upstream.Request{
 		Client: p.client,
 		URL:    endpoint,
@@ -500,8 +500,77 @@ func adaptThinkingBehavior(body []byte) []byte {
 		return body
 	}
 
-	delete(m, "thinking")
-	delete(m, "output_config")
+	thinking, exists := m["thinking"]
+	if !exists {
+		return body
+	}
+
+	tMap, ok := thinking.(map[string]interface{})
+	if !ok {
+		return body
+	}
+
+	tType, _ := tMap["type"].(string)
+	if tType == "enabled" {
+		tMap["type"] = "adaptive"
+		delete(tMap, "budget_tokens")
+		m["output_config"] = map[string]interface{}{
+			"effort": "high",
+		}
+	}
+
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+func cleanThinkingInHistory(body []byte) []byte {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+
+	msgs, ok := m["messages"].([]interface{})
+	if !ok {
+		return body
+	}
+
+	modified := false
+	for i, msg := range msgs {
+		msgMap, ok := msg.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		content := msgMap["content"]
+		if contentArr, ok := content.([]interface{}); ok {
+			var newContent []interface{}
+			hasThinking := false
+			for _, block := range contentArr {
+				blockMap, ok := block.(map[string]interface{})
+				if !ok {
+					newContent = append(newContent, block)
+					continue
+				}
+				if blockType, _ := blockMap["type"].(string); blockType == "thinking" {
+					hasThinking = true
+					continue
+				}
+				newContent = append(newContent, block)
+			}
+			if hasThinking {
+				msgMap["content"] = newContent
+				msgs[i] = msgMap
+				modified = true
+			}
+		}
+	}
+
+	if !modified {
+		return body
+	}
 
 	out, err := json.Marshal(m)
 	if err != nil {

@@ -382,3 +382,49 @@ func TestJoyCodeMessages_ProbeStream(t *testing.T) {
 		t.Errorf("expected stream events, got %s", body)
 	}
 }
+
+func TestJoyCode_CleanThinkingInHistory(t *testing.T) {
+	reqBody := `{
+		"model": "claude-3-5-sonnet",
+		"messages": [
+			{
+				"role": "user",
+				"content": "Hello!"
+			},
+			{
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Thinking process...",
+						"signature": "some_sig"
+					},
+					{
+						"type": "text",
+						"text": "Hello, how can I help you?"
+					}
+				]
+			}
+		]
+	}`
+
+	cleaned := cleanThinkingInHistory([]byte(reqBody))
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(cleaned, &m); err != nil {
+		t.Fatalf("failed to unmarshal cleaned body: %v", err)
+	}
+
+	msgs := m["messages"].([]interface{})
+	assistantMsg := msgs[1].(map[string]interface{})
+	contentArr := assistantMsg["content"].([]interface{})
+
+	if len(contentArr) != 1 {
+		t.Fatalf("expected content block size 1, got %d", len(contentArr))
+	}
+
+	block := contentArr[0].(map[string]interface{})
+	if block["type"] != "text" || block["text"] != "Hello, how can I help you?" {
+		t.Errorf("unexpected content block left: %+v", block)
+	}
+}
