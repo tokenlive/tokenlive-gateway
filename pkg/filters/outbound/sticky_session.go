@@ -7,13 +7,13 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
 
-// StickySessionFilter 在请求成功后保存 SessionID -> EndpointID 映射
+// StickySessionFilter saves the SessionID -> EndpointID mapping after a successful request.
 type StickySessionFilter struct {
 	stateStore core.StateStore
 	ttl        time.Duration
 }
 
-// NewStickySessionFilter 创建 StickySessionFilter
+// NewStickySessionFilter creates a StickySessionFilter.
 func NewStickySessionFilter(ss core.StateStore, ttl time.Duration) *StickySessionFilter {
 	return &StickySessionFilter{stateStore: ss, ttl: ttl}
 }

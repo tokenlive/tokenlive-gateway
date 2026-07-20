@@ -11,14 +11,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// MetricsFilter OpenTelemetry 指标过滤器，记录请求耗时、请求计数、token 用量、费用和首包延迟
+// MetricsFilter records request latency, count, token usage, cost, and TTFT via OpenTelemetry.
 type MetricsFilter struct {
 	registry  *telemetry.MetricsRegistry
 	extractor MetricsExtractor
 	logger    *zap.Logger
 }
 
-// NewMetricsFilter 创建 MetricsFilter（显式依赖注入）
+// NewMetricsFilter creates a MetricsFilter (explicit DI).
 func NewMetricsFilter(registry *telemetry.MetricsRegistry, extractor MetricsExtractor, logger *zap.Logger) *MetricsFilter {
 	return &MetricsFilter{
 		registry:  registry,
@@ -33,7 +33,7 @@ func (f *MetricsFilter) Criticality() core.FilterCriticality { return core.BestE
 func (f *MetricsFilter) InboundSafe()                        {}
 
 func (f *MetricsFilter) OnResponse(gctx *core.GatewayContext) error {
-	// BestEffort 语义：即使出错也不能阻塞响应
+	// BestEffort: never block the response on errors
 	defer func() {
 		if r := recover(); r != nil {
 			if f.logger != nil {
@@ -42,7 +42,7 @@ func (f *MetricsFilter) OnResponse(gctx *core.GatewayContext) error {
 		}
 	}()
 
-	// 防御性检查：如果 registry 未初始化，优雅降级
+	// defensive: graceful degradation if registry is nil
 	if f.registry == nil {
 		return nil
 	}
@@ -52,10 +52,10 @@ func (f *MetricsFilter) OnResponse(gctx *core.GatewayContext) error {
 		ctx = context.Background()
 	}
 
-	// 提取通用标签（复用缓存）
+	// extract common labels (cached)
 	labels := f.extractor.ExtractLabels(gctx)
 
-	// 1. 请求延迟直方图
+	// 1. request latency histogram
 	duration := time.Since(gctx.StartTime).Seconds()
 	if err := f.recordMetric(func() error {
 		f.registry.RequestDuration.Record(ctx, duration,
@@ -65,7 +65,7 @@ func (f *MetricsFilter) OnResponse(gctx *core.GatewayContext) error {
 		return nil
 	}
 
-	// 2. 请求计数器
+	// 2. request counter
 	if err := f.recordMetric(func() error {
 		f.registry.RequestTotal.Add(ctx, 1,
 			metric.WithAttributes(labels.ToAttributesWithoutType()...))
@@ -74,7 +74,7 @@ func (f *MetricsFilter) OnResponse(gctx *core.GatewayContext) error {
 		return nil
 	}
 
-	// 3. TTFT 直方图（仅流式且有首包时）
+	// 3. TTFT histogram (streaming only, when first byte received)
 	if gctx.IsStream && gctx.TTFT > 0 {
 		if err := f.recordMetric(func() error {
 			f.registry.RequestTTFT.Record(ctx, gctx.TTFT.Seconds(),
@@ -85,10 +85,10 @@ func (f *MetricsFilter) OnResponse(gctx *core.GatewayContext) error {
 		}
 	}
 
-	// 4. Token 计数器（使用专用标签）
+	// 4. token counters (specialized labels)
 	f.recordTokenMetrics(ctx, gctx)
 
-	// 5. 费用计数器（仅当 Cost > 0 时）
+	// 5. cost counter (only when Cost > 0)
 	if gctx.Cost > 0 {
 		if err := f.recordMetric(func() error {
 			f.registry.CostTotal.Add(ctx, gctx.Cost,
@@ -102,7 +102,7 @@ func (f *MetricsFilter) OnResponse(gctx *core.GatewayContext) error {
 	return nil
 }
 
-// recordTokenMetrics 记录 Token 指标（input/output/cached/cache_creation）
+// recordTokenMetrics records token metrics (input/output/cached/cache_creation).
 func (f *MetricsFilter) recordTokenMetrics(ctx context.Context, gctx *core.GatewayContext) {
 	extractor, ok := f.extractor.(*DefaultMetricsExtractor)
 	if !ok {
@@ -150,7 +150,7 @@ func (f *MetricsFilter) recordTokenMetrics(ctx context.Context, gctx *core.Gatew
 	}
 }
 
-// recordMetric 包装指标记录逻辑，吞掉所有错误（BestEffort 语义）
+// recordMetric wraps metric recording, swallowing all errors (BestEffort semantics).
 func (f *MetricsFilter) recordMetric(fn func() error) error {
 	if err := fn(); err != nil {
 		if f.logger != nil {

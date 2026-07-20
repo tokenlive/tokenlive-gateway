@@ -6,7 +6,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TagCondition 匹配条件
+// TagCondition is a match condition.
 type TagCondition struct {
 	Type   string   `yaml:"type" json:"type"`       // e.g. "query", "header"
 	OpType string   `yaml:"op_type" json:"op_type"` // e.g. "EQUAL", "IN"
@@ -14,7 +14,7 @@ type TagCondition struct {
 	Values []string `yaml:"values" json:"values"`
 }
 
-// UnmarshalJSON 自定义反序列化，兼容 opType 字段
+// UnmarshalJSON accepts opType alias.
 func (c *TagCondition) UnmarshalJSON(data []byte) error {
 	type Alias TagCondition
 	aux := &struct {
@@ -32,7 +32,7 @@ func (c *TagCondition) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalYAML 自定义反序列化，兼容 opType 字段
+// UnmarshalYAML accepts opType alias.
 func (c *TagCondition) UnmarshalYAML(value *yaml.Node) error {
 	type Alias TagCondition
 	aux := &struct {
@@ -50,7 +50,7 @@ func (c *TagCondition) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// MatchValues 比对提取的值是否满足 Condition 定义的操作符和通配符规则
+// MatchValues checks extracted values against operator and wildcards.
 func (c *TagCondition) MatchValues(actual []string) bool {
 	if len(actual) == 0 {
 		if c.OpType == "NOT_EQUAL" || c.OpType == "NOT_IN" {

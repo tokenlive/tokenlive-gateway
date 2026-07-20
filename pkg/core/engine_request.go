@@ -8,15 +8,15 @@ import (
 	"strings"
 )
 
-// parseRequest 解析 HTTP 请求
+// parseRequest parses the HTTP request.
 func (e *Engine) parseRequest(gctx *GatewayContext) error {
-	// 解析 RequestType
+	// Resolve RequestType
 	gctx.RequestType = resolveRequestType(gctx.Request.URL.Path)
 
-	// 1. 提取 API Key 和 User ID
+	// 1. Extract API Key and User ID
 	apiKey := gctx.Request.Header.Get("X-API-Key")
 	if apiKey == "" {
-		// 从 Authorization / api-key / x-api-key 提取，保证旧测试或直连场景兼容
+		// Extract from Authorization / api-key / x-api-key for legacy test and direct-connect compatibility
 		auth := gctx.Request.Header.Get("Authorization")
 		if auth != "" {
 			parts := strings.SplitN(auth, " ", 2)
@@ -42,12 +42,12 @@ func (e *Engine) parseRequest(gctx *GatewayContext) error {
 	gctx.WorkspaceID = gctx.Request.Header.Get("X-Workspace-ID")
 	gctx.UserTenant = gctx.Request.Header.Get("X-User-Tenant")
 
-	// 读取 body
+	// Read body
 	if err := e.readBody(gctx); err != nil {
 		return fmt.Errorf("read body: %w", err)
 	}
 
-	// 提取 model 和 stream
+	// Extract model and stream
 	if gctx.RequestType == RequestTypeGeminiGenerateContent {
 		gctx.Model = extractGeminiModelFromPath(gctx.Request.URL.Path)
 		gctx.OriginalModel = gctx.Model
@@ -61,24 +61,24 @@ func (e *Engine) parseRequest(gctx *GatewayContext) error {
 	return nil
 }
 
-// matchPipeline 按标准的 RequestType 一对一精准查表匹配，有且仅匹配一份。
+// matchPipeline matches a Pipeline by standard RequestType with exact 1:1 lookup.
 func (e *Engine) matchPipeline(rt RequestType) *Pipeline {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	// 1. O(1) 通过标准的 RequestType 直接查表匹配
+	// 1. O(1) direct lookup by standard RequestType
 	if p, ok := e.pipelines[string(rt)]; ok {
 		return p
 	}
 
-	// 2. 图像生成默认共用聊天生成的 Pipeline（若未单独为 image_generation 声明专属 Pipeline）
+	// 2. Image generation shares the chat completion pipeline by default (if no dedicated pipeline declared)
 	if rt == RequestTypeImageGeneration {
 		if p, ok := e.pipelines[string(RequestTypeChatCompletion)]; ok {
 			return p
 		}
 	}
 
-	// 3. 通用 fallback
+	// 3. Generic fallback
 	if p, ok := e.pipelines["default"]; ok {
 		return p
 	}
@@ -86,7 +86,7 @@ func (e *Engine) matchPipeline(rt RequestType) *Pipeline {
 	return nil
 }
 
-// readBody 读取请求 body
+// readBody reads the request body.
 func (e *Engine) readBody(gctx *GatewayContext) error {
 	if gctx.Request.Body == nil {
 		return nil
@@ -101,7 +101,7 @@ func (e *Engine) readBody(gctx *GatewayContext) error {
 	return nil
 }
 
-// extractModel 从 JSON body 提取 model 字段
+// extractModel extracts the model field from JSON body.
 func (e *Engine) extractModel(body []byte) string {
 	var req struct {
 		Model string `json:"model"`
@@ -112,7 +112,7 @@ func (e *Engine) extractModel(body []byte) string {
 	return req.Model
 }
 
-// extractStream 从 JSON body 提取 stream 字段
+// extractStream extracts the stream field from JSON body.
 func (e *Engine) extractStream(body []byte) bool {
 	var req struct {
 		Stream bool `json:"stream"`
@@ -123,7 +123,7 @@ func (e *Engine) extractStream(body []byte) bool {
 	return req.Stream
 }
 
-// resolveRequestType URL path 映射到 RequestType
+// resolveRequestType maps URL path to RequestType.
 func resolveRequestType(path string) RequestType {
 	switch {
 	case isGeminiGenerateContentPath(path):

@@ -13,18 +13,18 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
 
-// TaggingEngine 染色打标规则引擎
-// 按 Order 顺序执行 TaggingPolicy，命中条件时将标签注入 GatewayContext.Tags
+// TaggingEngine applies tagging policies in order.
+// Runs TaggingPolicy by Order; injects tags into GatewayContext.Tags on match.
 type TaggingEngine struct {
 	interpolator *Interpolator
 }
 
-// NewTaggingEngine 创建 TaggingEngine
+// NewTaggingEngine creates a TaggingEngine.
 func NewTaggingEngine() *TaggingEngine {
 	return &TaggingEngine{interpolator: &Interpolator{}}
 }
 
-// Process 按 Order 顺序执行所有染色打标规则，基于 Action.Type 改写请求、响应、Cookie或请求体
+// Process runs policies by Order; rewrites req/resp/cookie/body per Action.Type.
 func (e *TaggingEngine) Process(ctx context.Context, gctx *core.GatewayContext, taggingPolicies []*policy.TaggingPolicy) {
 	if len(taggingPolicies) == 0 {
 		return
@@ -33,7 +33,7 @@ func (e *TaggingEngine) Process(ctx context.Context, gctx *core.GatewayContext, 
 		gctx.Tags = make(map[string]string)
 	}
 
-	// 按 Order 排序（稳定排序，保持同 Order 的原始顺序）
+	// Stable sort by Order.
 	rules := make([]*policy.TaggingPolicy, len(taggingPolicies))
 	copy(rules, taggingPolicies)
 	sort.SliceStable(rules, func(i, j int) bool {
@@ -121,8 +121,8 @@ func (e *TaggingEngine) Process(ctx context.Context, gctx *core.GatewayContext, 
 	}
 }
 
-// matchConditions 判断 TaggingPolicy 的所有条件是否满足
-// Relation 默认为 AND（全部满足），可设为 OR（任一满足）
+// matchConditions evaluates TaggingPolicy conditions.
+// Relation defaults to AND; OR matches any condition.
 func (e *TaggingEngine) matchConditions(ctx context.Context, gctx *core.GatewayContext, rule *policy.TaggingPolicy) bool {
 	var validConds []*matcher.TagCondition
 	for _, cond := range rule.Conditions {
@@ -131,7 +131,7 @@ func (e *TaggingEngine) matchConditions(ctx context.Context, gctx *core.GatewayC
 		}
 	}
 	if len(validConds) == 0 {
-		return true // 空条件默认命中
+		return true // empty conditions match
 	}
 
 	isOr := strings.EqualFold(rule.Relation, "OR")
@@ -141,12 +141,12 @@ func (e *TaggingEngine) matchConditions(ctx context.Context, gctx *core.GatewayC
 		matched := m != nil && m.Match(ctx, cond, gctx)
 
 		if isOr && matched {
-			return true // OR 模式：任一命中即返回
+			return true // OR: any match
 		}
 		if !isOr && !matched {
-			return false // AND 模式：任一未命中即返回
+			return false // AND: any miss
 		}
 	}
 
-	return !isOr // AND 全部命中 → true；OR 全部未命中 → false
+	return !isOr // AND all match → true; OR none → false
 }

@@ -8,15 +8,15 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
 
-// RandomLoadBalancer 随机负载均衡器
+// RandomLoadBalancer picks a random endpoint.
 type RandomLoadBalancer struct{}
 
-// NewRandomLoadBalancer 创建随机负载均衡器
+// NewRandomLoadBalancer creates a random LB.
 func NewRandomLoadBalancer() *RandomLoadBalancer {
 	return &RandomLoadBalancer{}
 }
 
-// Select 随机选择一个端点
+// Select picks a random endpoint.
 func (lb *RandomLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*core.Endpoint) core.Invoker {
 	if len(endpoints) == 0 {
 		return nil
@@ -27,12 +27,12 @@ func (lb *RandomLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*cor
 	return invoker.NewProviderInvoker(ep.ProviderImpl, ep)
 }
 
-// randomInt 使用 crypto/rand 生成 [0, n) 范围的随机整数
+// randomInt returns a crypto/rand int in [0, n).
 func randomInt(n int) int {
 	bigN := big.NewInt(int64(n))
 	val, err := rand.Int(rand.Reader, bigN)
 	if err != nil {
-		// crypto/rand 极少出错，回退到 0
+		// On crypto/rand error, fall back to 0.
 		return 0
 	}
 	return int(val.Int64())

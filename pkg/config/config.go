@@ -22,7 +22,7 @@ func NewConfig(p string) *viper.Viper {
 func getConfig(path string) *viper.Viper {
 	conf := viper.New()
 
-	// 读取配置文件内容并展开环境变量（支持 ${VAR:default} 语法）
+	// Read config and expand env vars (${VAR:default} supported).
 	data, err := os.ReadFile(path)
 	if err != nil {
 		panic(fmt.Errorf("read config file: %w", err))
@@ -49,7 +49,7 @@ func expandEnv(s string) string {
 	})
 }
 
-// loadDotEnv 递归向上查找并加载根目录下的 .env 文件写入到环境变量中
+// loadDotEnv walks up from cwd and loads the first .env into the process env.
 func loadDotEnv() {
 	dir, err := os.Getwd()
 	if err != nil {

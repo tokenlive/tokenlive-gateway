@@ -7,16 +7,16 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
 
-// CostLoadBalancer 成本优先负载均衡器
-// 选择每 token 成本最低的端点
+// CostLoadBalancer prefers the lowest per-token cost.
+// Picks the endpoint with lowest cost per token.
 type CostLoadBalancer struct{}
 
-// NewCostLoadBalancer 创建成本优先负载均衡器
+// NewCostLoadBalancer creates a cost-based LB.
 func NewCostLoadBalancer() *CostLoadBalancer {
 	return &CostLoadBalancer{}
 }
 
-// Select 选择成本最低的端点
+// Select picks the lowest-cost endpoint.
 func (lb *CostLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*core.Endpoint) core.Invoker {
 	if len(endpoints) == 0 {
 		return nil

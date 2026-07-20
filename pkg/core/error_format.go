@@ -5,13 +5,13 @@ import (
 	"net/http"
 )
 
-// ErrorFormatter 把 (httpCode, error) 序列化为对应协议簇的错误响应体。
+// ErrorFormatter serializes (httpCode, error) into a protocol-specific body.
 type ErrorFormatter interface {
 	Format(code int, err error) map[string]interface{}
 	FormatSSE(code int, err error) string
 }
 
-// ErrorFormatterForRequestType 根据 RequestType 返回对应协议簇的错误格式器。
+// ErrorFormatterForRequestType returns the formatter for the request type.
 func ErrorFormatterForRequestType(rt RequestType) ErrorFormatter {
 	switch rt {
 	case RequestTypeMessages:
@@ -21,7 +21,7 @@ func ErrorFormatterForRequestType(rt RequestType) ErrorFormatter {
 	}
 }
 
-// ===== OpenAI 风格(默认,保持向后兼容) =====
+// ===== OpenAI-style (default, backward compatible) =====
 
 type openaiErrorFormatter struct{}
 
@@ -39,7 +39,7 @@ func (openaiErrorFormatter) FormatSSE(code int, err error) string {
 	return fmt.Sprintf("data: {\"error\": {\"message\": %q, \"type\": \"upstream_error\"}}\n\n", err.Error())
 }
 
-// ===== Anthropic 原生 =====
+// ===== Anthropic native =====
 
 type anthropicErrorFormatter struct{}
 

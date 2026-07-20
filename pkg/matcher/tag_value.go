@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// TagValueMatcher 匹配动态标签值（由 TaggingFilter 注入 GatewayContext.Tags）
+// TagValueMatcher matches dynamic tags from GatewayContext.Tags.
 type TagValueMatcher struct{}
 
 func (m *TagValueMatcher) Match(ctx context.Context, cond *TagCondition, reqCtx RequestContext) bool {

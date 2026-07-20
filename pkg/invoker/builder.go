@@ -5,17 +5,16 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
 
-// Builder 实现 core.InvokerBuilder 接口
+// Builder implements core.InvokerBuilder.
 type Builder struct{}
 
 func NewBuilder() *Builder {
 	return &Builder{}
 }
 
-// 静态检查接口实现
 var _ core.InvokerBuilder = (*Builder)(nil)
 
-// BuildInvoker 构造具体的 Invoker
+// BuildInvoker constructs a concrete Invoker from config.
 func (b *Builder) BuildInvoker(cfg *core.InvokerConfig, r core.InvokerDependencyResolver) (core.Invoker, error) {
 	switch cfg.Type {
 	case "cluster":
@@ -29,10 +28,9 @@ func (b *Builder) BuildInvoker(cfg *core.InvokerConfig, r core.InvokerDependency
 
 func buildClusterInvoker(invokerCfg *core.InvokerConfig, r core.InvokerDependencyResolver) (core.Invoker, error) {
 	routers := r.ResolveRouters(invokerCfg.Routers)
-	// 获取共享的进程级熔断管理器，实现实例级熔断，避免 Redis 大量读写。
+	// Shared process-level circuit breaker for instance-level trips (avoids heavy Redis I/O).
 	cbManager := r.CircuitBreakerManager()
 
-	// 获取所有的负载均衡实例
 	knownLBStrategies := []string{"round_robin", "weighted_rr", "random", "weighted_random", "least_connections", "least_latency", "cost", "sticky", "composite", "endpoint_affinity"}
 	lbs := make(map[string]core.LoadBalancer)
 	for _, name := range knownLBStrategies {
@@ -73,7 +71,7 @@ func buildClusterInvoker(invokerCfg *core.InvokerConfig, r core.InvokerDependenc
 }
 
 func buildHedgingInvoker(cfg *core.InvokerConfig, r core.InvokerDependencyResolver) (core.Invoker, error) {
-	// 1. 构建 fallback 串行调用器（用来作为对冲退化时的容错）
+	// Fallback serial invoker when hedging cannot dual-call.
 	clusterCfg := *cfg
 	clusterCfg.Type = "cluster"
 	fallback, err := buildClusterInvoker(&clusterCfg, r)
@@ -81,7 +79,6 @@ func buildHedgingInvoker(cfg *core.InvokerConfig, r core.InvokerDependencyResolv
 		return nil, err
 	}
 
-	// 2. 准备依赖
 	routers := r.ResolveRouters(cfg.Routers)
 	cbManager := r.CircuitBreakerManager()
 

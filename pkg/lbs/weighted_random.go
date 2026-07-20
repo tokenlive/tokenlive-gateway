@@ -5,17 +5,17 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
 
-// WeightedRandomLoadBalancer 加权随机负载均衡器
-// 按 endpoint.Weight 的比例分配选择概率：累加权重区间，在 [0, totalWeight) 取随机数，
-// 落入哪个端点的区间就选哪个。weight<=0 视为 1。
+// WeightedRandomLoadBalancer picks by weight proportion.
+// Probability ∝ endpoint.Weight: cumulative ranges, rand in [0, totalWeight).
+// weight<=0 treated as 1.
 type WeightedRandomLoadBalancer struct{}
 
-// NewWeightedRandomLoadBalancer 创建加权随机负载均衡器
+// NewWeightedRandomLoadBalancer creates a weighted-random LB.
 func NewWeightedRandomLoadBalancer() *WeightedRandomLoadBalancer {
 	return &WeightedRandomLoadBalancer{}
 }
 
-// Select 按权重加权随机选择一个端点
+// Select picks one endpoint by weighted random.
 func (lb *WeightedRandomLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*core.Endpoint) core.Invoker {
 	if len(endpoints) == 0 {
 		return nil
@@ -43,7 +43,7 @@ func (lb *WeightedRandomLoadBalancer) Select(gctx *core.GatewayContext, endpoint
 		}
 	}
 
-	// 浮点/边界兜底，理论上不会到达
+	// Float/edge fallback; should not reach.
 	last := endpoints[len(endpoints)-1]
 	return invoker.NewProviderInvoker(last.ProviderImpl, last)
 }

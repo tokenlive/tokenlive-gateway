@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// QueryTagMatcher 匹配 URL Query 参数
+// QueryTagMatcher matches URL query params.
 type QueryTagMatcher struct{}
 
 func (m *QueryTagMatcher) Match(ctx context.Context, cond *TagCondition, reqCtx RequestContext) bool {

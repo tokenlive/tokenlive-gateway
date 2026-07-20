@@ -1,11 +1,11 @@
 package core
 
-// Router Endpoint 列表的硬约束过滤器。
-// 每个 Router 实现一种过滤逻辑，多个 Router 串联形成 RouterChain。
-// 返回的 Endpoint 列表为空时，由调用方决定是否 fallback。
+// Router filters endpoint candidates (hard constraints).
+// Multiple routers form a RouterChain.
+// Empty result: caller decides whether to fallback.
 type Router interface {
-	// Name 返回路由器名称，用于日志和指标标签。
+	// Name returns the router name (logs/metrics).
 	Name() string
-	// Route 从候选 Endpoint 列表中过滤出满足约束的子集。
+	// Route filters candidates to those matching constraints.
 	Route(gctx *GatewayContext, endpoints []*Endpoint) []*Endpoint
 }

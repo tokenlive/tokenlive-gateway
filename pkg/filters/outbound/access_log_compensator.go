@@ -10,13 +10,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// AccessLogCompensator 负责从 Redis 补偿队列中消费写入失败的 Access Logs 并重新写入 ClickHouse。
+// AccessLogCompensator consumes failed access logs from the Redis compensation queue and retries ClickHouse writes.
 type AccessLogCompensator struct {
 	chConn clickhouse.Conn
 	logger *zap.Logger
 }
 
-// NewAccessLogCompensator 创建 AccessLogCompensator 实例。
+// NewAccessLogCompensator creates an AccessLogCompensator.
 func NewAccessLogCompensator(chConn clickhouse.Conn, logger *zap.Logger) *AccessLogCompensator {
 	return &AccessLogCompensator{
 		chConn: chConn,
@@ -24,7 +24,7 @@ func NewAccessLogCompensator(chConn clickhouse.Conn, logger *zap.Logger) *Access
 	}
 }
 
-// Compensate 实现 compensation.Compensator 接口。
+// Compensate implements the compensation.Compensator interface.
 func (c *AccessLogCompensator) Compensate(ctx context.Context, payload map[string]any) error {
 	if c.chConn == nil {
 		c.logger.Warn("ClickHouse connection is nil, skipping compensation")
@@ -37,7 +37,7 @@ func (c *AccessLogCompensator) Compensate(ctx context.Context, payload map[strin
 		return nil
 	}
 
-	// 转换为 JSON 进行反序列化
+	// convert to JSON for deserialization
 	jsonBytes, err := json.Marshal(logsData)
 	if err != nil {
 		return fmt.Errorf("marshal logs in compensation payload: %w", err)
@@ -54,7 +54,7 @@ func (c *AccessLogCompensator) Compensate(ctx context.Context, payload map[strin
 
 	c.logger.Info("Compensating access logs batch to ClickHouse...", zap.Int("count", len(items)))
 
-	// 执行批量插入
+	// batch insert
 	if err := writeBatchToClickHouse(ctx, c.chConn, items); err != nil {
 		c.logger.Error("Failed to write compensation batch to ClickHouse", zap.Error(err))
 		return err
@@ -64,7 +64,7 @@ func (c *AccessLogCompensator) Compensate(ctx context.Context, payload map[strin
 	return nil
 }
 
-// writeBatchToClickHouse 抽取为共享的方法，供 AccessLogFilter 和 AccessLogCompensator 共同调用。
+// writeBatchToClickHouse is shared by AccessLogFilter and AccessLogCompensator.
 func writeBatchToClickHouse(ctx context.Context, conn clickhouse.Conn, items []AccessLogItem) error {
 	batch, err := conn.PrepareBatch(ctx, "INSERT INTO access_logs")
 	if err != nil {
@@ -72,8 +72,7 @@ func writeBatchToClickHouse(ctx context.Context, conn clickhouse.Conn, items []A
 	}
 
 	for _, item := range items {
-		// 转换 cost 到 shopspring/decimal 以防止 float 精度丢失 (ClickHouse-go v2 需要适配)
-		// 也可以直接传 float64，驱动能根据列类型转换，但通过 decimal 包会更精确
+		// use decimal for cost to prevent float precision loss (ClickHouse-go v2 adaptation)
 		err = batch.Append(
 			item.RequestID,
 			item.Time,

@@ -12,12 +12,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// RequestLimitExecutor 针对请求数 (QPS/RPM) 的限流执行器
+// RequestLimitExecutor enforces request-count (QPS/RPM) rate limits.
 type RequestLimitExecutor struct {
 	stateStore core.StateStore
 }
 
-// NewRequestLimitExecutor 创建 RequestLimitExecutor 实例
+// NewRequestLimitExecutor creates a RequestLimitExecutor.
 type TokenBucketLimiter interface {
 	RateLimitTake(ctx context.Context, key string, tokens int64, limit int64, capacity int64, window time.Duration, now time.Time) (bool, int64, error)
 }

@@ -50,7 +50,7 @@ func NewPublisher(cfg PublisherConfig, redisClient *redis.Client, adminURL strin
 		}
 	}
 
-	// 强制包装成 AsyncPublisher，保证高并发时绝不阻塞主流程，并在积压时安全丢弃
+	// Always wrap as AsyncPublisher: never block hot path; drop when backlog full.
 	asyncPub := NewAsyncPublisher(delegate, 1024)
 	asyncPub.SetEventsConfig(cfg.Types)
 	return asyncPub

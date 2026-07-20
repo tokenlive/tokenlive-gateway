@@ -19,15 +19,15 @@ type timeBucket struct {
 type circuitBreakerEntry struct {
 	mu            sync.Mutex
 	state         CircuitState
-	windowType    string       // "count" 或 "time"
-	results       []bool       // 次数窗口的样本数据：true=成功, false=失败
-	buckets       []timeBucket // 时间窗口的样本数据
+	windowType    string       // "count" or "time"
+	results       []bool       // count-window samples: true=success, false=failure
+	buckets       []timeBucket // time-window samples
 	openSince     time.Time
 	recoveryTO    time.Duration
 	windowSize    int
 	failThresh    int
-	hoSuccessThr  int // 半开状态下所需的连续成功数
-	activeCalls   int // 当前正在进行的半开探路并发数
+	hoSuccessThr  int // consecutive successes required in half-open state
+	activeCalls   int // in-flight half-open probe concurrency
 	policyVersion int64
 	modelCode     string
 	policyID      string
@@ -45,7 +45,6 @@ func (e *circuitBreakerEntry) record(success bool, now time.Time, windowType str
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// 释放半开状态的探路并发数限制
 	if e.state == CircuitHalfOpen && e.activeCalls > 0 {
 		e.activeCalls--
 	}
@@ -201,7 +200,7 @@ func (e *circuitBreakerEntry) computeState(now time.Time) CircuitState {
 	case CircuitOpen:
 		if now.Sub(e.openSince) >= e.recoveryTO {
 			e.state = CircuitHalfOpen
-			e.results = nil // 清除旧结果，避免 Half-Open 阶段被 Closed→Open 期间的失败污染
+			e.results = nil // clear stale results to avoid polluting half-open phase with Closed→Open failures
 			e.buckets = nil
 		}
 	case CircuitHalfOpen:
@@ -217,7 +216,7 @@ func (e *circuitBreakerEntry) computeState(now time.Time) CircuitState {
 		if failures > 0 {
 			e.state = CircuitOpen
 			e.openSince = now
-			e.results = nil // 清除旧结果
+			e.results = nil // clear stale results
 			e.buckets = nil
 		} else {
 			thr := e.hoSuccessThr
@@ -272,12 +271,12 @@ func (e *circuitBreakerEntry) tryAcquireHalfOpenPermit(enableActive bool) bool {
 		return e.state == CircuitClosed
 	}
 
-	// 如果开启了主动健康探测，许可数直接为 0 (禁止真实流量探路，纯靠背景探测协程探活并 Reset)
+	// With active health probing enabled, permits are 0 (real traffic cannot probe; background goroutine probes and resets)
 	if enableActive {
 		return false
 	}
 
-	// 否则，仅限 1 个真实流量并发探路
+	// Without active probing, allow at most 1 concurrent real-traffic probe
 	if e.activeCalls < 1 {
 		e.activeCalls++
 		return true
@@ -285,31 +284,31 @@ func (e *circuitBreakerEntry) tryAcquireHalfOpenPermit(enableActive bool) bool {
 	return false
 }
 
-// CircuitBreakerManager 管理双层熔断器。
+// CircuitBreakerManager manages dual-layer circuit breakers (service and instance level).
 type CircuitBreakerManager struct {
 	mu           sync.RWMutex
 	entries      map[string]*circuitBreakerEntry
-	rdb          *redis.Client // 共享的 Redis 客户端，用于同步熔断状态
+	rdb          *redis.Client // shared Redis client for syncing breaker state
 	logger       *zap.Logger
-	metrics      *CircuitBreakerMetrics // 指标发射器
-	eventHandler CBEventHandler         // 状态变更事件回调
+	metrics      *CircuitBreakerMetrics // metrics emitter
+	eventHandler CBEventHandler         // state-change event callback
 }
 
-// NewCircuitBreakerManager 创建熔断管理器，使用内部独立的内存状态存储。
+// NewCircuitBreakerManager creates a circuit breaker manager with an independent in-memory state store.
 func NewCircuitBreakerManager() *CircuitBreakerManager {
 	return &CircuitBreakerManager{
 		entries: make(map[string]*circuitBreakerEntry),
 	}
 }
 
-// SetRDB 注入共享 Redis 客户端
+// SetRDB injects the shared Redis client.
 func (cbm *CircuitBreakerManager) SetRDB(rdb *redis.Client) {
 	cbm.mu.Lock()
 	defer cbm.mu.Unlock()
 	cbm.rdb = rdb
 }
 
-// SetLogger 注入共享 Logger
+// SetLogger injects the shared logger.
 func (cbm *CircuitBreakerManager) SetLogger(logger *zap.Logger) {
 	cbm.mu.Lock()
 	defer cbm.mu.Unlock()
@@ -336,21 +335,21 @@ type CBEvent struct {
 // CBEventHandler is called when the circuit breaker transitions to Open.
 type CBEventHandler func(evt CBEvent)
 
-// SetEventHandler 注入状态变更事件回调
+// SetEventHandler injects the state-change event callback.
 func (cbm *CircuitBreakerManager) SetEventHandler(handler CBEventHandler) {
 	cbm.mu.Lock()
 	defer cbm.mu.Unlock()
 	cbm.eventHandler = handler
 }
 
-// SetMetrics 注入指标发射器
+// SetMetrics injects the metrics emitter.
 func (cbm *CircuitBreakerManager) SetMetrics(metrics *CircuitBreakerMetrics) {
 	cbm.mu.Lock()
 	defer cbm.mu.Unlock()
 	cbm.metrics = metrics
 }
 
-// onStateChange 在熔断器状态变迁时打印日志、同步写入 Redis 集合并发射指标
+// onStateChange logs state transitions, syncs to Redis sets, and emits metrics.
 func (cbm *CircuitBreakerManager) onStateChange(key string, oldState, newState CircuitState) {
 	if cbm.logger != nil {
 		cbm.logger.Warn("circuit breaker state changed",
@@ -397,12 +396,12 @@ func (cbm *CircuitBreakerManager) onStateChange(key string, oldState, newState C
 		}
 	}
 
-	// 被动触发：状态变更时立即发射指标
+	// Passive trigger: emit metrics immediately on state change
 	if cbm.metrics != nil {
 		cbm.metrics.RecordState(key, modelCode, newState)
 	}
 
-	// 状态变为 Open 时触发事件回调
+	// Trigger event callback when state transitions to Open
 	if newState == CircuitOpen && cbm.eventHandler != nil {
 		cbm.eventHandler(CBEvent{
 			Key:          key,
@@ -704,15 +703,15 @@ func (cbm *CircuitBreakerManager) AllowRequest(key string, enableActive bool) bo
 	if newState == CircuitOpen {
 		return false
 	}
-	// Half-Open 状态
+	// Half-open state
 	if enableActive {
 		return false
 	}
-	// 如果没有开启主动探活，且当前探活并发数未满，则允许通过作为备选
+	// Without active probing, allow through as fallback if probe concurrency is not full
 	return entry.activeCalls < 1
 }
 
-// AcquireHalfOpenPermit 尝试抢占半开状态下的探路许可，递增并发数
+// AcquireHalfOpenPermit attempts to acquire a half-open probe permit, incrementing concurrency.
 func (cbm *CircuitBreakerManager) AcquireHalfOpenPermit(key string, enableActive bool) bool {
 	cbm.mu.RLock()
 	entry, exists := cbm.entries[key]
@@ -723,7 +722,7 @@ func (cbm *CircuitBreakerManager) AcquireHalfOpenPermit(key string, enableActive
 	return entry.tryAcquireHalfOpenPermit(enableActive)
 }
 
-// ReleaseHalfOpenPermit 退还已经抢占的半开状态探路许可
+// ReleaseHalfOpenPermit returns a previously acquired half-open probe permit.
 func (cbm *CircuitBreakerManager) ReleaseHalfOpenPermit(key string) {
 	cbm.mu.RLock()
 	entry, exists := cbm.entries[key]
@@ -738,8 +737,8 @@ func (cbm *CircuitBreakerManager) ReleaseHalfOpenPermit(key string) {
 	entry.mu.Unlock()
 }
 
-// GetOpenSince 返回指定 key 的熔断打开时间，用于按时间排序
-// 如果 key 不存在或未处于 Open/HalfOpen 状态，返回零值时间
+// GetOpenSince returns the time the breaker opened for the given key (for time-based sorting).
+// Returns zero time if the key does not exist or is not in Open/HalfOpen state.
 func (cbm *CircuitBreakerManager) GetOpenSince(key string) time.Time {
 	cbm.mu.RLock()
 	entry, exists := cbm.entries[key]
@@ -755,7 +754,7 @@ func (cbm *CircuitBreakerManager) GetOpenSince(key string) time.Time {
 	return entry.openSince
 }
 
-// GetOpenBreakers 返回所有当前处于 Open 状态的端点 ID 列表和模型服务 Key 列表
+// GetOpenBreakers returns all endpoint IDs and service keys currently in Open state.
 func (cbm *CircuitBreakerManager) GetOpenBreakers() ([]string, []string) {
 	cbm.mu.RLock()
 	defer cbm.mu.RUnlock()

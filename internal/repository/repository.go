@@ -37,6 +37,10 @@ func LoadRedisConfig(conf *viper.Viper) *RedisConfig {
 		PoolSize:     conf.GetInt("data.redis.pool_size"),
 		MinIdleConns: conf.GetInt("data.redis.min_idle_conns"),
 	}
+	// Empty addr means Redis is optional / disabled (e.g. single-host all-in-one).
+	if cfg.Addr == "" {
+		return nil
+	}
 	if cfg.PoolSize <= 0 {
 		cfg.PoolSize = 10 * runtime.GOMAXPROCS(0)
 	}

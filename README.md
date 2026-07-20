@@ -123,6 +123,19 @@ make build
 
 For production environments, we highly recommend using the unified deploy project: [tokenlive-deploy](https://github.com/tokenlive/tokenlive-deploy) to deploy the entire TokenLive stack (including Admin Console, Gateway, Redis, Prometheus, and Caddy reverse proxy) with a single command.
 
+### Homebrew (macOS Single-Host)
+
+For macOS single-host deployment with Gateway + Admin in one process:
+
+```bash
+brew tap tokenlive/tokenlive
+brew install tokenlive
+brew services start tokenlive
+# http://127.0.0.1:2525  admin / admin
+```
+
+See [tokenlive-standalone](https://github.com/tokenlive/tokenlive-standalone) for details.
+
 ### Call API
 
 ```bash

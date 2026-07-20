@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// HealthStatus 健康状态
+// HealthStatus represents health status.
 type HealthStatus string
 
 const (
@@ -19,28 +19,28 @@ const (
 	HealthStatusUnknown   HealthStatus = "unknown"
 )
 
-// StaticDiscovery 静态服务发现（直接从配置读取，使用模型 model 为 key）
+// StaticDiscovery reads endpoints directly from config, keyed by model.
 type StaticDiscovery struct {
 	endpoints           map[string][]*Endpoint // model -> endpoints
 	mu                  sync.RWMutex
-	endpointCheckStates sync.Map // 细粒度探活状态缓存
+	endpointCheckStates sync.Map // fine-grained health-check state cache
 }
 
-// NewStaticDiscovery 创建静态服务发现
+// NewStaticDiscovery creates a static discovery.
 func NewStaticDiscovery() *StaticDiscovery {
 	return &StaticDiscovery{
 		endpoints: make(map[string][]*Endpoint),
 	}
 }
 
-// RegisterService 注册服务端点
+// RegisterService registers service endpoints.
 func (sd *StaticDiscovery) RegisterService(model string, endpoints []*Endpoint) {
 	sd.mu.Lock()
 	defer sd.mu.Unlock()
 	sd.endpoints[model] = endpoints
 }
 
-// List 实现 core.Discovery 接口
+// List implements core.Discovery.
 func (sd *StaticDiscovery) List(ctx context.Context, model string) ([]*Endpoint, error) {
 	sd.mu.RLock()
 	defer sd.mu.RUnlock()
@@ -50,13 +50,13 @@ func (sd *StaticDiscovery) List(ctx context.Context, model string) ([]*Endpoint,
 		return nil, fmt.Errorf("model not found in static config: %s", model)
 	}
 
-	// 返回副本，避免外部修改
+	// Return a copy to prevent external mutation
 	result := make([]*Endpoint, len(endpoints))
 	copy(result, endpoints)
 	return result, nil
 }
 
-// Watch 实现 core.Discovery 接口（静态发现不支持 watch，只推送一次）
+// Watch implements core.Discovery (static discovery does not support watching; pushes once only).
 func (sd *StaticDiscovery) Watch(ctx context.Context, model string) (<-chan []*Endpoint, error) {
 	ch := make(chan []*Endpoint, 1)
 
@@ -74,17 +74,17 @@ func (sd *StaticDiscovery) Watch(ctx context.Context, model string) (<-chan []*E
 	return ch, nil
 }
 
-// Close 实现 core.Discovery 接口
+// Close implements core.Discovery.
 func (sd *StaticDiscovery) Close() error {
 	return nil
 }
 
-// UpdateHealthAll 更新指定模型所有实例的健康状态
+// UpdateHealthAll updates the health status of all instances for the given model.
 func (sd *StaticDiscovery) UpdateHealthAll(model string, health HealthStatus) {
 	sd.mu.Lock()
 	defer sd.mu.Unlock()
 
-	// 这里的 model 参数其实是 Provider Name
+	// The model parameter here is actually the Provider Name
 	for _, eps := range sd.endpoints {
 		for _, ep := range eps {
 			if ep.Provider == model {
@@ -94,7 +94,7 @@ func (sd *StaticDiscovery) UpdateHealthAll(model string, health HealthStatus) {
 	}
 }
 
-// GetAllEndpoints 返回静态服务发现注册的所有端点的唯一列表
+// GetAllEndpoints returns the deduplicated list of all registered endpoints.
 func (sd *StaticDiscovery) GetAllEndpoints() []*Endpoint {
 	sd.mu.RLock()
 	defer sd.mu.RUnlock()
@@ -117,7 +117,7 @@ type endpointCheckState struct {
 	successCount int
 }
 
-// StartHealthCheck 启动粗粒度和细粒度的健康检测协程
+// StartHealthCheck starts coarse-grained and fine-grained health check goroutines.
 func (sd *StaticDiscovery) StartHealthCheck(
 	ctx context.Context,
 	providers map[string]Provider,
@@ -126,7 +126,7 @@ func (sd *StaticDiscovery) StartHealthCheck(
 	interval time.Duration,
 	enableActive bool,
 ) {
-	// 1. 启动原有粗粒度 Provider 健康检查
+	// 1. Start coarse-grained Provider health check
 	if len(providers) > 0 {
 		go func() {
 			ticker := time.NewTicker(interval)
@@ -142,7 +142,7 @@ func (sd *StaticDiscovery) StartHealthCheck(
 		}()
 	}
 
-	// 2. 启动细粒度 Endpoint 自适应探测健康检查
+	// 2. Start fine-grained adaptive Endpoint health check
 	if enableActive {
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
@@ -197,7 +197,7 @@ func (sd *StaticDiscovery) runEndpointHealthChecks(ctx context.Context, cbManage
 			successCount = s.successCount
 		}
 
-		// 自适应频次：健康(Closed)探测间隔 30s，非健康(Open/HalfOpen)探测间隔 5s
+		// Adaptive frequency: Closed (healthy) probes every 30s, Open/HalfOpen probes every 5s
 		interval := 30 * time.Second
 		if state == CircuitOpen || state == CircuitHalfOpen {
 			interval = 5 * time.Second
@@ -207,7 +207,7 @@ func (sd *StaticDiscovery) runEndpointHealthChecks(ctx context.Context, cbManage
 			continue
 		}
 
-		// 异步进行健康探测，避免慢端点阻碍主检查循环
+		// Probe asynchronously to avoid slow endpoints blocking the main check loop
 		go func(epCopy *Endpoint, currentSuccessCount int) {
 			err := sd.probeEndpoint(ctx, epCopy)
 
@@ -218,7 +218,7 @@ func (sd *StaticDiscovery) runEndpointHealthChecks(ctx context.Context, cbManage
 					zap.String("endpoint_id", epCopy.ID),
 					zap.Int("success_count", newSuccessCount))
 
-				// 连续 3 次探测成功，强设熔断器为 Closed (恢复健康)
+				// 3 consecutive probe successes force circuit breaker to Closed (recovered)
 				if newSuccessCount >= 3 {
 					logger.Info("endpoint health check success 3 times consecutively, resetting circuit breaker",
 						zap.String("endpoint_id", epCopy.ID))
@@ -257,7 +257,7 @@ func (sd *StaticDiscovery) probeEndpoint(ctx context.Context, ep *Endpoint) erro
 		return err
 	}
 
-	// 传递必要的认证信息以通过安全校验
+	// Pass necessary auth credentials to pass security validation
 	if ep.APIKey != "" {
 		if ep.AuthType == "oauth_token" {
 			req.Header.Set("Authorization", "Bearer "+ep.APIKey)

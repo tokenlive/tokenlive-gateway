@@ -7,16 +7,16 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
 
-// 最低延迟负载均衡器默认统计窗口。
+// Default stats window for least-latency LB.
 const defaultLatencyWindow = 5 * time.Minute
 
-// LeastLatencyLoadBalancer 最低延迟负载均衡器
+// LeastLatencyLoadBalancer picks the lowest average latency endpoint.
 type LeastLatencyLoadBalancer struct {
 	stateStore core.StateStore
 	window     time.Duration
 }
 
-// NewLeastLatencyLoadBalancer 创建最低延迟负载均衡器
+// NewLeastLatencyLoadBalancer creates a least-latency LB.
 func NewLeastLatencyLoadBalancer(ss core.StateStore) *LeastLatencyLoadBalancer {
 	return &LeastLatencyLoadBalancer{
 		stateStore: ss,
@@ -24,10 +24,10 @@ func NewLeastLatencyLoadBalancer(ss core.StateStore) *LeastLatencyLoadBalancer {
 	}
 }
 
-// Select 选择平均延迟最低的端点。
-// 配置项从 gctx.Policy.LoadBalancePolicy.Params 现读（与 SessionReaderFilter 一致）：
-//   - latency_window: 统计窗口秒数（默认 300）
-//   - latency_metric: "total"（整单耗时，默认）或 "ttft"（首包耗时，仅流式有意义）
+// Select picks the endpoint with lowest average latency.
+// Params from gctx.Policy.LoadBalancePolicy.Params (live read):
+//   - latency_window: window seconds (default 300)
+//   - latency_metric: "total" (full; default) or "ttft" (stream first-byte)
 func (lb *LeastLatencyLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*core.Endpoint) core.Invoker {
 	if len(endpoints) == 0 {
 		return nil
@@ -35,7 +35,7 @@ func (lb *LeastLatencyLoadBalancer) Select(gctx *core.GatewayContext, endpoints 
 
 	window, metric := lb.resolveConfig(gctx)
 
-	// 根据指标选择查询源：ttft 走独立序列，否则走整单耗时序列。
+	// Query source: ttft series vs full-latency series.
 	queryAvg := func(epID string) (time.Duration, error) {
 		if metric == "ttft" {
 			return lb.stateStore.GetAvgTTFT(gctx.Ctx, epID, window)
@@ -49,18 +49,18 @@ func (lb *LeastLatencyLoadBalancer) Select(gctx *core.GatewayContext, endpoints 
 	for _, ep := range endpoints {
 		avgLatency, err := queryAvg(ep.ID)
 		if err != nil {
-			// 查询失败时视为无限延迟，跳过
+			// Query failure: treat as infinite latency, skip.
 			continue
 		}
 
-		// 0 延迟（无采样数据）视为可选
+		// Zero latency (no samples) is still selectable.
 		if minLatency < 0 || avgLatency < minLatency {
 			minLatency = avgLatency
 			selected = ep
 		}
 	}
 
-	// 如果所有端点查询都失败，回退选择第一个
+	// If all queries fail, pick the first endpoint.
 	if selected == nil {
 		selected = endpoints[0]
 	}
@@ -68,7 +68,7 @@ func (lb *LeastLatencyLoadBalancer) Select(gctx *core.GatewayContext, endpoints 
 	return invoker.NewProviderInvoker(selected.ProviderImpl, selected)
 }
 
-// resolveConfig 从 Policy.Params 读取 latency_window 与 latency_metric，缺省回退到默认值。
+// resolveConfig reads latency_window and latency_metric from Policy.Params.
 func (lb *LeastLatencyLoadBalancer) resolveConfig(gctx *core.GatewayContext) (window time.Duration, metric string) {
 	window = lb.window
 	metric = "total"
@@ -78,7 +78,7 @@ func (lb *LeastLatencyLoadBalancer) resolveConfig(gctx *core.GatewayContext) (wi
 	}
 	params := gctx.Policy.LoadBalancePolicy.Params
 
-	// latency_window：支持数字（YAML 经 JSON 解析为 float64）或字符串
+	// latency_window: number (float64 via YAML/JSON) or string
 	if v, ok := params["latency_window"]; ok {
 		switch x := v.(type) {
 		case float64:
@@ -96,7 +96,7 @@ func (lb *LeastLatencyLoadBalancer) resolveConfig(gctx *core.GatewayContext) (wi
 		}
 	}
 
-	// latency_metric：total（默认）或 ttft
+	// latency_metric: total (default) or ttft
 	if v, ok := params["latency_metric"]; ok {
 		if s, ok := v.(string); ok && (s == "ttft" || s == "total") {
 			metric = s

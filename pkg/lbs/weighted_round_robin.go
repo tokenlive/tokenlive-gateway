@@ -7,21 +7,21 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
 
-// WeightedRoundRobinLoadBalancer 加权轮询负载均衡器
-// 采用平滑加权轮询算法（Smooth Weighted Round-Robin）
+// WeightedRoundRobinLoadBalancer uses smooth weighted round-robin.
+// Smooth Weighted Round-Robin algorithm.
 type WeightedRoundRobinLoadBalancer struct {
 	mu      sync.Mutex
-	weights map[string]int // 当前有效权重
+	weights map[string]int // Current effective weights
 }
 
-// NewWeightedRoundRobinLoadBalancer 创建加权轮询负载均衡器
+// NewWeightedRoundRobinLoadBalancer creates a weighted RR LB.
 func NewWeightedRoundRobinLoadBalancer() *WeightedRoundRobinLoadBalancer {
 	return &WeightedRoundRobinLoadBalancer{
 		weights: make(map[string]int),
 	}
 }
 
-// Select 使用平滑加权轮询算法选择端点
+// Select uses smooth weighted round-robin.
 func (lb *WeightedRoundRobinLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*core.Endpoint) core.Invoker {
 	if len(endpoints) == 0 {
 		return nil
@@ -30,7 +30,7 @@ func (lb *WeightedRoundRobinLoadBalancer) Select(gctx *core.GatewayContext, endp
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 
-	// 计算总权重并初始化有效权重
+	// Sum weights and init effective weights.
 	totalWeight := 0
 	for _, ep := range endpoints {
 		w := ep.Weight
@@ -44,7 +44,7 @@ func (lb *WeightedRoundRobinLoadBalancer) Select(gctx *core.GatewayContext, endp
 		}
 	}
 
-	// 平滑加权轮询：每个端点 current += weight，选最大的，再减 totalWeight
+	// Smooth WRR: current += weight, pick max, then -= totalWeight.
 	var selected *core.Endpoint
 	maxWeight := -1
 

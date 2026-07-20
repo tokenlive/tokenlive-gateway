@@ -7,18 +7,18 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
 
-// CreditsChecker 余额检查器接口（用于解耦和测试）
+// CreditsChecker checks API key balance (decoupled for testing).
 type CreditsChecker interface {
 	CheckCredits(ctx context.Context, apiKey string) error
 }
 
-// CreditsCheckFilter 余额预检过滤器，在请求开始前检查用户 API Key 的余额是否充足
-// 仅对个人用户（UserID != ""）进行余额检查，租户跳过
+// CreditsCheckFilter pre-checks API key credits before the request starts.
+// Only checks for individual users (UserID != ""); tenants are skipped.
 type CreditsCheckFilter struct {
 	creditsChecker CreditsChecker
 }
 
-// NewCreditsCheckFilter 创建 CreditsCheckFilter
+// NewCreditsCheckFilter creates a CreditsCheckFilter.
 func NewCreditsCheckFilter(checker CreditsChecker) *CreditsCheckFilter {
 	return &CreditsCheckFilter{
 		creditsChecker: checker,
@@ -26,10 +26,10 @@ func NewCreditsCheckFilter(checker CreditsChecker) *CreditsCheckFilter {
 }
 
 func (f *CreditsCheckFilter) Name() string { return "credits_check" }
-func (f *CreditsCheckFilter) Order() int   { return 15 } // 在 AuthFilter(10) 之后，LimitFilter(20) 之前
+func (f *CreditsCheckFilter) Order() int   { return 15 } // after AuthFilter(10), before LimitFilter(20)
 
 func (f *CreditsCheckFilter) OnRequest(gctx *core.GatewayContext) error {
-	// 无论个人用户还是租户用户，都必须拥有有效的计费策略配置
+	// billing policy is required for all users
 	if gctx.Policy == nil || gctx.Policy.Billing == nil {
 		return &HTTPError{
 			Code:    http.StatusForbidden,
@@ -37,15 +37,14 @@ func (f *CreditsCheckFilter) OnRequest(gctx *core.GatewayContext) error {
 		}
 	}
 
-	// 只对个人用户（UserID != ""）进行余额检查
-	// 租户场景（Tenant != ""）跳过余额检查
+	// skip credit check for tenants
 	if gctx.UserID == "" {
 		return nil
 	}
 
-	// 检查 API Key 余额
+	// check API key balance
 	if err := f.creditsChecker.CheckCredits(gctx.Ctx, gctx.APIKey); err != nil {
-		// 余额不足，返回 429 错误
+		// insufficient credits
 		return &HTTPError{
 			Code:    http.StatusTooManyRequests,
 			Message: "Credits exceeded. Please contact your administrator to recharge.",

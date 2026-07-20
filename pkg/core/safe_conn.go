@@ -7,51 +7,51 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// SafeWebSocketConn 并发安全的 WebSocket 连接封装，防范 Read/Write 的并发冲突问题
+// SafeWebSocketConn is a concurrency-safe WebSocket conn wrapper.
 type SafeWebSocketConn struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
 }
 
-// NewSafeWebSocketConn 创建并发安全的包装器
+// NewSafeWebSocketConn wraps conn with write mutexes.
 func NewSafeWebSocketConn(conn *websocket.Conn) *SafeWebSocketConn {
 	return &SafeWebSocketConn{conn: conn}
 }
 
-// WriteMessage 写入普通数据消息 (Text/Binary)
+// WriteMessage writes a data message (Text/Binary).
 func (s *SafeWebSocketConn) WriteMessage(messageType int, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conn.WriteMessage(messageType, data)
 }
 
-// WriteJSON 写入 JSON 数据
+// WriteJSON writes a JSON message.
 func (s *SafeWebSocketConn) WriteJSON(v interface{}) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conn.WriteJSON(v)
 }
 
-// WriteControl 写入控制数据消息 (Ping/Pong/Close)
+// WriteControl writes a control frame (Ping/Pong/Close).
 func (s *SafeWebSocketConn) WriteControl(messageType int, data []byte, deadline time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conn.WriteControl(messageType, data, deadline)
 }
 
-// ReadMessage 读取消息（Read 不需要加锁，因为读循环通常是由单一协程顺序执行的）
+// ReadMessage reads a message (no lock; single reader expected).
 func (s *SafeWebSocketConn) ReadMessage() (messageType int, p []byte, err error) {
 	return s.conn.ReadMessage()
 }
 
-// Close 关闭底层连接
+// Close closes the underlying connection.
 func (s *SafeWebSocketConn) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conn.Close()
 }
 
-// UnderlyingConn 获取底层原生的 *websocket.Conn
+// UnderlyingConn returns the raw *websocket.Conn.
 func (s *SafeWebSocketConn) UnderlyingConn() *websocket.Conn {
 	return s.conn
 }

@@ -2,8 +2,8 @@ package routers
 
 import "github.com/tokenlive/tokenlive-gateway/pkg/core"
 
-// CapabilityRouter 根据请求类型过滤不支持该类型的 Endpoint。
-// 例如：embedding 请求只路由到声明了 embedding 能力的 Endpoint。
+// CapabilityRouter drops endpoints that do not support the request type.
+// e.g. embedding requests only reach embedding-capable endpoints.
 type CapabilityRouter struct{}
 
 func (r *CapabilityRouter) Name() string { return "capability" }

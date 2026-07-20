@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// RequestType 请求类型枚举
+// RequestType is a request-type enum.
 type RequestType string
 
 const (
@@ -17,35 +17,35 @@ const (
 	RequestTypeGeminiGenerateContent RequestType = "gemini_generate_content"
 )
 
-// Endpoint Gateway 层的端点视图
+// Endpoint is the gateway-layer endpoint view.
 type Endpoint struct {
 	ID               string
 	Code             string
 	URL              string
 	Provider         string
 	Model            string
-	UpstreamModel    string // 实际发给上游的模型名，为空时回退到 Model
+	UpstreamModel    string // Upstream model name; empty falls back to Model
 	Metadata         map[string]string
 	Weight           int
-	Priority         int // 优先级（越小越优先）
+	Priority         int // Priority (lower is higher)
 	RequestTypes     []RequestType
 	Healthy          bool
-	ProviderImpl     Provider          // 关联 of Provider implementation, filled by Discovery or Engine
-	Headers          map[string]string // 自定义 Header
-	APIKey           string            // 认证凭证
-	AuthType         string            // 认证类型: api_key, oauth_token
-	ProviderProtocol string            // 协议类型，如 "openai", "anthropic"
+	ProviderImpl     Provider          // Provider implementation; set by Discovery or Engine
+	Headers          map[string]string // Custom headers
+	APIKey           string            // Auth credential
+	AuthType         string            // Auth type: api_key, oauth_token
+	ProviderProtocol string            // Protocol, e.g. "openai", "anthropic"
 
-	// 新增 Endpoint 费率单价（为 nil 时继承 Model 的 Policy.Billing 费率）
+	// Per-endpoint rates; nil inherits Model Policy.Billing
 	InputPrice         *float64
 	OutputPrice        *float64
 	CachedPrice        *float64
 	CacheCreationPrice *float64
 }
 
-// SupportsRequestType 检查端点是否支持指定请求类型。
-// RequestTypes 表达模型/端点声明约束，ProviderProtocol 表达实际适配器能力；
-// 二者必须同时满足，避免把 OpenAI Chat 能力误判给没有对应 invoker 的协议。
+// SupportsRequestType reports whether the endpoint supports the request type.
+// RequestTypes are declared constraints; ProviderProtocol is adapter capability.
+// Both must match to avoid misrouting to unsupported protocol invokers.
 func (ep *Endpoint) SupportsRequestType(rt RequestType) bool {
 	if ep == nil {
 		return false
@@ -65,6 +65,11 @@ func (ep *Endpoint) SupportsRequestType(rt RequestType) bool {
 		case RequestTypeMessages, RequestTypeResponses:
 			return true
 		}
+	}
+
+	// Endpoints declaring messages can serve responses via protocol translation.
+	if ep.declaresRequestType(RequestTypeMessages) && rt == RequestTypeResponses {
+		return true
 	}
 
 	return false
@@ -87,7 +92,8 @@ func (ep *Endpoint) protocolSupportsRequestType(rt RequestType) bool {
 			return true
 		}
 	case ProtocolAnthropic:
-		return rt == RequestTypeMessages
+		// responses is served by the anthropicResponsesInvoker protocol translation.
+		return rt == RequestTypeMessages || rt == RequestTypeResponses
 	case ProtocolGemini:
 		return rt == RequestTypeGeminiGenerateContent
 	case ProtocolJoyCode:
@@ -101,7 +107,7 @@ func (ep *Endpoint) protocolSupportsRequestType(rt RequestType) bool {
 	return false
 }
 
-// CostPerToken 从 metadata 获取每 token 成本
+// CostPerToken returns per-token cost from metadata.
 func (ep *Endpoint) CostPerToken() float64 {
 	if v, ok := ep.Metadata["cost_per_token"]; ok {
 		var f float64
@@ -111,7 +117,7 @@ func (ep *Endpoint) CostPerToken() float64 {
 	return 0
 }
 
-// EffectiveModel 返回实际发给上游的模型名
+// EffectiveModel returns the model name sent upstream.
 func (ep *Endpoint) EffectiveModel() string {
 	if ep.UpstreamModel != "" {
 		return ep.UpstreamModel
@@ -119,12 +125,12 @@ func (ep *Endpoint) EffectiveModel() string {
 	return ep.Model
 }
 
-// Protocol 返回类型化的协议簇(从 ProviderProtocol 字段读取)
+// Protocol returns the protocol family from ProviderProtocol.
 func (ep *Endpoint) Protocol() ProtocolFamily {
 	return ProtocolFamily(ep.ProviderProtocol)
 }
 
-// AttemptRecord 单次尝试记录
+// AttemptRecord records one invoke attempt.
 type AttemptRecord struct {
 	Model        string
 	EndpointID   string
@@ -139,7 +145,7 @@ type AttemptRecord struct {
 	Timestamp    time.Time
 }
 
-// CircuitState 熔断器状态
+// CircuitState is circuit-breaker state.
 type CircuitState int
 
 const (

@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// DynamicEndpoint 动态端点描述结构
+// DynamicEndpoint describes a dynamically discovered endpoint.
 type DynamicEndpoint struct {
 	ID                 string
 	Code               string
@@ -25,27 +25,27 @@ type DynamicEndpoint struct {
 	CacheCreationPrice *float64
 }
 
-// DynamicEndpointProvider 动态端点提供者接口
+// DynamicEndpointProvider is the interface for dynamic endpoint providers.
 type DynamicEndpointProvider interface {
 	GetEndpoints(ctx context.Context, model string) []DynamicEndpoint
 }
 
-// DynamicDiscovery 负责从动态数据接口获取端点信息并封装为 Endpoint 实例
+// DynamicDiscovery fetches endpoint info from a dynamic data source and wraps it as Endpoint instances.
 type DynamicDiscovery struct {
 	provider DynamicEndpointProvider
 }
 
-// NewDynamicDiscovery 创建 DynamicDiscovery
+// NewDynamicDiscovery creates a DynamicDiscovery.
 func NewDynamicDiscovery() *DynamicDiscovery {
 	return &DynamicDiscovery{}
 }
 
-// SetDynamicProvider 设置动态端点提供器
+// SetDynamicProvider sets the dynamic endpoint provider.
 func (d *DynamicDiscovery) SetDynamicProvider(provider DynamicEndpointProvider) {
 	d.provider = provider
 }
 
-// List 实现 core.Discovery 接口
+// List implements core.Discovery.
 func (d *DynamicDiscovery) List(ctx context.Context, model string) ([]*Endpoint, error) {
 	if d.provider == nil {
 		return nil, fmt.Errorf("dynamic provider not configured")
@@ -96,7 +96,7 @@ func (d *DynamicDiscovery) List(ctx context.Context, model string) ([]*Endpoint,
 	return result, nil
 }
 
-// Watch 实现 core.Discovery 接口
+// Watch implements core.Discovery.
 func (d *DynamicDiscovery) Watch(ctx context.Context, model string) (<-chan []*Endpoint, error) {
 	endpoints, err := d.List(ctx, model)
 	if err != nil {
@@ -114,7 +114,7 @@ func (d *DynamicDiscovery) Watch(ctx context.Context, model string) (<-chan []*E
 	return ch, nil
 }
 
-// Close 实现 core.Discovery 接口
+// Close implements core.Discovery.
 func (d *DynamicDiscovery) Close() error {
 	return nil
 }

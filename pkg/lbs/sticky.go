@@ -8,8 +8,8 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
 
-// StickyLoadBalancer 会话粘滞负载均衡器
-// 优先使用之前会话选择的端点，如果没有则回退到备用负载均衡器
+// StickyLoadBalancer prefers the session-bound endpoint.
+// Prefer prior session endpoint; else fallback LB.
 type StickyLoadBalancer struct {
 	stateStore core.StateStore
 	fallback   core.LoadBalancer
@@ -17,7 +17,7 @@ type StickyLoadBalancer struct {
 	ttl        time.Duration
 }
 
-// NewStickyLoadBalancer 创建会话粘滞负载均衡器
+// NewStickyLoadBalancer creates a sticky LB.
 func NewStickyLoadBalancer(ss core.StateStore, fallback core.LoadBalancer, keyFunc func(*core.GatewayContext) string, ttl time.Duration) *StickyLoadBalancer {
 	return &StickyLoadBalancer{
 		stateStore: ss,
@@ -27,7 +27,7 @@ func NewStickyLoadBalancer(ss core.StateStore, fallback core.LoadBalancer, keyFu
 	}
 }
 
-// Select 选择端点，优先使用会话粘滞
+// Select prefers sticky session endpoint.
 func (lb *StickyLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*core.Endpoint) core.Invoker {
 	key := lb.keyFunc(gctx)
 	if key != "" {

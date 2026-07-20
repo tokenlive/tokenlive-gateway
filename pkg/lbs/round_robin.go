@@ -9,20 +9,20 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
 
-// RoundRobin 轮询负载均衡器
+// RoundRobin is a round-robin load balancer.
 type RoundRobin struct {
 	mu       sync.Mutex
 	counters map[string]*uint64
 }
 
-// NewRoundRobin 创建轮询负载均衡器
+// NewRoundRobin creates a round-robin LB.
 func NewRoundRobin() *RoundRobin {
 	return &RoundRobin{
 		counters: make(map[string]*uint64),
 	}
 }
 
-// Select 轮询选择一个端点
+// Select picks the next endpoint in order.
 func (lb *RoundRobin) Select(gctx *core.GatewayContext, endpoints []*core.Endpoint) core.Invoker {
 	if len(endpoints) == 0 {
 		return nil

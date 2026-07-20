@@ -2,7 +2,6 @@ package providers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,10 +16,11 @@ func init() {
 		return NewAnthropicProvider(name, baseURL, apiKey, models)
 	})
 	core.RegisterRequestInvoker(core.ProviderAnthropic, core.RequestTypeMessages, &anthropicMessagesInvoker{})
+	core.RegisterRequestInvoker(core.ProviderAnthropic, core.RequestTypeResponses, &anthropicResponsesInvoker{})
 }
 
-// AnthropicProvider 实现 core.Provider 接口，适配 Anthropic Messages API。
-// 在 OpenAI 兼容格式和 Anthropic 原生格式之间进行转换。
+// AnthropicProvider implements core.Provider, adapting the Anthropic Messages API.
+// Translates between OpenAI-compatible format and Anthropic native format.
 type AnthropicProvider struct {
 	name    string
 	baseURL string
@@ -28,7 +28,7 @@ type AnthropicProvider struct {
 	client  *http.Client
 }
 
-// NewAnthropicProvider 创建 Anthropic provider 实例。
+// NewAnthropicProvider creates an Anthropic provider instance.
 func NewAnthropicProvider(name, baseURL, apiKey string, _ []string) *AnthropicProvider {
 	return &AnthropicProvider{
 		name:    name,
@@ -42,12 +42,13 @@ func (p *AnthropicProvider) Name() string            { return p.name }
 func (p *AnthropicProvider) Type() core.ProviderType { return core.ProviderAnthropic }
 func (p *AnthropicProvider) ValidateConfig() error   { return nil }
 
-// RequestTypes 返回该 provider 支持的请求类型列表。
+// RequestTypes returns the request types supported by this provider.
+// Responses is served via protocol translation (Responses <-> Messages).
 func (p *AnthropicProvider) RequestTypes() []core.RequestType {
-	return []core.RequestType{core.RequestTypeMessages}
+	return []core.RequestType{core.RequestTypeMessages, core.RequestTypeResponses}
 }
 
-// HealthCheck 通过 POST /v1/messages 探测上游服务是否可达。
+// HealthCheck probes upstream reachability via POST /v1/messages.
 func (p *AnthropicProvider) HealthCheck(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/messages",
 		strings.NewReader(`{"model":"claude-sonnet-4-20250514","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`))
@@ -58,8 +59,8 @@ func (p *AnthropicProvider) HealthCheck(ctx context.Context) error {
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	// 如果是非官方 Anthropic 域名且 apiKey 不为空，则自动补充 Authorization: Bearer <key>
-	// 以兼容类似于商汤(Sensenova)等使用 Anthropic 协议但采用 OpenAI 鉴权机制的第三方提供商
+	// For non-official Anthropic domains with a non-empty apiKey, automatically add Authorization: Bearer <key>
+	// to support third-party providers (e.g. SenseTime/Sensenova) that use the Anthropic protocol but OpenAI auth.
 	if p.apiKey != "" && !strings.Contains(p.baseURL, "anthropic.com") {
 		req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
@@ -76,7 +77,7 @@ func (p *AnthropicProvider) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// Invoke 处理 Anthropic Messages API 请求，委托给对应的 RequestInvoker 处理器。
+// Invoke handles Anthropic Messages API requests, delegating to the corresponding RequestInvoker handler.
 func (p *AnthropicProvider) Invoke(gctx *core.GatewayContext) error {
 	invoker, ok := core.GetRequestInvoker(p.Type(), gctx.RequestType)
 	if !ok {
@@ -85,8 +86,8 @@ func (p *AnthropicProvider) Invoke(gctx *core.GatewayContext) error {
 	return invoker.Invoke(gctx, p)
 }
 
-// handleMessagesNonStream 原生透传非流式响应,只提取 token 用于计费。
-// 不填 gctx.Response:仅填充 gctx.UpstreamBody,Engine 主流程兜底逻辑自动写出。
+// handleMessagesNonStream transparently passes through non-streaming responses, extracting only tokens for billing.
+// Does not fill gctx.Response; only fills gctx.UpstreamBody, and the Engine fallback logic writes it out.
 func (p *AnthropicProvider) handleMessagesNonStream(gctx *core.GatewayContext, resp *http.Response) error {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -95,55 +96,15 @@ func (p *AnthropicProvider) handleMessagesNonStream(gctx *core.GatewayContext, r
 	gctx.TriggerFirstByte()
 	gctx.UpstreamBody = body
 
-	var anthropicResp struct {
-		Usage struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &anthropicResp); err == nil {
-		u := anthropicResp.Usage
-		cached := u.CacheReadInputTokens
-		cacheCreated := u.CacheCreationInputTokens
-		// Anthropic 的 input_tokens 仅含「未命中缓存的输入」，缓存读取/写入是额外单独计量。
-		// 归一化为「总输入」（含缓存读取与缓存写入），对齐 OpenAI 的 prompt_tokens 语义，
-		// 使下游计费公式 nonCached = InputTokens - Cached - CacheCreation 对所有 provider 通用。
-		gctx.InputTokens = u.InputTokens + cached + cacheCreated
-		gctx.OutputTokens = u.OutputTokens
-		gctx.CachedTokens = cached
-		gctx.CacheCreationTokens = cacheCreated
-	}
+	in, out, cached, cacheCreated := llm.AnthropicTokenExtractor(string(body))
+	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
 	return nil
 }
 
-// handleMessagesStream 原生透传 SSE 流,InterceptWriter 用 AnthropicTokenExtractor 提取 token。
+// handleMessagesStream transparently passes through SSE streams; InterceptWriter uses AnthropicTokenExtractor for token extraction.
 func (p *AnthropicProvider) handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error {
-	writer := llm.NewSSEInterceptWriter(gctx, llm.WithTokenExtractor(llm.AnthropicTokenExtractor))
-	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.WriteHeader(http.StatusOK)
-
-	buf := make([]byte, 4096)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := writer.Write(buf[:n]); werr != nil {
-				return werr
-			}
-			writer.Flush()
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("read upstream stream: %w", err)
-		}
-	}
-	return nil
+	return llm.PassthroughStream(gctx, resp, llm.AnthropicTokenExtractor)
 }
 
-// 编译期接口断言
+// Compile-time interface assertion
 var _ core.Provider = (*AnthropicProvider)(nil)

@@ -6,20 +6,20 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
 
-// LimitExecutor 限流执行器契约
+// LimitExecutor is the rate-limit executor contract.
 type LimitExecutor interface {
-	// Execute 执行限流判断。若限流，返回非 nil 错误
+	// Execute enforces the limit; non-nil error if limited.
 	Execute(ctx context.Context, gctx *GatewayContext, lp *policy.LimitPolicy) error
-	// Refund 用于在失败/未消耗时进行预扣 Token 退还
+	// Refund returns pre-debited tokens on failure/unused.
 	Refund(ctx context.Context, gctx *GatewayContext, lp *policy.LimitPolicy) error
 }
 
-// LimitExecutorFactory 限流执行器工厂
+// LimitExecutorFactory builds LimitExecutors.
 type LimitExecutorFactory struct {
 	executors map[string]LimitExecutor
 }
 
-// DefaultLimitExecutorFactory 全局单例工厂
+// DefaultLimitExecutorFactory is the global factory singleton.
 var DefaultLimitExecutorFactory = &LimitExecutorFactory{
 	executors: make(map[string]LimitExecutor),
 }

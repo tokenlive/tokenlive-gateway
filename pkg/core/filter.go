@@ -1,6 +1,6 @@
 package core
 
-// FilterCriticality Filter 关键性
+// FilterCriticality is filter criticality.
 type FilterCriticality int
 
 const (
@@ -8,14 +8,14 @@ const (
 	Critical
 )
 
-// InboundFilter 请求进入 ClusterInvoker 前执行
+// InboundFilter runs before ClusterInvoker.
 type InboundFilter interface {
 	Name() string
 	Order() int
 	OnRequest(gctx *GatewayContext) error
 }
 
-// OutboundFilter 响应离开后执行
+// OutboundFilter runs after the response leaves the invoker.
 type OutboundFilter interface {
 	Name() string
 	Order() int
@@ -23,8 +23,8 @@ type OutboundFilter interface {
 	OnResponse(gctx *GatewayContext) error
 }
 
-// InboundSafeFilter 标记接口：实现此接口的 OutboundFilter 在 InboundError 路径也会执行。
-// InboundError 路径指请求被 InboundFilter 拒截、未到达 Invoker 的场景。
+// InboundSafeFilter marks OutboundFilters that also run on InboundError paths.
+// InboundError: request rejected by InboundFilter before reaching Invoker.
 type InboundSafeFilter interface {
 	InboundSafe()
 }

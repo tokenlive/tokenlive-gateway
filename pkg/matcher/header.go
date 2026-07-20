@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// HeaderTagMatcher 匹配 HTTP Header
+// HeaderTagMatcher matches HTTP headers.
 type HeaderTagMatcher struct{}
 
 func (m *HeaderTagMatcher) Match(ctx context.Context, cond *TagCondition, reqCtx RequestContext) bool {

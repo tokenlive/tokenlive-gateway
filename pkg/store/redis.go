@@ -1,4 +1,3 @@
-// Package store 提供跨请求状态抽象，用于限流、熔断、会话粘滞和延迟统计。
 package store
 
 import (
@@ -29,23 +28,22 @@ var recordLatencyScript string
 //go:embed lua/update_ema.lua
 var updateEMAScript string
 
-// redisStateStoreDefaults 定义 RedisStateStore 的默认参数。
 const (
 	redisLatencyMaxSamples = 1000
-	redisLatencyKeyTTL     = 7 * 24 * time.Hour // 延迟统计 key 过期时间（7 天未更新则清理）
+	redisLatencyKeyTTL     = 7 * 24 * time.Hour // drop latency keys idle for 7 days
 )
 
-// RedisStateStoreConfig RedisStateStore 的配置选项。
+// RedisStateStoreConfig configures RedisStateStore.
 type RedisStateStoreConfig struct {
-	// KeyPrefix Redis 键前缀，用于命名空间隔离（默认 "aigw"）
+	// KeyPrefix is the Redis key namespace (default "aigw").
 	KeyPrefix string
 
-	// LatencyMaxSamples 延迟统计最大样本数（默认 1000）
+	// LatencyMaxSamples is the max latency samples retained (default 1000).
 	LatencyMaxSamples int
 }
 
-// RedisStateStore 基于 Redis 的 StateStore 实现，适用于多实例生产部署。
-// 使用 redis.Cmdable 接口，兼容 redis.Client 和 redis.ClusterClient。
+// RedisStateStore is a Redis-backed StateStore for multi-instance production.
+// Uses redis.Cmdable (works with redis.Client and redis.ClusterClient).
 type RedisStateStore struct {
 	client redis.Cmdable
 	closer io.Closer
@@ -53,10 +51,9 @@ type RedisStateStore struct {
 
 	latencyMax int
 
-	// nowFunc 返回当前时间，测试时可替换。默认为 time.Now。
+	// nowFunc returns current time; overridable in tests (default time.Now).
 	nowFunc func() time.Time
 
-	// Lua 脚本
 	rateLimitIncrScript   *redis.Script
 	rateLimitRefundScript *redis.Script
 	rateLimitTakeScript   *redis.Script
@@ -64,8 +61,8 @@ type RedisStateStore struct {
 	updateEMAScript       *redis.Script
 }
 
-// NewRedisStateStore 创建一个新的 RedisStateStore。
-// client 可以是 *redis.Client 或 *redis.ClusterClient。
+// NewRedisStateStore creates a RedisStateStore.
+// client may be *redis.Client or *redis.ClusterClient.
 func NewRedisStateStore(client redis.Cmdable, cfg *RedisStateStoreConfig) *RedisStateStore {
 	if cfg == nil {
 		cfg = &RedisStateStoreConfig{}
@@ -80,7 +77,7 @@ func NewRedisStateStore(client redis.Cmdable, cfg *RedisStateStoreConfig) *Redis
 		latencyMax = redisLatencyMaxSamples
 	}
 
-	// 尝试将 client 作为 io.Closer（*redis.Client 和 *redis.ClusterClient 都实现了）
+	// *redis.Client and *redis.ClusterClient both implement io.Closer.
 	var closer io.Closer
 	if c, ok := client.(io.Closer); ok {
 		closer = c
@@ -102,7 +99,7 @@ func NewRedisStateStore(client redis.Cmdable, cfg *RedisStateStoreConfig) *Redis
 	}
 }
 
-// key 构建带前缀的 Redis 键，格式为 {prefix}:{part1}:{part2}:...。
+// key builds a prefixed Redis key: {prefix}:{part1}:{part2}:...
 func (s *RedisStateStore) key(parts ...string) string {
 	key := s.prefix
 	for _, p := range parts {
@@ -111,9 +108,9 @@ func (s *RedisStateStore) key(parts ...string) string {
 	return key
 }
 
-// --- 限流 ---
+// --- rate limit ---
 
-// RateLimitIncr 将 key 的计数增加 tokens，并返回窗口内当前已消耗量。
+// RateLimitIncr adds tokens to the key counter and returns usage in the window.
 func (s *RedisStateStore) RateLimitIncr(ctx context.Context, key string, tokens int64, window time.Duration) (int64, error) {
 	redisKey := s.key("rl", key)
 	windowMs := window.Milliseconds()
@@ -128,7 +125,7 @@ func (s *RedisStateStore) RateLimitIncr(ctx context.Context, key string, tokens 
 	return result, nil
 }
 
-// RateLimitRefund 退还 tokens 到 key 的计数中。
+// RateLimitRefund refunds tokens to the key counter.
 func (s *RedisStateStore) RateLimitRefund(ctx context.Context, key string, tokens int64) error {
 	redisKey := s.key("rl", key)
 
@@ -142,7 +139,7 @@ func (s *RedisStateStore) RateLimitRefund(ctx context.Context, key string, token
 	return nil
 }
 
-// RateLimitTake 尝试从令牌桶中消费令牌（平滑爆发限流）。
+// RateLimitTake tries to consume tokens from a token bucket (smooth burst limit).
 func (s *RedisStateStore) RateLimitTake(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (bool, int64, error) {
 	redisKey := s.key("tb", key)
 	windowMs := window.Milliseconds()
@@ -165,9 +162,9 @@ func (s *RedisStateStore) RateLimitTake(ctx context.Context, key string, tokens 
 	return allowed, remaining, nil
 }
 
-// --- Sticky Session ---
+// --- sticky session ---
 
-// StickyGet 获取 sessionKey 关联的 endpointID。若不存在则返回 ErrKeyNotFound。
+// StickyGet returns the endpointID for sessionKey, or ErrKeyNotFound.
 func (s *RedisStateStore) StickyGet(ctx context.Context, sessionKey string) (string, error) {
 	redisKey := s.key("sticky", sessionKey)
 
@@ -181,7 +178,7 @@ func (s *RedisStateStore) StickyGet(ctx context.Context, sessionKey string) (str
 	return val, nil
 }
 
-// StickySet 设置 sessionKey 到 endpointID 的映射，ttl 为过期时间。
+// StickySet maps sessionKey to endpointID with the given TTL.
 func (s *RedisStateStore) StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error {
 	redisKey := s.key("sticky", sessionKey)
 
@@ -192,34 +189,32 @@ func (s *RedisStateStore) StickySet(ctx context.Context, sessionKey string, endp
 	return nil
 }
 
-// --- 延迟统计 ---
+// --- latency ---
 
-// RecordLatency 记录一次延迟采样到 Redis Sorted Set。
-// 使用时间戳（毫秒）作为 score，latency（纳秒）编码在 member 中："<latency_ns>:<rand>"。
-// 原子性地完成：添加样本、设置 TTL、清理旧样本。
+// RecordLatency records a latency sample in a Redis sorted set.
+// Score is timestamp (ms); member is "<latency_ns>:<rand>".
+// Atomically adds the sample, sets TTL, and trims old samples.
 func (s *RedisStateStore) RecordLatency(ctx context.Context, endpointID string, latency time.Duration) error {
 	return s.recordLatencyTo(ctx, s.key("latency", endpointID), latency)
 }
 
-// GetAvgLatency 返回 endpointID 在 window 时间窗口内的平均延迟。
-// 若没有样本则返回 0。
+// GetAvgLatency returns average latency for endpointID within window, or 0 if none.
 func (s *RedisStateStore) GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
 	return s.getAvgLatencyFrom(ctx, s.key("latency", endpointID), window)
 }
 
-// RecordTTFT 记录一次首包耗时（TTFT）采样，使用独立 key 与整单耗时分离。
+// RecordTTFT records a time-to-first-token sample on a key separate from total latency.
 func (s *RedisStateStore) RecordTTFT(ctx context.Context, endpointID string, ttft time.Duration) error {
 	return s.recordLatencyTo(ctx, s.key("latency_ttft", endpointID), ttft)
 }
 
-// GetAvgTTFT 返回 endpointID 在 window 时间窗口内的平均首包耗时。
-// 若没有样本则返回 0。
+// GetAvgTTFT returns average TTFT for endpointID within window, or 0 if none.
 func (s *RedisStateStore) GetAvgTTFT(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
 	return s.getAvgLatencyFrom(ctx, s.key("latency_ttft", endpointID), window)
 }
 
-// recordLatencyTo 向指定 Redis key 记录一次延迟采样。
-// member 格式 "<latency_ns>:<rand>"，score 为毫秒时间戳；Lua 脚本原子完成 ZADD + PEXPIRE + ZREMRANGEBYRANK。
+// recordLatencyTo records a sample at redisKey.
+// Member format "<latency_ns>:<rand>", score is ms timestamp; Lua does ZADD+PEXPIRE+ZREMRANGEBYRANK.
 func (s *RedisStateStore) recordLatencyTo(ctx context.Context, redisKey string, latency time.Duration) error {
 	now := float64(s.nowFunc().UnixMilli())
 	member := fmt.Sprintf("%d:%d", latency.Nanoseconds(), rand.Int63())
@@ -235,13 +230,12 @@ func (s *RedisStateStore) recordLatencyTo(ctx context.Context, redisKey string, 
 	return nil
 }
 
-// getAvgLatencyFrom 从指定 Redis key 读取 window 时间窗口内的平均延迟。
+// getAvgLatencyFrom returns average latency from redisKey within window.
 func (s *RedisStateStore) getAvgLatencyFrom(ctx context.Context, redisKey string, window time.Duration) (time.Duration, error) {
 	now := s.nowFunc()
 	since := float64(now.Add(-window).UnixMilli())
 	to := float64(now.UnixMilli())
 
-	// ZRANGEBYSCORE 获取窗口内的样本
 	samples, err := s.client.ZRangeByScore(ctx, redisKey, &redis.ZRangeBy{
 		Min: strconv.FormatFloat(since, 'f', 0, 64),
 		Max: strconv.FormatFloat(to, 'f', 0, 64),
@@ -254,7 +248,7 @@ func (s *RedisStateStore) getAvgLatencyFrom(ctx context.Context, redisKey string
 		return 0, nil
 	}
 
-	// member 格式 "<latency_ns>:<rand>"，解析 latency_ns
+	// member format "<latency_ns>:<rand>"
 	var total int64
 	var valid int
 	for _, member := range samples {
@@ -277,10 +271,10 @@ func (s *RedisStateStore) getAvgLatencyFrom(ctx context.Context, redisKey string
 	return time.Duration(avg), nil
 }
 
-// UpdateEMA 滚动更新 Redis 中的 EMA 估算值并返回最新值。
+// UpdateEMA updates the EMA estimate in Redis and returns the new value.
 func (s *RedisStateStore) UpdateEMA(ctx context.Context, key string, actual int64, alpha float64) (float64, error) {
 	redisKey := s.key("ema", key)
-	// 默认缓存 7 天以防长时间没有请求占用空间
+	// 7-day TTL so idle keys are reclaimed
 	ttlSec := int64(7 * 24 * 3600)
 	valStr, err := s.updateEMAScript.Run(ctx, s.client, []string{redisKey}, actual, alpha, ttlSec).Text()
 	if err != nil {
@@ -293,7 +287,7 @@ func (s *RedisStateStore) UpdateEMA(ctx context.Context, key string, actual int6
 	return val, nil
 }
 
-// GetEMA 获取 Redis 中的 EMA 估算值。
+// GetEMA returns the EMA estimate from Redis, or 0 if missing.
 func (s *RedisStateStore) GetEMA(ctx context.Context, key string) (float64, error) {
 	redisKey := s.key("ema", key)
 	valStr, err := s.client.Get(ctx, redisKey).Result()
@@ -310,7 +304,7 @@ func (s *RedisStateStore) GetEMA(ctx context.Context, key string) (float64, erro
 	return val, nil
 }
 
-// Close 关闭 Redis 连接。
+// Close closes the Redis connection if the client is closable.
 func (s *RedisStateStore) Close() error {
 	if s.closer != nil {
 		return s.closer.Close()

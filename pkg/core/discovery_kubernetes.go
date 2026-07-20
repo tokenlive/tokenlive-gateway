@@ -14,17 +14,17 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// KubernetesDiscoveryConfig Kubernetes 服务发现配置
+// KubernetesDiscoveryConfig holds Kubernetes service discovery configuration.
 type KubernetesDiscoveryConfig struct {
-	Namespace     string `json:"namespace" yaml:"namespace"`           // K8s 命名空间
-	LabelSelector string `json:"label_selector" yaml:"label_selector"` // 标签选择器
-	FieldSelector string `json:"field_selector" yaml:"field_selector"` // 字段选择器
-	Port          int    `json:"port" yaml:"port"`                     // 服务端口
-	Scheme        string `json:"scheme" yaml:"scheme"`                 // http 或 https
-	KubeConfig    string `json:"kube_config" yaml:"kube_config"`       // kubeconfig 路径（可选）
+	Namespace     string `json:"namespace" yaml:"namespace"`           // K8s namespace
+	LabelSelector string `json:"label_selector" yaml:"label_selector"` // label selector
+	FieldSelector string `json:"field_selector" yaml:"field_selector"` // field selector
+	Port          int    `json:"port" yaml:"port"`                     // service port
+	Scheme        string `json:"scheme" yaml:"scheme"`                 // http or https
+	KubeConfig    string `json:"kube_config" yaml:"kube_config"`       // kubeconfig path (optional)
 }
 
-// KubernetesDiscovery Kubernetes 服务发现实现
+// KubernetesDiscovery implements Kubernetes service discovery.
 type KubernetesDiscovery struct {
 	client    *kubernetes.Clientset
 	config    *KubernetesDiscoveryConfig
@@ -33,16 +33,15 @@ type KubernetesDiscovery struct {
 	mu        sync.RWMutex
 }
 
-// NewKubernetesDiscovery 创建 Kubernetes 服务发现
+// NewKubernetesDiscovery creates Kubernetes service discovery.
 func NewKubernetesDiscovery(config *KubernetesDiscoveryConfig) (*KubernetesDiscovery, error) {
 	var restConfig *rest.Config
 	var err error
 
-	// 如果指定了 kubeconfig 路径，使用文件配置
 	if config.KubeConfig != "" {
 		restConfig, err = clientcmd.BuildConfigFromFlags("", config.KubeConfig)
 	} else {
-		// 否则使用集群内配置
+		// Use in-cluster config
 		restConfig, err = rest.InClusterConfig()
 	}
 
@@ -63,9 +62,8 @@ func NewKubernetesDiscovery(config *KubernetesDiscoveryConfig) (*KubernetesDisco
 	}, nil
 }
 
-// List 实现 core.Discovery 接口
+// List implements core.Discovery.
 func (kd *KubernetesDiscovery) List(ctx context.Context, model string) ([]*Endpoint, error) {
-	// 查询 Pods
 	listOptions := metav1.ListOptions{}
 	if kd.config.LabelSelector != "" {
 		listOptions.LabelSelector = kd.config.LabelSelector
@@ -81,12 +79,12 @@ func (kd *KubernetesDiscovery) List(ctx context.Context, model string) ([]*Endpo
 
 	endpoints := make([]*Endpoint, 0)
 	for _, pod := range pods.Items {
-		// 只返回运行中的 Pod
+		// Only return running pods
 		if pod.Status.Phase != "Running" {
 			continue
 		}
 
-		// 跳过没有 IP 的 Pod
+		// Skip pods without an IP
 		if pod.Status.PodIP == "" {
 			continue
 		}
@@ -120,7 +118,7 @@ func (kd *KubernetesDiscovery) List(ctx context.Context, model string) ([]*Endpo
 			"node_name":     pod.Spec.NodeName,
 			"creation_time": pod.CreationTimestamp.String(),
 		}
-		// 添加 Pod 标签到元数据
+		// Add pod labels to metadata
 		for k, v := range pod.Labels {
 			metadata["label."+k] = v
 		}
@@ -141,13 +139,13 @@ func (kd *KubernetesDiscovery) List(ctx context.Context, model string) ([]*Endpo
 			Metadata:         metadata,
 			Weight:           weight,
 			RequestTypes:     apis,
-			Healthy:          true, // 默认运行态的 Pod 为健康
+			Healthy:          true, // running pods are healthy by default
 		}
 
 		endpoints = append(endpoints, ep)
 	}
 
-	// 更新缓存
+	// Update cache
 	kd.mu.Lock()
 	kd.endpoints[model] = endpoints
 	kd.mu.Unlock()
@@ -155,11 +153,11 @@ func (kd *KubernetesDiscovery) List(ctx context.Context, model string) ([]*Endpo
 	return endpoints, nil
 }
 
-// Watch 实现 core.Discovery 接口
+// Watch implements core.Discovery.
 func (kd *KubernetesDiscovery) Watch(ctx context.Context, model string) (<-chan []*Endpoint, error) {
 	endpointsChan := make(chan []*Endpoint, 10)
 
-	// 先推送当前实例列表
+	// Push current instance list first
 	endpoints, err := kd.List(ctx, model)
 	if err != nil {
 		close(endpointsChan)
@@ -173,7 +171,7 @@ func (kd *KubernetesDiscovery) Watch(ctx context.Context, model string) (<-chan 
 		return nil, ctx.Err()
 	}
 
-	// 启动 watch
+	// Start watching
 	go func() {
 		defer close(endpointsChan)
 
@@ -183,7 +181,7 @@ func (kd *KubernetesDiscovery) Watch(ctx context.Context, model string) (<-chan 
 				return
 			default:
 				if err := kd.watchPods(ctx, model, endpointsChan); err != nil {
-					// Watch 失败，等待后重试
+					// Watch failed; wait and retry
 					time.Sleep(5 * time.Second)
 				}
 			}
@@ -193,7 +191,7 @@ func (kd *KubernetesDiscovery) Watch(ctx context.Context, model string) (<-chan 
 	return endpointsChan, nil
 }
 
-// watchPods 监听 Pod 变化
+// watchPods watches pod changes.
 func (kd *KubernetesDiscovery) watchPods(ctx context.Context, model string, endpointsChan chan<- []*Endpoint) error {
 	listOptions := metav1.ListOptions{}
 	if kd.config.LabelSelector != "" {
@@ -216,7 +214,7 @@ func (kd *KubernetesDiscovery) watchPods(ctx context.Context, model string, endp
 				return fmt.Errorf("watch channel closed")
 			}
 
-			// Pod 发生变化，重新获取实例列表
+			// Pod changed; re-fetch instance list
 			switch event.Type {
 			case watch.Added, watch.Modified, watch.Deleted:
 				endpoints, err := kd.List(ctx, model)
@@ -237,12 +235,12 @@ func (kd *KubernetesDiscovery) watchPods(ctx context.Context, model string, endp
 	}
 }
 
-// Close 实现 core.Discovery 接口
+// Close implements core.Discovery.
 func (kd *KubernetesDiscovery) Close() error {
 	kd.mu.Lock()
 	defer kd.mu.Unlock()
 
-	// 取消所有 watchers
+	// Cancel all watchers
 	for _, cancel := range kd.watchers {
 		cancel()
 	}

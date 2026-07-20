@@ -2,7 +2,7 @@ package core
 
 import "regexp"
 
-// ErrorMatcher 错误识别原语
+// ErrorMatcher matches errors against configured patterns.
 type ErrorMatcher struct {
 	StatusCodes     []int
 	ErrorCodes      []string
@@ -10,7 +10,7 @@ type ErrorMatcher struct {
 	compiledRegexps []*regexp.Regexp
 }
 
-// Match 检查错误是否匹配
+// Match reports whether err matches this matcher.
 func (em *ErrorMatcher) Match(statusCode int, errCode string, errMsg string) bool {
 	for _, code := range em.StatusCodes {
 		if code == statusCode {
@@ -26,9 +26,9 @@ func (em *ErrorMatcher) Match(statusCode int, errCode string, errMsg string) boo
 	return matched
 }
 
-// FindMatchedPattern 查找匹配错误的第一个 MessagePattern。如果匹配，返回 true 和匹配的模式；否则返回 false, ""
+// FindMatchedPattern returns the first matching MessagePattern, or false.
 func (em *ErrorMatcher) FindMatchedPattern(errMsg string) (bool, string) {
-	// 防御性检查：如果设置了 MessagePatterns 但未编译，自动编译
+	// Auto-compile MessagePatterns if not yet compiled.
 	if em.compiledRegexps == nil && len(em.MessagePatterns) > 0 {
 		_ = em.Compile()
 	}
@@ -40,9 +40,9 @@ func (em *ErrorMatcher) FindMatchedPattern(errMsg string) (bool, string) {
 	return false, ""
 }
 
-// Compile 编译正则表达式
+// Compile compiles MessagePatterns into regexes.
 func (em *ErrorMatcher) Compile() error {
-	// 先构建新切片，全部成功后再替换，避免部分失败导致状态不一致
+	// Build new slice first; replace only after all succeed.
 	compiled := make([]*regexp.Regexp, len(em.MessagePatterns))
 	for i, pattern := range em.MessagePatterns {
 		re, err := regexp.Compile(pattern)
@@ -55,13 +55,13 @@ func (em *ErrorMatcher) Compile() error {
 	return nil
 }
 
-// RetryRule 重试规则
+// RetryRule is a retry rule.
 type RetryRule struct {
 	Matcher ErrorMatcher
 	Retry   bool
 }
 
-// CircuitBreakerRule 熔断规则
+// CircuitBreakerRule is a circuit-breaker rule.
 type CircuitBreakerRule struct {
 	Matcher ErrorMatcher
 	Failure bool

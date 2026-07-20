@@ -16,7 +16,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// redactKey 脱敏 API Key，只保留首尾各 4 个字符
+// redactKey masks API Key, keeping only first and last 4 chars.
 func redactKey(key string) string {
 	if len(key) <= 8 {
 		return "***"
@@ -24,7 +24,7 @@ func redactKey(key string) string {
 	return key[:4] + "***" + key[len(key)-4:]
 }
 
-// AccessLogItem 结构化访问日志实体，供明细落库及 Redis 补偿传输使用
+// AccessLogItem is a structured access log entity for persistence and Redis compensation.
 type AccessLogItem struct {
 	RequestID           string    `json:"request_id"`
 	Time                time.Time `json:"time"`
@@ -54,7 +54,7 @@ type AccessLogItem struct {
 	Cost                float64   `json:"cost"`
 }
 
-// AccessLogFilter 结构化访问日志过滤器，支持本地 Zap 日志输出与 ClickHouse 批量异步落库（附 Redis 容灾重试）
+// AccessLogFilter logs structured access records via Zap and async ClickHouse batching with Redis compensation.
 type AccessLogFilter struct {
 	logger        *zap.Logger
 	rdb           redis.Cmdable
@@ -68,7 +68,7 @@ type AccessLogFilter struct {
 	wg            sync.WaitGroup
 }
 
-// NewAccessLogFilter 创建 AccessLogFilter 实例，内置内存 Batcher 攒批协程
+// NewAccessLogFilter creates an AccessLogFilter with an in-memory batcher goroutine.
 func NewAccessLogFilter(
 	logger *zap.Logger,
 	rdb redis.Cmdable,
@@ -117,7 +117,7 @@ func (f *AccessLogFilter) Order() int                          { return 40 }
 func (f *AccessLogFilter) Criticality() core.FilterCriticality { return core.BestEffort }
 func (f *AccessLogFilter) InboundSafe()                        {}
 
-// OnResponse 提取 GatewayContext 字段，完成 Zap 本地日志打印与 ClickHouse 异步攒批投递
+// OnResponse extracts GatewayContext fields, logs via Zap, and enqueues to ClickHouse batcher.
 func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 	provider := ""
 	endpointID := ""
@@ -126,7 +126,7 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 		endpointID = gctx.SelectedEndpoint.ID
 	}
 
-	// 1. 本地结构化日志输出
+	// 1. local structured log output
 	fields := []zap.Field{
 		zap.String("original_model", gctx.OriginalModel),
 		zap.String("model", gctx.Model),
@@ -153,15 +153,15 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 		gctx.Logger(f.logger).Info("request completed", fields...)
 	}
 
-	// 2. 构造 ClickHouse 访问日志实体
+	// 2. build ClickHouse access log entity
 	item := f.buildAccessLogItem(gctx)
 
-	// 3. 投递至内存 Batcher 队列
+	// 3. enqueue to in-memory batcher
 	if f.chEnabled && f.chConn != nil {
 		select {
 		case f.logChan <- item:
 		default:
-			// 拥堵降级：Channel 满时直接序列化并投递进 Redis 补偿队列，保障网关绝对可用且计费数据零丢失
+			// backpressure: fall back to Redis compensation queue to guarantee zero data loss
 			f.logger.Error("Access log channel buffer overflow, falling back to Redis compensation queue directly")
 			f.enqueueCompensation([]AccessLogItem{item}, fmt.Errorf("buffer channel overflow"))
 		}
@@ -248,7 +248,7 @@ func (f *AccessLogFilter) buildAccessLogItem(gctx *core.GatewayContext) AccessLo
 	return item
 }
 
-// Close 优雅下线，排空当前 Channel 中积压的所有日志并批量刷入 ClickHouse (失败则投递 Redis 补偿)
+// Close gracefully drains the channel and flushes remaining logs to ClickHouse (falls back to Redis on failure).
 func (f *AccessLogFilter) Close() {
 	if !f.chEnabled || f.chConn == nil {
 		return
@@ -260,7 +260,7 @@ func (f *AccessLogFilter) Close() {
 	f.logger.Info("AccessLogFilter Batcher stopped gracefully")
 }
 
-// startBatchLoop 运行后台批处理循环，兼顾最大批次与最大等待时间
+// startBatchLoop runs the background batch loop, balancing batch size and flush interval.
 func (f *AccessLogFilter) startBatchLoop() {
 	defer f.wg.Done()
 	ticker := time.NewTicker(f.flushInterval)
@@ -296,7 +296,7 @@ func (f *AccessLogFilter) startBatchLoop() {
 		case <-ticker.C:
 			flush()
 		case <-f.stopCh:
-			// 退出时非阻塞排空 channel 中积压的消息，避免丢失
+			// non-blocking drain on exit to avoid data loss
 			for {
 				select {
 				case item, ok := <-f.logChan:
@@ -317,7 +317,7 @@ func (f *AccessLogFilter) startBatchLoop() {
 	}
 }
 
-// enqueueCompensation 组装异常任务打包，投递至 Redis 补偿 Stream
+// enqueueCompensation packs failed items and enqueues to the Redis compensation stream.
 func (f *AccessLogFilter) enqueueCompensation(items []AccessLogItem, err error) {
 	if f.compQueue == nil {
 		f.logger.Warn("Redis compensation queue not configured, access logs will be lost!", zap.Int("count", len(items)))

@@ -35,7 +35,7 @@ _Avoid_: resolved policy, strategy config
 Token 估算器。用于在请求进入网关时对 Prompt 进行 Token 数量预估，支持基于字符长度比例的简单估算 (`length_ratio`)，或引入具体模型的分词器（如 `tiktoken`、`llama-tokenizer`）进行精确预估。
 
 **Token Settlement (Token 最终结算)**:
-在 Outbound 过滤器阶段对实际 Token 消耗进行核销并扣减 Credits。若流式请求中途中断导致未能获取上游官方 `usage` 字段，系统将触发**字数估算降级（Length Estimation Fallback）**：利用 SSE 拦截器累计统计已发送至客户端的字符数，按模型预设比率估算 Completion Token，以此作为最终值进行指标上报与 Credits 余额扣减，规避网关计费漏扣风险。
+在 Outbound 过滤器阶段对实际 Token 消耗进行核销并扣减 Credits。若流式请求中途中断导致未能获取上游官方 `usage` 字段，系统将触发**字数估算降级（Length Estimation Fallback）**：利用 SSE 拦截器累计统计已发送至客户端的字符数，按模型预设比率估算 Completion Token，以此作为最终值进行指标上报与 Credits 余额扣减，规避网关计费漏扣风险。Token 提取由统一的 `TokenExtractor`（`func(data string)(in,out,cached,cacheCreation int)`，同一个提取器既吃单个 SSE 事件帧、也吃整段非流式响应体）与写入函数 `ApplyUsage`（带 `>0` 守卫，防跨帧 0 值覆盖真值）承担，流式（`SSEInterceptWriter`）与非流式（各 Provider 的 nonStream handler）共用同一套提取与写入语义，不各自内联重写。
 _【架构红线】监控指标（Metrics）仅用于实时大屏和运维告警展示，严禁将 Prometheus 指标（如 `gateway_cost_total` 等）用作计费对账和账单核销的真实依据。所有计费、扣费结算必须强一致地依赖写入 ClickHouse 的结构化访问日志（Access Log）核算，同时必须通过 Redis 补偿队列机制确保 ClickHouse 故障时数据的零丢失与最终一致性。_
 
 **Credits (积分/余额)**:
@@ -59,10 +59,18 @@ _Avoid_: quota, limit, token pool
 降级错误响应。指当上游模型或服务被熔断且无可用的跨模型降级路线时，网关返回给客户端的标准 OpenAI 兼容的 JSON 错误报文。
 
 **Protocol Translation (协议翻译/转换)**:
-指网关在 Provider 级别执行的跨协议格式转换（包括请求体翻译与响应体翻译）。例如将 Anthropic 协议的 messages 请求转换为 OpenAI 兼容的 chat_completion 协议发送给上游，并在上游响应返回时将其逆向转换为 Anthropic 协议输出给客户端。
+指网关在 Provider / RequestInvoker 侧执行的跨协议格式转换（包括请求体翻译与响应体翻译）。短期以 **OpenAI Chat Completions 为中间枢纽（Chat hub）**，两对协议各自双向映射、不统一 content-block IR：
+1. **Messages ↔ Chat**（Anthropic Messages API ↔ Chat Completions）— 纯函数落点 `pkg/llm/translate`：`MessagesRequestToChat` / `ChatRequestToMessages` / `ChatCompletionToMessages` / `MessagesToChatCompletion`。OpenAI Provider 的 messages 路径与 JoyCode 的 Claude 路径共用同一内核。
+2. **Responses ↔ Chat**（OpenAI Responses API ↔ Chat Completions）— 纯函数落点 `pkg/llm/translate`：`ResponsesRequestToChat` / `ChatCompletionToResponses` / `CorrectNativeResponsesRequest`（含 tools 规范化）。流状态机 `handleResponsesStream` 仍在 Provider 侧。
+流式：Messages→Chat 由 `translate.MessagesToChatStream`（含 tool_use / input_json_delta / finish_reason）；Chat→Messages / Responses 流状态机仍在 Provider 侧。
+_Avoid_: 统一 IR、在 Pipeline Filter 做翻译
 
 **SSE Stream Translation (流式事件翻译)**:
 指在流式（SSE）传输过程中，网关通过 `SSEParser` 拦截并实时解包上游的 SSE 事件对象，经过结构映射和字段翻译后，重新序列化并逐帧下发给客户端，以维持客户端的协议契约与流式低时延体验。
+
+**Upstream Call (上游调用)**:
+指 Provider / RequestInvoker 打向上游 LLM 物理端点的统一 HTTP 传输模块（落点 `pkg/llm/upstream`）。职责边界：**只到拿到成功的 `*http.Response`**——解析 Policy 超时（Total / first-byte / Idle）、合并 UA + Endpoint.Headers + InjectedHeaders、执行 POST、写入 `gctx.UpstreamResponse`、对 status≥400 读 body 写入 `gctx.UpstreamBody` 并返回错误、流式时校验 SSE content-type。**不负责**协议鉴权头（由调用方填入 `Request.Header`）、请求体协议特化（如 `stream_options`）、以及响应体消费（透传流 / 协议翻译 / Token 提取）。流式 body 生命周期由 `StreamDisposition` 表达：`Consume` 表示调用方会读完并关闭；`Handoff` 表示 body 移交给翻译 invoker，cancel 绑定到 `Close`，传输层不 defer 关闭。一期覆盖 OpenAI / Anthropic / Gemini；JoyCode 后置挂接。
+_Avoid_: doRequest, transport, http helper
 
 **Request Dyeing (请求染色)**:
 属于元数据丰富与状态标记。通过 `TaggingPolicy` 规则对入站请求进行特征判定（如匹配模型名称、请求头、系统参数等），并在运行期上下文 `GatewayContext.Tags` 中注入对应的染色标签，供后续组件消费。
@@ -136,6 +144,9 @@ _Avoid_: session affinity, sticky routing
 - **ConfigSource** 分两层：YAML（默认）→ Redis（覆盖），Redis 不可用时回退到 YAML
 - **Exclude Failed Endpoint** 控制重试路由时是否允许端点漂移。当其为 `false`（原地重试）时，必须与指数退避配合，且重试前需校验端点的熔断器状态（熔断优先原则）
 - **Fatal Error**（例如亲和性拦截触发的 `ErrFatalNoAvailableEndpoint`）一旦在 LBS 或 Invoker 阶段被写入上下文，将绕过所有重试与 Fallback，直接向客户端返回该错误
+- **Upstream Call** 被 OpenAI / Anthropic / Gemini 的 RequestInvoker（及 Provider 内 HTTP 出口）共用；调用方只提供 URL、Body、鉴权 Header、StreamDisposition；超时与 headers 合并、4xx 副作用集中在 `pkg/llm/upstream`
+- **Protocol Translation** 与 **SSE Stream Translation** 消费 Upstream Call 返回的 `*http.Response`（常配合 `Handoff`），不反向渗入传输层的 RequestType 特判
+- **Messages ↔ Chat** 双向非流翻译集中在 `pkg/llm/translate`；RequestInvoker 只负责 probe 短路、调 Upstream Call、写 gctx token/响应头
 
 
 ## Example dialogue

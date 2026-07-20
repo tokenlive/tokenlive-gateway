@@ -84,3 +84,35 @@ func TestAnthropicTokenExtractor_InvalidJSON(t *testing.T) {
 		t.Errorf("expected (0, 0, 0, 0), got (%d, %d, %d, %d)", pt, ct, cached, cc)
 	}
 }
+
+// 非流式整体响应：无 type 字段，顶层 usage。归一化 total = 100 + 60 + 40 = 200。
+func TestAnthropicTokenExtractor_NonStreamWholeBody(t *testing.T) {
+	data := `{"id":"msg-1","type":"message","role":"assistant","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":60,"cache_creation_input_tokens":40}}`
+	pt, ct, cached, cc := AnthropicTokenExtractor(data)
+	if pt != 200 || ct != 20 || cached != 60 || cc != 40 {
+		t.Errorf("expected (200, 20, 60, 40), got (%d, %d, %d, %d)", pt, ct, cached, cc)
+	}
+}
+
+func TestResponsesTokenExtractor_CompletedEvent(t *testing.T) {
+	data := `{"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":30,"output_tokens":12,"total_tokens":42,"input_tokens_details":{"cached_tokens":8}}}}`
+	in, out, cached, cc := ResponsesTokenExtractor(data)
+	if in != 30 || out != 12 || cached != 8 || cc != 0 {
+		t.Errorf("expected (30, 12, 8, 0), got (%d, %d, %d, %d)", in, out, cached, cc)
+	}
+}
+
+func TestResponsesTokenExtractor_DeltaEvent(t *testing.T) {
+	data := `{"type":"response.output_text.delta","response_id":"resp_1","delta":"hi"}`
+	in, out, cached, cc := ResponsesTokenExtractor(data)
+	if in != 0 || out != 0 || cached != 0 || cc != 0 {
+		t.Errorf("expected (0, 0, 0, 0), got (%d, %d, %d, %d)", in, out, cached, cc)
+	}
+}
+
+func TestResponsesTokenExtractor_InvalidJSON(t *testing.T) {
+	in, out, cached, cc := ResponsesTokenExtractor("not json")
+	if in != 0 || out != 0 || cached != 0 || cc != 0 {
+		t.Errorf("expected (0, 0, 0, 0), got (%d, %d, %d, %d)", in, out, cached, cc)
+	}
+}

@@ -6,29 +6,29 @@ import (
 	"go.uber.org/zap"
 )
 
-// PriorityRouter 优先级路由器。
-// 必须在 CircuitBreakerRouter 之后执行。
-// 作用：从传入的可用端点中，只选择 Priority 值最小（优先级最高）的端点集合。
-// 如果存在多个相同最小优先级的端点，则共同作为候选，由下游 LoadBalancer 进行分流。
+// PriorityRouter keeps only highest-priority (lowest Priority value) endpoints.
+// Must run after CircuitBreakerRouter.
+// Keeps endpoints with the minimum Priority value.
+// Ties stay as candidates for the load balancer.
 type PriorityRouter struct {
 	logger *zap.Logger
 }
 
-// NewPriorityRouter 创建 PriorityRouter。
+// NewPriorityRouter creates a PriorityRouter.
 func NewPriorityRouter(logger *zap.Logger) *PriorityRouter {
 	return &PriorityRouter{logger: logger}
 }
 
-// Name 返回路由器名称
+// Name returns the router name.
 func (r *PriorityRouter) Name() string { return "priority" }
 
-// Route 过滤端点
+// Route filters to min-priority endpoints.
 func (r *PriorityRouter) Route(gctx *core.GatewayContext, endpoints []*core.Endpoint) []*core.Endpoint {
 	if len(endpoints) == 0 {
 		return endpoints
 	}
 
-	// 找出剩余端点中最小的 Priority 字段值（值越小优先级越高）
+	// Find minimum Priority (lower is higher priority).
 	minPriority := endpoints[0].Priority
 	for _, ep := range endpoints[1:] {
 		if ep.Priority < minPriority {
@@ -36,7 +36,7 @@ func (r *PriorityRouter) Route(gctx *core.GatewayContext, endpoints []*core.Endp
 		}
 	}
 
-	// 筛选出所有 Priority 等于 minPriority 的端点
+	// Keep endpoints with Priority == minPriority.
 	var result []*core.Endpoint
 	for _, ep := range endpoints {
 		if ep.Priority == minPriority {

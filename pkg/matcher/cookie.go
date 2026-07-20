@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// CookieTagMatcher 匹配 HTTP Cookie
+// CookieTagMatcher matches HTTP cookies.
 type CookieTagMatcher struct{}
 
 func (m *CookieTagMatcher) Match(ctx context.Context, cond *TagCondition, reqCtx RequestContext) bool {

@@ -7,14 +7,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// buildPipeline 从配置构建 Pipeline
+// buildPipeline builds a Pipeline from config.
 func (e *Engine) buildPipeline(cfg *PipelineConfig) (*Pipeline, error) {
 	p := &Pipeline{
 		Name:         cfg.Name,
 		RequestTypes: cfg.RequestTypes,
 	}
 
-	// 构建 InboundFilters
+	// Build InboundFilters
 	for _, name := range cfg.InboundFilters {
 		f, ok := e.getInboundFilter(name)
 		if !ok {
@@ -23,12 +23,12 @@ func (e *Engine) buildPipeline(cfg *PipelineConfig) (*Pipeline, error) {
 		p.InboundFilters = append(p.InboundFilters, f)
 	}
 
-	// 按 Order 排序 InboundFilters
+	// Sort InboundFilters by Order
 	sort.Slice(p.InboundFilters, func(i, j int) bool {
 		return p.InboundFilters[i].Order() < p.InboundFilters[j].Order()
 	})
 
-	// 构建 OutboundFilters
+	// Build OutboundFilters
 	for _, name := range cfg.OutboundFilters {
 		f, ok := e.getOutboundFilter(name)
 		if !ok {
@@ -37,12 +37,12 @@ func (e *Engine) buildPipeline(cfg *PipelineConfig) (*Pipeline, error) {
 		p.OutboundFilters = append(p.OutboundFilters, f)
 	}
 
-	// 按 Order 排序 OutboundFilters
+	// Sort OutboundFilters by Order
 	sort.Slice(p.OutboundFilters, func(i, j int) bool {
 		return p.OutboundFilters[i].Order() < p.OutboundFilters[j].Order()
 	})
 
-	// 构建 CriticalOutboundFilters 集合
+	// Build CriticalOutboundFilters set
 	if len(cfg.CriticalOutboundFilters) > 0 {
 		p.CriticalOutboundFilters = make(map[string]bool, len(cfg.CriticalOutboundFilters))
 		for _, name := range cfg.CriticalOutboundFilters {
@@ -50,14 +50,14 @@ func (e *Engine) buildPipeline(cfg *PipelineConfig) (*Pipeline, error) {
 		}
 	}
 
-	// 构建 Invoker
+	// Build Invoker
 	invoker, err := e.buildInvoker(&cfg.Invoker, cfg.Name)
 	if err != nil {
 		return nil, fmt.Errorf("build invoker: %w", err)
 	}
 	p.Invoker = invoker
 
-	// 初始化多态运行时 Invoker 注册表
+	// Initialize polymorphic runtime Invoker registry
 	p.Invokers = make(map[string]Invoker)
 	defaultType := cfg.Invoker.Type
 	if defaultType == "" {
@@ -67,7 +67,7 @@ func (e *Engine) buildPipeline(cfg *PipelineConfig) (*Pipeline, error) {
 	if defaultType == "cluster" {
 		p.Invokers["failover"] = invoker
 
-		// 自动为 cluster 类型的管道生成并注册对冲 (hedging) 调用器
+		// Auto-generate and register hedging invoker for cluster-type pipelines
 		hedgingCfg := &InvokerConfig{
 			Type:         "hedging",
 			Routers:      cfg.Invoker.Routers,
@@ -83,7 +83,7 @@ func (e *Engine) buildPipeline(cfg *PipelineConfig) (*Pipeline, error) {
 	return p, nil
 }
 
-// buildInvoker 从配置构建 Invoker
+// buildInvoker builds an Invoker from config.
 func (e *Engine) buildInvoker(cfg *InvokerConfig, pipelineName string) (Invoker, error) {
 	if e.invokerBuilder == nil {
 		return nil, fmt.Errorf("invoker builder not set in engine")
@@ -91,9 +91,9 @@ func (e *Engine) buildInvoker(cfg *InvokerConfig, pipelineName string) (Invoker,
 	return e.invokerBuilder.BuildInvoker(cfg, e)
 }
 
-// resolveRouters 根据名称列表从工厂注册表创建 Router chain。
-// 空列表使用默认 [capability, circuit_breaker]。
-// 注意：调用方必须已持有 e.mu 锁（Init/UpdateConfig/buildPipeline 路径）。
+// resolveRouters creates a Router chain from the factory registry by name list.
+// Empty list defaults to [capability, circuit_breaker].
+// Caller must hold e.mu lock (Init/UpdateConfig/buildPipeline path).
 func (e *Engine) resolveRouters(names []string) []Router {
 	if len(names) == 0 {
 		names = []string{"capability", "circuit_breaker", "priority"}
@@ -111,9 +111,9 @@ func (e *Engine) resolveRouters(names []string) []Router {
 	return routers
 }
 
-// resolveLoadBalancer 根据名称从工厂注册表创建 LoadBalancer。
-// 空名称使用默认 "round_robin"。
-// 注意：调用方必须已持有 e.mu 锁（Init/UpdateConfig/buildPipeline 路径）。
+// resolveLoadBalancer creates a LoadBalancer from the factory registry by name.
+// Empty name defaults to "round_robin".
+// Caller must hold e.mu lock (Init/UpdateConfig/buildPipeline path).
 func (e *Engine) resolveLoadBalancer(name string) LoadBalancer {
 	if name == "" {
 		name = "round_robin"

@@ -8,15 +8,15 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
 
-// CompositeLoadBalancer 复合负载均衡器
-// 综合成本和延迟进行加权评分，选择最优端点
+// CompositeLoadBalancer scores by cost and latency weights.
+// Weighted score of cost + latency; pick best.
 type CompositeLoadBalancer struct {
 	stateStore    core.StateStore
 	costWeight    float64
 	latencyWeight float64
 }
 
-// NewCompositeLoadBalancer 创建复合负载均衡器
+// NewCompositeLoadBalancer creates a composite LB.
 func NewCompositeLoadBalancer(ss core.StateStore, costWeight, latencyWeight float64) *CompositeLoadBalancer {
 	return &CompositeLoadBalancer{
 		stateStore:    ss,
@@ -25,7 +25,7 @@ func NewCompositeLoadBalancer(ss core.StateStore, costWeight, latencyWeight floa
 	}
 }
 
-// Select 综合评分选择最优端点
+// Select picks the best-scoring endpoint.
 func (lb *CompositeLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*core.Endpoint) core.Invoker {
 	if len(endpoints) == 0 {
 		return nil
@@ -34,7 +34,7 @@ func (lb *CompositeLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*
 	costWeight := lb.costWeight
 	latencyWeight := lb.latencyWeight
 
-	// 动态解析策略中的权重参数
+	// Resolve weight params from policy.
 	if gctx != nil && gctx.Policy != nil && gctx.Policy.LoadBalancePolicy != nil && gctx.Policy.LoadBalancePolicy.Params != nil {
 		params := gctx.Policy.LoadBalancePolicy.Params
 		if cw, ok := parseWeight(params["cost_weight"]); ok {
@@ -56,7 +56,7 @@ func (lb *CompositeLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*
 	maxCost := 0.0
 	maxLatency := time.Duration(0)
 
-	// 第一遍：收集数据，计算最大值用于归一化
+	// Pass 1: collect data, max for normalization.
 	for i, ep := range endpoints {
 		cost := ep.CostPerToken()
 		if cost > maxCost {
@@ -69,7 +69,7 @@ func (lb *CompositeLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*
 		scores[i] = scored{ep: ep, cost: cost, latency: latency}
 	}
 
-	// 第二遍：归一化并计算加权分数
+	// Pass 2: normalize and weighted score.
 	for i, s := range scores {
 		costScore := 0.0
 		if maxCost > 0 {
@@ -82,7 +82,7 @@ func (lb *CompositeLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*
 		scores[i].score = costScore*costWeight + latencyScore*latencyWeight
 	}
 
-	// 选择分数最低的（成本和延迟越低越好）
+	// Pick lowest score (lower cost/latency is better).
 	best := scores[0]
 	for _, s := range scores[1:] {
 		if s.score < best.score {

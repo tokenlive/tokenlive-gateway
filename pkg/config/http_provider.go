@@ -16,7 +16,7 @@ type HTTPGatewayProvider struct {
 	syncToken  string
 	httpClient *http.Client
 
-	// 本地内存缓存，由 HTTP 轮询器定期更新
+	// In-memory cache updated by the HTTP poller.
 	mu             sync.RWMutex
 	cachedConfig   *GatewayConfig
 	cachedPolicies []HTTPPolicyItem
@@ -39,21 +39,21 @@ func NewHTTPGatewayProvider(adminURL string, syncToken string, tlsSkipVerify boo
 	}
 }
 
-// UpdateConfig 更新本地缓存的网关路由配置
+// UpdateConfig replaces the cached gateway routing config.
 func (p *HTTPGatewayProvider) UpdateConfig(gwCfg *GatewayConfig) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.cachedConfig = gwCfg
 }
 
-// UpdatePolicies 更新本地缓存的治理策略
+// UpdatePolicies replaces the cached governance policies.
 func (p *HTTPGatewayProvider) UpdatePolicies(policies []HTTPPolicyItem) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.cachedPolicies = policies
 }
 
-// UpdateApiKeys 更新本地缓存的 API Keys
+// UpdateApiKeys replaces the cached API keys.
 func (p *HTTPGatewayProvider) UpdateApiKeys(apiKeys []HTTPApiKeyItem) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

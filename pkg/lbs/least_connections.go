@@ -7,20 +7,20 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
 )
 
-// LeastConnectionsLoadBalancer 最少连接负载均衡器
+// LeastConnectionsLoadBalancer picks the endpoint with fewest active connections.
 type LeastConnectionsLoadBalancer struct {
 	mu          sync.Mutex
 	connections map[string]*int64
 }
 
-// NewLeastConnectionsLoadBalancer 创建最少连接负载均衡器
+// NewLeastConnectionsLoadBalancer creates a least-connections LB.
 func NewLeastConnectionsLoadBalancer() *LeastConnectionsLoadBalancer {
 	return &LeastConnectionsLoadBalancer{
 		connections: make(map[string]*int64),
 	}
 }
 
-// Select 选择活跃连接最少的端点，并自动递增连接计数
+// Select picks fewest connections and increments the counter.
 func (lb *LeastConnectionsLoadBalancer) Select(gctx *core.GatewayContext, endpoints []*core.Endpoint) core.Invoker {
 	if len(endpoints) == 0 {
 		return nil
@@ -29,7 +29,7 @@ func (lb *LeastConnectionsLoadBalancer) Select(gctx *core.GatewayContext, endpoi
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 
-	// 确保每个端点都有计数器
+	// Ensure counters exist.
 	for _, ep := range endpoints {
 		if _, ok := lb.connections[ep.ID]; !ok {
 			var count int64
@@ -37,7 +37,7 @@ func (lb *LeastConnectionsLoadBalancer) Select(gctx *core.GatewayContext, endpoi
 		}
 	}
 
-	// 选择连接数最少的端点
+	// Pick lowest connection count.
 	var selected *core.Endpoint
 	var minConns int64 = -1
 	for _, ep := range endpoints {
@@ -52,13 +52,13 @@ func (lb *LeastConnectionsLoadBalancer) Select(gctx *core.GatewayContext, endpoi
 		return nil
 	}
 
-	// 自动递增
+	// Auto-increment.
 	*lb.connections[selected.ID]++
 
 	return invoker.NewProviderInvoker(selected.ProviderImpl, selected)
 }
 
-// IncrConnections 手动递增指定端点的连接计数
+// IncrConnections increments the connection counter.
 func (lb *LeastConnectionsLoadBalancer) IncrConnections(endpointID string) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
@@ -71,7 +71,7 @@ func (lb *LeastConnectionsLoadBalancer) IncrConnections(endpointID string) {
 	}
 }
 
-// Done 请求完成后递减连接计数
+// Done decrements the connection counter after the request.
 func (lb *LeastConnectionsLoadBalancer) Done(endpointID string) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
@@ -83,7 +83,7 @@ func (lb *LeastConnectionsLoadBalancer) Done(endpointID string) {
 	}
 }
 
-// ActiveConnections 返回指定端点的当前活跃连接数
+// ActiveConnections returns the current active connection count.
 func (lb *LeastConnectionsLoadBalancer) ActiveConnections(endpointID string) int64 {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()

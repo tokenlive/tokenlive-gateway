@@ -2,14 +2,14 @@ package inbound
 
 import "github.com/tokenlive/tokenlive-gateway/pkg/core"
 
-// SessionReaderFilter 从请求头中读取 SessionID，用于 Sticky Session 路由。
-// 若请求头中没有 SessionID，则回退使用 UserID/Tenent 作为 SessionID。
+// SessionReaderFilter reads SessionID from request headers for sticky session routing.
+// Falls back to UserID/Tenant if the header is absent.
 type SessionReaderFilter struct {
 	headerName string
 }
 
-// NewSessionReaderFilter 创建 SessionReaderFilter
-// headerName: 用于读取 SessionID 的请求头名称（如 "X-Session-ID"）
+// NewSessionReaderFilter creates a SessionReaderFilter.
+// headerName is the request header for SessionID (e.g. "X-Session-ID").
 func NewSessionReaderFilter(headerName string) *SessionReaderFilter {
 	return &SessionReaderFilter{headerName: headerName}
 }

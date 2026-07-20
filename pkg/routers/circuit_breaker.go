@@ -9,18 +9,18 @@ import (
 	"go.uber.org/zap"
 )
 
-// CircuitBreakerRouter 过滤处于熔断开启（Open）状态的 Endpoint。
-// 通过 CircuitBreakerManager 查询本地内存中的熔断状态，实现实例级熔断。
-// 检查两层熔断：
-//   - 服务级（provider:model）：整个服务不可用
-//   - 实例级（endpoint ID）：单个实例不可用
+// CircuitBreakerRouter drops endpoints in Open circuit state.
+// Uses CircuitBreakerManager for service- and instance-level breakers.
+// Two layers:
+//   - service (provider:model): whole service down
+//   - instance (endpoint ID): single instance down
 type CircuitBreakerRouter struct {
 	cbManager    *core.CircuitBreakerManager
 	enableActive bool
 	logger       *zap.Logger
 }
 
-// NewCircuitBreakerRouter 创建 CircuitBreakerRouter。
+// NewCircuitBreakerRouter creates a CircuitBreakerRouter.
 func NewCircuitBreakerRouter(cbManager *core.CircuitBreakerManager, enableActive bool, logger *zap.Logger) *CircuitBreakerRouter {
 	return &CircuitBreakerRouter{cbManager: cbManager, enableActive: enableActive, logger: logger}
 }
@@ -32,7 +32,7 @@ func (r *CircuitBreakerRouter) Route(gctx *core.GatewayContext, endpoints []*cor
 		return endpoints
 	}
 
-	// 预先建立熔断器 key 到 model 的关联关系，以便状态变更发射指标时能带上 model 标签
+	// Pre-bind breaker keys to model for metrics labels.
 	for _, ep := range endpoints {
 		serviceKey := ep.Provider + ":" + ep.Model
 		r.cbManager.GetEntryWithModel(serviceKey, ep.Model)
@@ -59,7 +59,7 @@ func (r *CircuitBreakerRouter) Route(gctx *core.GatewayContext, endpoints []*cor
 		}
 	}
 
-	// 1. 第一阶段：独立过滤掉服务级熔断已触发的端点 (避免一票否决全部服务)
+	// 1. Drop service-level Open endpoints.
 	var servicePassed []*core.Endpoint
 	for _, ep := range endpoints {
 		serviceKey := ep.Provider + ":" + ep.Model
@@ -75,14 +75,14 @@ func (r *CircuitBreakerRouter) Route(gctx *core.GatewayContext, endpoints []*cor
 		return nil
 	}
 
-	// 2. 第二阶段：按服务（Provider:Model）分组，对实例级熔断做比例限制
+	// 2. Group by Provider:Model; cap instance Open by outlier_max_percent.
 	groups := make(map[string][]*core.Endpoint)
 	for _, ep := range servicePassed {
 		key := ep.Provider + ":" + ep.Model
 		groups[key] = append(groups[key], ep)
 	}
 
-	// 查找当前请求关联的实例级策略中的最小非零 OutlierMaxPercent
+	// Min non-zero OutlierMaxPercent from instance policies.
 	var maxPercent int = 0
 	hasInstancePolicy := false
 	if gctx.Policy != nil && len(gctx.Policy.CircuitBreakPolicies) > 0 {
@@ -116,7 +116,7 @@ func (r *CircuitBreakerRouter) Route(gctx *core.GatewayContext, endpoints []*cor
 			continue
 		}
 
-		// 如果有实例策略并且设定了有效的 outlier_max_percent
+		// Instance policy with valid outlier_max_percent.
 		if hasInstancePolicy && maxPercent > 0 {
 			totalInGroup := len(groupEPs)
 			maxAllowed := totalInGroup * maxPercent / 100
@@ -125,7 +125,7 @@ func (r *CircuitBreakerRouter) Route(gctx *core.GatewayContext, endpoints []*cor
 			}
 
 			if len(groupBlocked) > maxAllowed {
-				// 按熔断打开时间升序排序（先熔断的优先排除），时间相同则按 ID 字典序
+				// Sort by open time asc (exclude earliest first); ID as tiebreak.
 				sort.Slice(groupBlocked, func(i, j int) bool {
 					ti := r.cbManager.GetOpenSince(groupBlocked[i].ID)
 					tj := r.cbManager.GetOpenSince(groupBlocked[j].ID)
@@ -135,7 +135,7 @@ func (r *CircuitBreakerRouter) Route(gctx *core.GatewayContext, endpoints []*cor
 					return ti.Before(tj)
 				})
 
-				// 仅前 maxAllowed 个节点继续熔断（先熔断的），其余放通（后熔断的）
+				// Keep first maxAllowed Open; release the rest.
 				for i := 0; i < maxAllowed; i++ {
 					blockedIDs[groupBlocked[i].ID] = true
 				}
@@ -159,20 +159,20 @@ func (r *CircuitBreakerRouter) Route(gctx *core.GatewayContext, endpoints []*cor
 						return ids
 					}()))
 			} else {
-				// 未超限，正常熔断
+				// Under cap: keep Open.
 				for _, ep := range groupBlocked {
 					blockedIDs[ep.ID] = true
 				}
 			}
 		} else {
-			// 无实例策略或无比例限制，按老逻辑默认全熔断
+			// No percent limit: open all matching instances.
 			for _, ep := range groupBlocked {
 				blockedIDs[ep.ID] = true
 			}
 		}
 	}
 
-	// 3. 第三阶段：过滤并组装最终结果
+	// 3. Assemble final filtered list.
 	var result []*core.Endpoint
 	for _, ep := range servicePassed {
 		if !blockedIDs[ep.ID] {

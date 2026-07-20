@@ -14,12 +14,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// InitOTelMetrics 初始化 OpenTelemetry Metrics SDK
+// InitOTelMetrics initializes the OpenTelemetry Metrics SDK.
 func InitOTelMetrics(v *viper.Viper, logger *zap.Logger) (func(), error) {
 	ctx := context.Background()
 	var readers []metric.Reader
 
-	// 注册全局 OTel 错误处理器，防止背景上报网络错误导致控制台刷屏
+	// Rate-limit identical OTel background errors to once per minute.
 	var lastErrMu sync.Mutex
 	lastErrMap := make(map[string]time.Time)
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
@@ -41,9 +41,7 @@ func InitOTelMetrics(v *viper.Viper, logger *zap.Logger) (func(), error) {
 		logger.Warn("OpenTelemetry background error", zap.Error(err))
 	}))
 
-	// 1. Prometheus Pull Exporter
-	// 只要启用了本地拉取，我们就注册 Prometheus Exporter
-	// 它会自动将 OTel 指标暴露到 Prometheus 默认注册表中
+	// Prometheus pull exporter (exposes OTel metrics on the default Prometheus registry).
 	if v.GetBool("llm.enable_metrics") {
 		promExporter, err := otelprom.New()
 		if err != nil {
@@ -53,7 +51,7 @@ func InitOTelMetrics(v *viper.Viper, logger *zap.Logger) (func(), error) {
 		logger.Info("OpenTelemetry Prometheus Exporter initialized successfully")
 	}
 
-	// 2. OTLP/gRPC Push Exporter
+	// OTLP/gRPC push exporter.
 	var otlpExporter *otlpmetricgrpc.Exporter
 	var err error
 	if v.GetBool("otel.metrics.enabled") {
@@ -74,7 +72,7 @@ func InitOTelMetrics(v *viper.Viper, logger *zap.Logger) (func(), error) {
 			return nil, fmt.Errorf("failed to create OTLP metric exporter: %w", err)
 		}
 
-		// 创建 PeriodicReader，15秒上报一次
+		// Export every 15s.
 		periodicReader := metric.NewPeriodicReader(
 			otlpExporter,
 			metric.WithInterval(15*time.Second),
@@ -88,7 +86,7 @@ func InitOTelMetrics(v *viper.Viper, logger *zap.Logger) (func(), error) {
 		return func() {}, nil
 	}
 
-	// 3. 配置 Histogram 边界视图 (Views)
+	// Histogram bucket views.
 	durationView := metric.NewView(
 		metric.Instrument{Name: "gateway_request_duration_seconds"},
 		metric.Stream{Aggregation: metric.AggregationExplicitBucketHistogram{
@@ -102,7 +100,6 @@ func InitOTelMetrics(v *viper.Viper, logger *zap.Logger) (func(), error) {
 		}},
 	)
 
-	// 4. 初始化 MeterProvider
 	var providerOpts []metric.Option
 	for _, r := range readers {
 		providerOpts = append(providerOpts, metric.WithReader(r))

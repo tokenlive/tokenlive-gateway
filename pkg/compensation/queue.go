@@ -10,27 +10,27 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Queue 补偿队列接口。
+// Queue is the compensation queue interface.
 type Queue interface {
-	// Enqueue 将补偿任务加入队列。
+	// Enqueue adds a compensation task.
 	Enqueue(ctx context.Context, task *CompensationTask) error
-	// Close 关闭队列（释放资源等）。
+	// Close releases queue resources.
 	Close() error
 }
 
-// RedisQueueConfig Redis 补偿队列配置。
+// RedisQueueConfig configures RedisQueue.
 type RedisQueueConfig struct {
-	// StreamKey 主 Stream 键名（默认 "aigw:compensation:stream"）
+	// StreamKey is the main stream key (default "aigw:compensation:stream").
 	StreamKey string
-	// DelayedKey 延迟重试 ZSet 键名（默认 "aigw:compensation:delayed"）
+	// DelayedKey is the delayed-retry ZSet key (default "aigw:compensation:delayed").
 	DelayedKey string
-	// DLQKey 死信队列 Stream 键名（默认 "aigw:compensation:dlq"）
+	// DLQKey is the dead-letter stream key (default "aigw:compensation:dlq").
 	DLQKey string
-	// ConsumerName 消费者名称（默认 "compensation-worker-1"）
+	// ConsumerName is the consumer name (default "compensation-worker-1").
 	ConsumerName string
-	// GroupName 消费者组名称（默认 "compensation-group"）
+	// GroupName is the consumer group name (default "compensation-group").
 	GroupName string
-	// MaxRetries 最大重试次数（默认 5）
+	// MaxRetries is the max retry count (default 5).
 	MaxRetries int
 }
 
@@ -43,8 +43,8 @@ const (
 	defaultMaxRetries   = 5
 )
 
-// RedisQueue 基于 Redis Stream 的补偿队列实现。
-// 使用 redis.Cmdable 接口，兼容 redis.Client 和 redis.ClusterClient。
+// RedisQueue is a Redis Stream-backed compensation queue.
+// Uses redis.Cmdable (works with redis.Client and redis.ClusterClient).
 type RedisQueue struct {
 	client   redis.Cmdable
 	stream   string
@@ -55,8 +55,8 @@ type RedisQueue struct {
 	maxRetry int
 }
 
-// NewRedisQueue 创建 RedisQueue 实例。
-// 会幂等创建消费者组（通过 BUSYGROUP 检查忽略已存在错误）。
+// NewRedisQueue creates a RedisQueue and idempotently creates the consumer group
+// (BUSYGROUP is ignored if the group already exists).
 func NewRedisQueue(client redis.Cmdable, cfg *RedisQueueConfig) (*RedisQueue, error) {
 	if cfg == nil {
 		cfg = &RedisQueueConfig{}
@@ -91,7 +91,7 @@ func NewRedisQueue(client redis.Cmdable, cfg *RedisQueueConfig) (*RedisQueue, er
 		q.maxRetry = defaultMaxRetries
 	}
 
-	// 幂等创建消费者组
+	// create consumer group idempotently
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -103,7 +103,7 @@ func NewRedisQueue(client redis.Cmdable, cfg *RedisQueueConfig) (*RedisQueue, er
 	return q, nil
 }
 
-// Enqueue 将补偿任务序列化为 JSON 并写入 Redis Stream。
+// Enqueue marshals the task to JSON and appends it to the Redis Stream.
 func (q *RedisQueue) Enqueue(ctx context.Context, task *CompensationTask) error {
 	data, err := json.Marshal(task)
 	if err != nil {
@@ -122,8 +122,8 @@ func (q *RedisQueue) Enqueue(ctx context.Context, task *CompensationTask) error 
 	return nil
 }
 
-// ClaimDelayed 从延迟 ZSet 中取出已过期的任务，重新放回主 Stream。
-// 返回成功迁移的任务数。
+// ClaimDelayed moves due tasks from the delayed ZSet back to the main stream.
+// Returns how many tasks were migrated.
 func (q *RedisQueue) ClaimDelayed(ctx context.Context) (int64, error) {
 	now := float64(time.Now().UnixMilli())
 	members, err := q.client.ZRangeByScore(ctx, q.delayed, &redis.ZRangeBy{
@@ -136,7 +136,6 @@ func (q *RedisQueue) ClaimDelayed(ctx context.Context) (int64, error) {
 
 	var claimed int64
 	for _, member := range members {
-		// 将任务数据重新添加到主 Stream
 		_, err := q.client.XAdd(ctx, &redis.XAddArgs{
 			Stream: q.stream,
 			Values: map[string]any{
@@ -147,7 +146,6 @@ func (q *RedisQueue) ClaimDelayed(ctx context.Context) (int64, error) {
 			return claimed, fmt.Errorf("compensation: xadd claimed task: %w", err)
 		}
 
-		// 从延迟 ZSet 中移除
 		err = q.client.ZRem(ctx, q.delayed, member).Err()
 		if err != nil {
 			return claimed, fmt.Errorf("compensation: zrem delayed: %w", err)
@@ -157,32 +155,30 @@ func (q *RedisQueue) ClaimDelayed(ctx context.Context) (int64, error) {
 	return claimed, nil
 }
 
-// Close 关闭队列（当前为 no-op，满足接口要求）。
+// Close is a no-op (satisfies Queue).
 func (q *RedisQueue) Close() error {
 	return nil
 }
 
-// Getters for testing and worker access
-
-// StreamKey 返回主 Stream 键名。
+// StreamKey returns the main stream key.
 func (q *RedisQueue) StreamKey() string { return q.stream }
 
-// DelayedKey 返回延迟 ZSet 键名。
+// DelayedKey returns the delayed ZSet key.
 func (q *RedisQueue) DelayedKey() string { return q.delayed }
 
-// DLQKey 返回死信队列 Stream 键名。
+// DLQKey returns the dead-letter stream key.
 func (q *RedisQueue) DLQKey() string { return q.dlq }
 
-// ConsumerName 返回消费者名称。
+// ConsumerName returns the consumer name.
 func (q *RedisQueue) ConsumerName() string { return q.consumer }
 
-// GroupName 返回消费者组名称。
+// GroupName returns the consumer group name.
 func (q *RedisQueue) GroupName() string { return q.group }
 
-// MaxRetries 返回最大重试次数。
+// MaxRetries returns the max retry count.
 func (q *RedisQueue) MaxRetries() int { return q.maxRetry }
 
-// isBusyGroupErr 检查 Redis 错误是否为消费者组已存在的错误（BUSYGROUP）。
+// isBusyGroupErr reports whether err is Redis BUSYGROUP (group already exists).
 func isBusyGroupErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "BUSYGROUP")
 }

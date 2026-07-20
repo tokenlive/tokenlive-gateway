@@ -1,6 +1,6 @@
 package core
 
-// LoadBalancer 从候选列表中选一个 Invoker
+// LoadBalancer picks one Invoker from candidates.
 type LoadBalancer interface {
 	Select(gctx *GatewayContext, endpoints []*Endpoint) Invoker
 }

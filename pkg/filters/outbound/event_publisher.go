@@ -104,8 +104,8 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 			base.ModelCode = gctx.SelectedEndpoint.Model
 		}
 	} else {
-		// 针对限流拦截等未选路成功但模型正常配置的场景，补全供应商信息。
-		// 但如果是因无可用端点（core.ErrNoAvailableEndpoint）引起的熔断或失败，不绑定任何具体的 EndpointCode/Provider，以防展示错乱。
+		// For rate-limit interception where no endpoint was selected but model is configured, fill in provider info.
+		// Skip binding EndpointCode/Provider when caused by ErrNoAvailableEndpoint to avoid display confusion.
 		if gctx.Err == nil || !errors.Is(gctx.Err, core.ErrNoAvailableEndpoint) {
 			if f.discovery != nil && gctx.Model != "" {
 				if eps, err := f.discovery.List(gctx.Ctx, gctx.Model); err == nil && len(eps) > 0 {
@@ -183,7 +183,7 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 			evt.CurrentValue = httpErr.CurrentValue
 
 			if gctx.Policy != nil && len(gctx.Policy.LimitPolicies) > 0 {
-				// 获取可能匹配的限流策略以补充 policy 元数据
+				// find matching limit policy to enrich policy metadata
 				var matchedLP *policy.LimitPolicy
 				for _, lp := range gctx.Policy.LimitPolicies {
 					if lp.Name == gctx.Tags["rate_limit_policy_name"] || lp.ID == gctx.Tags["rate_limit_policy_id"] {
@@ -205,10 +205,10 @@ func (f *EventPublishFilter) analyzeEvents(gctx *core.GatewayContext) []*events.
 		}
 	}
 
-	// 5. Invocation failure (generic, only if no circuit breaker already detected and no policy event emitted by ClusterInvoker)
-	// 只在真正调用了上游服务时才发出 invocation_fail 事件（AttemptCount > 0 或 SelectedEndpoint != nil）
+	// 5. Invocation failure (generic, only if no circuit breaker detected and no policy event emitted by ClusterInvoker)
+	// only emit invocation_fail when the upstream was actually called (AttemptCount > 0 or SelectedEndpoint != nil)
 	if gctx.Err != nil && len(result) == 0 && !gctx.PolicyEventEmitted {
-		// 判断是否真正到达了 Invoker 阶段并尝试调用上游
+		// check whether the Invoker stage was reached and upstream was attempted
 		hasAttemptedInvocation := gctx.AttemptCount > 0 || gctx.SelectedEndpoint != nil
 		if hasAttemptedInvocation {
 			evt := base

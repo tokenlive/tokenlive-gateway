@@ -48,18 +48,18 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 		modelHMGetCmd    *redis.SliceCmd
 	)
 
-	// 1. 查询用户策略 (Level 5 & Level 2)
+	// User policies (levels 5 & 2).
 	if userID != "" {
 		userHashKey := "aigw:policies:user:" + userID
 		if modelCode != "" && modelCode != "*" {
-			// 一次性拉取用户针对当前模型的策略、计费配置，以及默认策略、默认计费配置
+			// Model-specific + default policy/billing in one HMGet.
 			userHMGetCmd = pipe.HMGet(ctx, userHashKey, modelCode, modelCode+":billing", "*", "*:billing")
 		} else {
 			userHGetAllCmd = pipe.HGetAll(ctx, userHashKey)
 		}
 	}
 
-	// 2. 查询租户策略 (Level 4 & Level 1)
+	// Tenant policies (levels 4 & 1).
 	if tenantCode != "" {
 		tenantHashKey := "aigw:policies:tenant:" + tenantCode
 		if modelCode != "" && modelCode != "*" {
@@ -69,23 +69,23 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 		}
 	}
 
-	// 3. 查询模型策略 (Level 3)
+	// Model policies (level 3).
 	if modelCode != "" {
 		modelHashKey := "aigw:policies:model:" + modelCode
 		modelHMGetCmd = pipe.HMGet(ctx, modelHashKey, "*", "*:billing")
 	}
 
-	// 执行 Pipeline，忽略 Exec 返回的单个 error，我们会检查具体 command 的 error
+	// Ignore pipeline Exec error; check per-command errors below.
 	_, _ = pipe.Exec(ctx)
 
-	// 5. 解析并反序列化用户策略
+	// Parse user policies.
 	if userHMGetCmd != nil {
 		if vals, err := userHMGetCmd.Result(); err == nil && len(vals) == 4 {
 			// vals: [modelCode, modelCode+":billing", "*", "*:billing"]
 			var userPolicy *policy.Policy
 			var userDefaultPolicy *policy.Policy
 
-			// 5.1. 处理特定模型策略
+			// Model-specific policy.
 			if vals[0] != nil {
 				if valStr, ok := vals[0].(string); ok && valStr != "" {
 					_ = json.Unmarshal([]byte(valStr), &userPolicy)
@@ -111,7 +111,7 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 				})
 			}
 
-			// 5.2. 处理通配默认策略
+			// Wildcard default policy.
 			if vals[2] != nil {
 				if valStr, ok := vals[2].(string); ok && valStr != "" {
 					_ = json.Unmarshal([]byte(valStr), &userDefaultPolicy)
@@ -160,7 +160,7 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 				}
 			}
 
-			// 合并计费到对应策略中
+			// Merge billing into matching policies.
 			for m, b := range billings {
 				if p, ok := policies[m]; ok {
 					p.Billing = b
@@ -179,13 +179,13 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 		}
 	}
 
-	// 6. 解析并反序列化租户策略
+	// Parse tenant policies.
 	if tenantHMGetCmd != nil {
 		if vals, err := tenantHMGetCmd.Result(); err == nil && len(vals) == 4 {
 			var tenantPolicy *policy.Policy
 			var tenantDefaultPolicy *policy.Policy
 
-			// 6.1. 处理特定模型策略
+			// Model-specific policy.
 			if vals[0] != nil {
 				if valStr, ok := vals[0].(string); ok && valStr != "" {
 					_ = json.Unmarshal([]byte(valStr), &tenantPolicy)
@@ -211,7 +211,7 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 				})
 			}
 
-			// 6.2. 处理通配默认策略
+			// Wildcard default policy.
 			if vals[2] != nil {
 				if valStr, ok := vals[2].(string); ok && valStr != "" {
 					_ = json.Unmarshal([]byte(valStr), &tenantDefaultPolicy)
@@ -278,7 +278,7 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 		}
 	}
 
-	// 7. 解析模型策略
+	// Parse model policies.
 	if modelHMGetCmd != nil {
 		if vals, err := modelHMGetCmd.Result(); err == nil && len(vals) == 2 {
 			var modelPolicy *policy.Policy

@@ -13,7 +13,7 @@ const (
 	defaultWeight     = 1
 )
 
-// Load 从 Viper 加载 model-centric 网关配置
+// Load unmarshals model-centric gateway config from Viper.
 func Load(v *viper.Viper) (*GatewayConfig, error) {
 	cfg := &GatewayConfig{}
 	if err := v.UnmarshalKey("models", &cfg.Models); err != nil {
@@ -31,7 +31,7 @@ func Load(v *viper.Viper) (*GatewayConfig, error) {
 	return cfg, nil
 }
 
-// Validate 校验配置引用完整性
+// Validate checks config reference integrity.
 func Validate(cfg *GatewayConfig) error {
 	for modelCode, m := range cfg.Models {
 		if len(m.RequestTypes) == 0 {
@@ -52,8 +52,8 @@ func Validate(cfg *GatewayConfig) error {
 	return nil
 }
 
-// Resolve 将 model-centric 配置展开为扁平的 ResolvedEndpoint 列表
-// 每个 endpoint 合并了 model 元数据和 provider 基础设施字段
+// Resolve flattens model-centric config into ResolvedEndpoint lists,
+// merging model metadata with provider infrastructure fields.
 func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 	resolved := make(map[string][]ResolvedEndpoint)
 
@@ -88,7 +88,7 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				AuthType:         authType,
 			}
 
-			// RealModel: endpoint 级别必填（无 provider 级别回退）
+			// RealModel is required at endpoint level (no provider fallback).
 			re.RealModel = ep.RealModel
 
 			// APIKey: endpoint > provider
@@ -98,7 +98,7 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				re.APIKey = p.APIKey
 			}
 
-			// Timeout: endpoint > provider > 默认值
+			// Timeout: endpoint > provider > default
 			if ep.Timeout > 0 {
 				re.Timeout = ep.Timeout.Milliseconds()
 			} else if p.Timeout > 0 {
@@ -107,14 +107,14 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				re.Timeout = defaultTimeout.Milliseconds()
 			}
 
-			// MaxRetries: provider > 默认值
+			// MaxRetries: provider > default
 			if p.MaxRetries > 0 {
 				re.MaxRetries = p.MaxRetries
 			} else {
 				re.MaxRetries = defaultMaxRetries
 			}
 
-			// Weight: endpoint > 默认值
+			// Weight: endpoint > default
 			if ep.Weight > 0 {
 				re.Weight = ep.Weight
 			} else {
@@ -129,7 +129,7 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 	return resolved
 }
 
-// KnownModels 返回所有已配置的 model_name 集合
+// KnownModels returns the set of configured model names.
 func KnownModels(cfg *GatewayConfig) map[string]bool {
 	known := make(map[string]bool, len(cfg.Models))
 	for name := range cfg.Models {

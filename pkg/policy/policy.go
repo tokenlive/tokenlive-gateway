@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-// Policy 策略配置核心结构，完全映射 docs/policy.json
+// Policy is the core policy config, mapping docs/policy.json.
 type Policy struct {
 	LoadBalancePolicy      *LoadBalancePolicy    `yaml:"load_balance_policy" json:"load_balance_policy"`
 	InvocationPolicy       *InvocationPolicy     `yaml:"invocation_policy" json:"invocation_policy"`
@@ -19,15 +19,15 @@ type Policy struct {
 	EnableMetricsReporting bool                  `yaml:"enable_metrics_reporting" json:"enable_metrics_reporting"`
 }
 
-// BillingPolicy 计费策略配置（元/百万 Tokens）
+// BillingPolicy is pricing per million tokens (CNY).
 type BillingPolicy struct {
-	InputPrice         float64 `yaml:"input_price" json:"input_price"`                   // 每百万 Tokens 价格 (元)
-	OutputPrice        float64 `yaml:"output_price" json:"output_price"`                 // 每百万 Tokens 价格 (元)
-	CachedPrice        float64 `yaml:"cached_price" json:"cached_price"`                 // 每百万缓存命中 Tokens 价格 (元)
-	CacheCreationPrice float64 `yaml:"cache_creation_price" json:"cache_creation_price"` // 每百万缓存创建 Tokens 价格 (元)
+	InputPrice         float64 `yaml:"input_price" json:"input_price"`
+	OutputPrice        float64 `yaml:"output_price" json:"output_price"`
+	CachedPrice        float64 `yaml:"cached_price" json:"cached_price"`
+	CacheCreationPrice float64 `yaml:"cache_creation_price" json:"cache_creation_price"`
 }
 
-// UnmarshalJSON 兼容 Redis/Admin 侧历史小驼峰策略字段。
+// UnmarshalJSON accepts camelCase policy fields from Redis/Admin.
 func (p *Policy) UnmarshalJSON(data []byte) error {
 	type Alias Policy
 	aux := &struct {
@@ -69,7 +69,7 @@ func (p *Policy) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalJSON 兼容计费策略小驼峰字段。
+// UnmarshalJSON accepts camelCase billing fields.
 func (b *BillingPolicy) UnmarshalJSON(data []byte) error {
 	type Alias BillingPolicy
 	aux := &struct {
@@ -99,23 +99,23 @@ func (b *BillingPolicy) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// PolicyProvider 策略提供者接口（用以接口反转，隔离核心层与 I/O 业务层）
+// PolicyProvider supplies policies (inverts core ↔ I/O).
 type PolicyProvider interface {
 	GetPolicy(ctx context.Context, tenantCode, userID, model string) (*Policy, error)
 }
 
-// PolicyMatcher 运行时策略匹配器（纯内存无状态匹配）
+// PolicyMatcher merges policies in memory (stateless).
 type PolicyMatcher struct{}
 
-// DefaultPolicyMatcher 包级全局单例匹配器，可供多协程并发安全直接使用
+// DefaultPolicyMatcher is a package-level singleton safe for concurrent use.
 var DefaultPolicyMatcher = &PolicyMatcher{}
 
-// NewPolicyMatcher 创建 PolicyMatcher 实例
+// NewPolicyMatcher creates a PolicyMatcher.
 func NewPolicyMatcher() *PolicyMatcher {
 	return &PolicyMatcher{}
 }
 
-// Match 根据传入的策略优先级顺位进行覆盖合并
+// Match merges policies in priority order (later overrides earlier).
 func (pm *PolicyMatcher) Match(tenantCode, userID, model string, policies []*Policy) (*Policy, error) {
 	var valid []*Policy
 	for _, p := range policies {
@@ -129,7 +129,7 @@ func (pm *PolicyMatcher) Match(tenantCode, userID, model string, policies []*Pol
 	return MergePolicies(valid...), nil
 }
 
-// MergePolicies 从低优先级到高优先级对一组 Policy 进行字段级覆盖合并
+// MergePolicies field-merges policies from low to high priority.
 func MergePolicies(policies ...*Policy) *Policy {
 	result := &Policy{}
 
@@ -138,22 +138,19 @@ func MergePolicies(policies ...*Policy) *Policy {
 			continue
 		}
 
-		// 合并 LoadBalancePolicy (覆盖)
 		if p.LoadBalancePolicy != nil {
 			result.LoadBalancePolicy = p.LoadBalancePolicy
 		}
 
-		// 合并 Billing (覆盖)
 		if p.Billing != nil {
 			result.Billing = p.Billing
 		}
 
-		// 合并 InvocationPolicy (覆盖)
 		if p.InvocationPolicy != nil {
 			result.InvocationPolicy = p.InvocationPolicy
 		}
 
-		// 合并 LimitPolicies (Name-based Merge)
+		// Name-based merge for LimitPolicies
 		if len(p.LimitPolicies) > 0 {
 			limitMap := make(map[string]*LimitPolicy)
 			for _, item := range result.LimitPolicies {
@@ -180,7 +177,7 @@ func MergePolicies(policies ...*Policy) *Policy {
 			result.LimitPolicies = newLimits
 		}
 
-		// 合并 RoutePolicies (Name-based Merge)
+		// Name-based merge for RoutePolicies
 		if len(p.RoutePolicies) > 0 {
 			routeMap := make(map[string]*RoutePolicy)
 			for _, item := range result.RoutePolicies {
@@ -207,7 +204,7 @@ func MergePolicies(policies ...*Policy) *Policy {
 			result.RoutePolicies = newRoutes
 		}
 
-		// 合并 CircuitBreakPolicies (Name-based Merge)
+		// Name-based merge for CircuitBreakPolicies
 		if len(p.CircuitBreakPolicies) > 0 {
 			cbMap := make(map[string]*CircuitBreakPolicy)
 			for _, item := range result.CircuitBreakPolicies {
@@ -234,7 +231,7 @@ func MergePolicies(policies ...*Policy) *Policy {
 			result.CircuitBreakPolicies = newCBs
 		}
 
-		// 合并 TaggingPolicies (Name-based Merge)
+		// Name-based merge for TaggingPolicies
 		if len(p.TaggingPolicies) > 0 {
 			taggingMap := make(map[string]*TaggingPolicy)
 			for _, item := range result.TaggingPolicies {
@@ -261,12 +258,11 @@ func MergePolicies(policies ...*Policy) *Policy {
 			result.TaggingPolicies = newTags
 		}
 
-		// 合并 Permissions (白名单 Slice 覆盖)
 		if p.Permissions != nil {
 			result.Permissions = p.Permissions
 		}
 
-		// 合并 EnableMetricsReporting (只要任一策略开启即为开启)
+		// OR-merge: any true enables metrics reporting
 		if p.EnableMetricsReporting {
 			result.EnableMetricsReporting = true
 		}

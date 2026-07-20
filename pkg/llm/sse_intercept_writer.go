@@ -6,29 +6,29 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
 
-// SSEOption 配置 SSEInterceptWriter 的可选参数。
+// SSEOption configures SSEInterceptWriter.
 type SSEOption func(*SSEInterceptWriter)
 
-// WithTokenExtractor 设置自定义 token 提取器。
-// 默认使用 OpenAI 格式提取。
+// WithTokenExtractor sets a custom token extractor.
+// Defaults to OpenAI format extraction.
 func WithTokenExtractor(te TokenExtractor) SSEOption {
 	return func(w *SSEInterceptWriter) {
 		w.tokenExtractor = te
 	}
 }
 
-// SSEInterceptWriter 透明包装 http.ResponseWriter。
-// 记录 TTFT（首字节时间），将所有字节送入 SSEParser 解析，
-// 当 usage 数据到达时填充 gctx 的 token 计数。
+// SSEInterceptWriter transparently wraps http.ResponseWriter.
+// Records TTFT (time to first byte), feeds all bytes into SSEParser,
+// and fills gctx token counts when usage data arrives.
 type SSEInterceptWriter struct {
 	http.ResponseWriter
 	gctx           *core.GatewayContext
 	parser         *SSEParser
 	firstByte      bool
-	tokenExtractor TokenExtractor // nil = 使用 SSEParser 默认提取
+	tokenExtractor TokenExtractor // nil = use SSEParser default extraction
 }
 
-// NewSSEInterceptWriter 创建拦截 SSE 帧的 writer。
+// NewSSEInterceptWriter creates a writer that intercepts SSE frames.
 func NewSSEInterceptWriter(gctx *core.GatewayContext, opts ...SSEOption) *SSEInterceptWriter {
 	w := &SSEInterceptWriter{
 		ResponseWriter: gctx.ResponseWriter,
@@ -41,7 +41,7 @@ func NewSSEInterceptWriter(gctx *core.GatewayContext, opts ...SSEOption) *SSEInt
 	return w
 }
 
-// Write 拦截字节流，记录 TTFT，并解析 SSE 帧。
+// Write intercepts the byte stream, records TTFT, and parses SSE frames.
 func (w *SSEInterceptWriter) Write(p []byte) (int, error) {
 	if !w.firstByte {
 		w.firstByte = true
@@ -56,18 +56,7 @@ func (w *SSEInterceptWriter) Write(p []byte) (int, error) {
 		} else {
 			in, out, cached, cacheCreated = ev.InputTokens, ev.OutputTokens, ev.CachedTokens, ev.CacheCreationTokens
 		}
-		if in > 0 {
-			w.gctx.InputTokens = in
-		}
-		if out > 0 {
-			w.gctx.OutputTokens = out
-		}
-		if cached > 0 {
-			w.gctx.CachedTokens = cached
-		}
-		if cacheCreated > 0 {
-			w.gctx.CacheCreationTokens = cacheCreated
-		}
+		ApplyUsage(w.gctx, in, out, cached, cacheCreated)
 
 		protocol := ""
 		if w.gctx.SelectedEndpoint != nil {
@@ -79,14 +68,14 @@ func (w *SSEInterceptWriter) Write(p []byte) (int, error) {
 	return w.ResponseWriter.Write(p)
 }
 
-// Flush 委托给底层 Flusher（如果支持）。
+// Flush delegates to the underlying Flusher if supported.
 func (w *SSEInterceptWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
-// WriteHeader 拦截状态码写入，一旦写出即认为首包响应开始，提前置位 TTFT
+// WriteHeader intercepts status code writes; once headers are sent, TTFT is considered started.
 func (w *SSEInterceptWriter) WriteHeader(statusCode int) {
 	if !w.firstByte {
 		w.firstByte = true
