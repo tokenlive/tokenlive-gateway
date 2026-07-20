@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
@@ -27,58 +26,11 @@ func (i *openaiMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provide
 		return fmt.Errorf("parse raw body: %w", err)
 	}
 
-	// 检测是否为 Claude Code / Anthropic SDK 的连通性探测请求
-	// 特征：max_tokens == 1 且只有一个消息，内容为 "."
-	isProbe := false
-	if maxTokens, ok := payload["max_tokens"].(float64); ok && maxTokens == 1 {
-		if msgs, ok := payload["messages"].([]interface{}); ok && len(msgs) == 1 {
-			if firstMsg, ok := msgs[0].(map[string]interface{}); ok {
-				if content, ok := firstMsg["content"].(string); ok && content == "." {
-					isProbe = true
-				}
-			}
-		}
+	mocked, err := llm.TryMockMessagesProbe(gctx)
+	if err != nil {
+		return err
 	}
-
-	if isProbe {
-		if gctx.Request != nil {
-			if ver := gctx.Request.Header.Get("anthropic-version"); ver != "" {
-				gctx.ResponseWriter.Header().Set("anthropic-version", ver)
-			} else {
-				gctx.ResponseWriter.Header().Set("anthropic-version", "2023-06-01")
-			}
-		}
-		respModel := gctx.OriginalModel
-		if respModel == "" {
-			respModel = gctx.Model
-		}
-		mockResp := map[string]interface{}{
-			"id":            normalizeAnthropicID(fmt.Sprintf("probe%d", time.Now().UnixNano())),
-			"type":          "message",
-			"role":          "assistant",
-			"model":         respModel,
-			"content": []interface{}{
-				map[string]interface{}{
-					"type": "text",
-					"text": ".",
-				},
-			},
-			"stop_reason":   "max_tokens",
-			"stop_sequence": nil,
-			"usage": map[string]interface{}{
-				"input_tokens":  5,
-				"output_tokens": 1,
-			},
-		}
-		respBytes, err := json.Marshal(mockResp)
-		if err != nil {
-			return err
-		}
-		gctx.UpstreamBody = respBytes
-		gctx.Response = mockResp
-		gctx.InputTokens = 5
-		gctx.OutputTokens = 1
-		gctx.TriggerFirstByte()
+	if mocked {
 		return nil
 	}
 

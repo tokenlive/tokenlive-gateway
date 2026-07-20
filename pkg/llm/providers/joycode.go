@@ -197,6 +197,14 @@ func (i *joycodeMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 		return fmt.Errorf("expected *JoyCodeProvider, got %T", p)
 	}
 
+	mocked, err := llm.TryMockMessagesProbe(gctx)
+	if err != nil {
+		return err
+	}
+	if mocked {
+		return nil
+	}
+
 	model := gctx.Model
 	if model == "" {
 		model = "claude-3-5-sonnet-v2"
@@ -401,6 +409,13 @@ func (p *JoyCodeProvider) doAnthropicMessagesDirect(gctx *core.GatewayContext, m
 	}
 
 	if gctx.IsStream {
+		contentType := resp.Header.Get("Content-Type")
+		if !strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+			body, _ := io.ReadAll(resp.Body)
+			gctx.UpstreamBody = body
+			resp.Body.Close()
+			return fmt.Errorf("upstream stream request returned non-stream content-type: %s, body: %s", contentType, string(body))
+		}
 		// 直接使用 Anthropic SSE 透传处理器
 		return p.handleMessagesStream(gctx, resp)
 	}
@@ -893,24 +908,8 @@ func adaptThinkingBehavior(body []byte) []byte {
 		return body
 	}
 
-	thinking, exists := m["thinking"]
-	if !exists {
-		return body
-	}
-
-	tMap, ok := thinking.(map[string]interface{})
-	if !ok {
-		return body
-	}
-
-	tType, _ := tMap["type"].(string)
-	if tType == "enabled" {
-		tMap["type"] = "adaptive"
-		delete(tMap, "budget_tokens")
-		m["output_config"] = map[string]interface{}{
-			"effort": "high",
-		}
-	}
+	delete(m, "thinking")
+	delete(m, "output_config")
 
 	out, err := json.Marshal(m)
 	if err != nil {

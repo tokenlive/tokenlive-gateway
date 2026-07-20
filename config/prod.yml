@@ -63,8 +63,8 @@ events:
     invocation_fail: true
     model_failover: true
     endpoint_failover: true
-    retry_error: false
-    circuit_breaker_error: false
+    retry_error: true
+    circuit_breaker_error: true
   # kafka:
   #   brokers: ["localhost:9092"]
 

@@ -586,3 +586,76 @@ func TestOpenAIMessages_Stream_DoneOnlyReturnsError(t *testing.T) {
 		t.Fatalf("expected no downstream events for done-only stream, got %q", body)
 	}
 }
+
+func TestOpenAIMessages_ProbeNonStream(t *testing.T) {
+	p := NewOpenAIProvider("test-openai", "http://localhost:1234", "test-key", []string{"gpt-4"})
+
+	reqBody := `{"model": "gpt-4", "messages": [{"role": "user", "content": "."}], "max_tokens": 1}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeMessages
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "gpt-4"
+	gctx.IsStream = false
+
+	invoker := &openaiMessagesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err != nil {
+		t.Fatalf("expected no error for probe, got %v", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(gctx.UpstreamBody, &resp); err != nil {
+		t.Fatalf("failed to unmarshal probe response: %v", err)
+	}
+
+	if resp["type"] != "message" || resp["model"] != "gpt-4" {
+		t.Errorf("unexpected probe response: %v", resp)
+	}
+	content := resp["content"].([]interface{})
+	if len(content) != 1 || content[0].(map[string]interface{})["text"] != "." {
+		t.Errorf("unexpected content in probe response: %v", content)
+	}
+}
+
+func TestOpenAIMessages_ProbeStream(t *testing.T) {
+	p := NewOpenAIProvider("test-openai", "http://localhost:1234", "test-key", []string{"gpt-4"})
+
+	reqBody := `{"model": "gpt-4", "messages": [{"role": "user", "content": "."}], "max_tokens": 1, "stream": true}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeMessages
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "gpt-4"
+	gctx.IsStream = true
+
+	invoker := &openaiMessagesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err != nil {
+		t.Fatalf("expected no error for stream probe, got %v", err)
+	}
+
+	body := w.Body.String()
+	expectedEvents := []string{
+		"event: message_start",
+		"event: content_block_start",
+		"event: content_block_delta",
+		"event: content_block_stop",
+		"event: message_delta",
+		"event: message_stop",
+	}
+	for _, ev := range expectedEvents {
+		if !strings.Contains(body, ev) {
+			t.Errorf("expected stream probe response to contain event %q, but got:\n%s", ev, body)
+		}
+	}
+	if !strings.Contains(body, `"text_delta"`) || !strings.Contains(body, `"."`) {
+		t.Errorf("expected text delta in probe stream, got:\n%s", body)
+	}
+}

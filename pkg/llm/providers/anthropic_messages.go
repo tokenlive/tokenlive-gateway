@@ -23,6 +23,14 @@ func (i *anthropicMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Prov
 		return fmt.Errorf("expected *AnthropicProvider, got %T", p)
 	}
 
+	mocked, err := llm.TryMockMessagesProbe(gctx)
+	if err != nil {
+		return err
+	}
+	if mocked {
+		return nil
+	}
+
 	endpoint := ap.baseURL + "/messages"
 
 	// 动态解析超时，如果没有配置具体首字超时，则使用最大超时时间进行等待

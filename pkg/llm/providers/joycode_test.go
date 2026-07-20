@@ -270,3 +270,66 @@ data: [DONE]
 		t.Errorf("expected stream to end with [DONE]")
 	}
 }
+
+func TestJoyCodeMessages_ProbeNonStream(t *testing.T) {
+	p := &JoyCodeProvider{
+		name:    "test-joycode",
+		baseURL: "http://localhost:1234",
+		apiKey:  "test-key",
+	}
+
+	reqBody := `{"model": "claude-3-5-sonnet", "messages": [{"role": "user", "content": "."}], "max_tokens": 1}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeMessages
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "claude-3-5-sonnet"
+	gctx.IsStream = false
+
+	invoker := &joycodeMessagesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(gctx.UpstreamBody, &resp); err != nil {
+		t.Fatalf("failed to unmarshal probe response: %v", err)
+	}
+	if resp["type"] != "message" || resp["model"] != "claude-3-5-sonnet" {
+		t.Errorf("unexpected probe response: %v", resp)
+	}
+}
+
+func TestJoyCodeMessages_ProbeStream(t *testing.T) {
+	p := &JoyCodeProvider{
+		name:    "test-joycode",
+		baseURL: "http://localhost:1234",
+		apiKey:  "test-key",
+	}
+
+	reqBody := `{"model": "claude-3-5-sonnet", "messages": [{"role": "user", "content": "."}], "max_tokens": 1, "stream": true}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeMessages
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "claude-3-5-sonnet"
+	gctx.IsStream = true
+
+	invoker := &joycodeMessagesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "event: message_start") || !strings.Contains(body, "event: message_stop") {
+		t.Errorf("expected stream events, got %s", body)
+	}
+}
