@@ -38,6 +38,7 @@ func NewSSEInterceptWriter(gctx *core.GatewayContext, opts ...SSEOption) *SSEInt
 	for _, opt := range opts {
 		opt(w)
 	}
+	w.Header().Set("X-Accel-Buffering", "no")
 	return w
 }
 

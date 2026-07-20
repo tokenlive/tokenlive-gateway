@@ -134,6 +134,7 @@ func TryMockMessagesProbe(gctx *core.GatewayContext) (bool, error) {
 		gctx.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 		gctx.ResponseWriter.Header().Set("Cache-Control", "no-cache")
 		gctx.ResponseWriter.Header().Set("Connection", "keep-alive")
+		gctx.ResponseWriter.Header().Set("X-Accel-Buffering", "no")
 		gctx.ResponseWriter.WriteHeader(http.StatusOK)
 
 		msgID := normalizeAnthropicID(fmt.Sprintf("probe%d", time.Now().UnixNano()))

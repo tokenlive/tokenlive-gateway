@@ -407,6 +407,7 @@ func (p *JoyCodeProvider) handleAnthropicStreamToOpenAI(gctx *core.GatewayContex
 	gctx.ResponseWriter.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	gctx.ResponseWriter.Header().Set("Cache-Control", "no-cache")
 	gctx.ResponseWriter.Header().Set("Connection", "keep-alive")
+	gctx.ResponseWriter.Header().Set("X-Accel-Buffering", "no")
 	gctx.ResponseWriter.WriteHeader(http.StatusOK)
 
 	flusher, hasFlusher := gctx.ResponseWriter.(http.Flusher)
