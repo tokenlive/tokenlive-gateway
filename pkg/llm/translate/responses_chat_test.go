@@ -2,6 +2,7 @@ package translate
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -132,5 +133,150 @@ func TestCorrectNativeResponsesRequest_Namespace(t *testing.T) {
 	c0 := content[0].(map[string]interface{})
 	if c0["type"] != "text" {
 		t.Errorf("content type = %v", c0["type"])
+	}
+}
+
+func TestCleanJSONSchema_RequiredNull(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"foo": map[string]interface{}{
+				"type": "string",
+			},
+		},
+		"required": nil,
+	}
+	cleaned := cleanJSONSchema(schema, false)
+	req, exists := cleaned["required"]
+	if !exists {
+		t.Fatalf("expected required to be present as empty array")
+	}
+	arr, ok := req.([]interface{})
+	if !ok || arr == nil {
+		t.Fatalf("expected required []interface{}, got %T %v", req, req)
+	}
+	if len(arr) != 0 {
+		t.Errorf("expected empty required, got %v", arr)
+	}
+	encoded, err := json.Marshal(cleaned)
+	if err != nil {
+		t.Fatalf("failed to marshal cleaned schema: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"required":[]`) {
+		t.Errorf("encoded JSON missing required:[], got %s", string(encoded))
+	}
+	if strings.Contains(string(encoded), `"required":null`) {
+		t.Errorf("encoded JSON contains required:null: %s", string(encoded))
+	}
+}
+
+
+func TestCleanJSONSchema_RequiredEmptyArray(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"foo": map[string]interface{}{
+				"type": "string",
+			},
+		},
+		"required": []interface{}{},
+	}
+	cleaned := cleanJSONSchema(schema, false)
+	req, exists := cleaned["required"]
+	if !exists {
+		t.Fatalf("expected required kept")
+	}
+	arr, ok := req.([]interface{})
+	if !ok || len(arr) != 0 {
+		t.Errorf("expected empty required array, got %v", req)
+	}
+	encoded, err := json.Marshal(cleaned)
+	if err != nil {
+		t.Fatalf("failed to marshal cleaned schema: %s", err)
+	}
+	if strings.Contains(string(encoded), `"required":null`) {
+		t.Errorf("encoded JSON contains required:null: %s", string(encoded))
+	}
+	if !strings.Contains(string(encoded), `"required":[]`) {
+		t.Errorf("encoded JSON missing required:[], got %s", string(encoded))
+	}
+}
+
+func TestMessagesRequestToChat_RequiredEmptyArray(t *testing.T) {
+	raw := []byte(`{
+		"model": "claude-opus-4.5",
+		"max_tokens": 100,
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [{
+			"name": "noop",
+			"description": "no args",
+			"input_schema": {
+				"type": "object",
+				"properties": {},
+				"required": []
+			}
+		}]
+	}`)
+	out, err := MessagesRequestToChat(raw, MessagesToChatOptions{OfficialOrTest: false})
+	if err != nil {
+		t.Fatalf("MessagesRequestToChat: %v", err)
+	}
+	if strings.Contains(string(out), `"required":null`) {
+		t.Fatalf("output contains required:null: %s", string(out))
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	tools := req["tools"].([]interface{})
+	tool := tools[0].(map[string]interface{})
+	fn := tool["function"].(map[string]interface{})
+	params := fn["parameters"].(map[string]interface{})
+	arr, ok := params["required"].([]interface{})
+	if !ok {
+		t.Fatalf("expected required array, got %v in %s", params["required"], string(out))
+	}
+	if len(arr) != 0 {
+		t.Errorf("expected empty required, got %v", arr)
+	}
+}
+
+func TestCorrectNativeMessagesRequest_RequiredEmptyArray(t *testing.T) {
+	raw := []byte(`{
+		"model": "claude-opus-4.5",
+		"max_tokens": 100,
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [{
+			"name": "noop",
+			"description": "no args",
+			"input_schema": {
+				"type": "object",
+				"properties": {}
+			}
+		}]
+	}`)
+	out, err := CorrectNativeMessagesRequest(raw)
+	if err != nil {
+		t.Fatalf("CorrectNativeMessagesRequest: %v", err)
+	}
+	if strings.Contains(string(out), `"required":null`) {
+		t.Fatalf("output contains required:null: %s", string(out))
+	}
+	if !strings.Contains(string(out), `"required":[]`) {
+		t.Fatalf("output missing required:[], got %s", string(out))
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	tools := req["tools"].([]interface{})
+	tool := tools[0].(map[string]interface{})
+	schema := tool["input_schema"].(map[string]interface{})
+	arr, ok := schema["required"].([]interface{})
+	if !ok {
+		t.Errorf("expected required array, got %v in %s", schema["required"], string(out))
+	}
+	if len(arr) != 0 {
+		t.Errorf("expected empty required, got %v", arr)
 	}
 }

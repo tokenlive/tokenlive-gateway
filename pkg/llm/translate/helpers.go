@@ -56,10 +56,13 @@ func cleanJSONSchema(m map[string]interface{}, removeAdditionalProps bool) map[s
 		if k == "additionalProperties" && removeAdditionalProps {
 			continue
 		}
+		if k == "required" && v == nil {
+			continue
+		}
 		if subMap, ok := v.(map[string]interface{}); ok {
 			res[k] = cleanJSONSchema(subMap, removeAdditionalProps)
 		} else if subArr, ok := v.([]interface{}); ok {
-			var newArr []interface{}
+			newArr := make([]interface{}, 0, len(subArr))
 			for _, item := range subArr {
 				if itemMap, ok := item.(map[string]interface{}); ok {
 					newArr = append(newArr, cleanJSONSchema(itemMap, removeAdditionalProps))
@@ -72,8 +75,22 @@ func cleanJSONSchema(m map[string]interface{}, removeAdditionalProps bool) map[s
 			res[k] = v
 		}
 	}
+	if isObjectSchema(res) {
+		if req, ok := res["required"].([]interface{}); !ok || req == nil {
+			res["required"] = make([]interface{}, 0)
+		}
+	}
 	return res
 }
+
+func isObjectSchema(m map[string]interface{}) bool {
+	if t, ok := m["type"].(string); ok && t == "object" {
+		return true
+	}
+	_, ok := m["properties"]
+	return ok
+}
+
 
 func degradeMessagesToTextOnly(msgs []interface{}) []interface{} {
 	var temp []interface{}

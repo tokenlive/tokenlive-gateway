@@ -1,12 +1,10 @@
 package core
 
 import (
-	"context"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
@@ -288,7 +286,6 @@ func (e *circuitBreakerEntry) tryAcquireHalfOpenPermit(enableActive bool) bool {
 type CircuitBreakerManager struct {
 	mu           sync.RWMutex
 	entries      map[string]*circuitBreakerEntry
-	rdb          *redis.Client // shared Redis client for syncing breaker state
 	logger       *zap.Logger
 	metrics      *CircuitBreakerMetrics // metrics emitter
 	eventHandler CBEventHandler         // state-change event callback
@@ -299,13 +296,6 @@ func NewCircuitBreakerManager() *CircuitBreakerManager {
 	return &CircuitBreakerManager{
 		entries: make(map[string]*circuitBreakerEntry),
 	}
-}
-
-// SetRDB injects the shared Redis client.
-func (cbm *CircuitBreakerManager) SetRDB(rdb *redis.Client) {
-	cbm.mu.Lock()
-	defer cbm.mu.Unlock()
-	cbm.rdb = rdb
 }
 
 // SetLogger injects the shared logger.
@@ -418,20 +408,6 @@ func (cbm *CircuitBreakerManager) onStateChange(key string, oldState, newState C
 			OldState:     oldState.String(),
 			NewState:     newState.String(),
 		})
-	}
-
-	if cbm.rdb == nil {
-		return
-	}
-	redisKey := "aigw:cb:open_endpoints"
-	if strings.Contains(key, ":") {
-		redisKey = "aigw:cb:open_services"
-	}
-	ctx := context.Background()
-	if newState == CircuitOpen {
-		_ = cbm.rdb.SAdd(ctx, redisKey, key).Err()
-	} else if oldState == CircuitOpen && newState != CircuitOpen {
-		_ = cbm.rdb.SRem(ctx, redisKey, key).Err()
 	}
 }
 

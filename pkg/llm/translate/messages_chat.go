@@ -722,3 +722,34 @@ func IsOfficialOrTestBaseURL(baseURL string) bool {
 		strings.Contains(baseURL, "127.0.0.1") ||
 		strings.Contains(baseURL, "localhost")
 }
+
+// CorrectNativeMessagesRequest sanitizes tool input_schema in native Anthropic /messages requests.
+// Only tools are rewritten to avoid re-encoding the full (often huge) messages body.
+func CorrectNativeMessagesRequest(rawBody []byte) ([]byte, error) {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return nil, fmt.Errorf("parse raw body: %w", err)
+	}
+
+	tools, ok := payload["tools"].([]interface{})
+	if !ok || len(tools) == 0 {
+		return rawBody, nil
+	}
+
+	changed := false
+	for _, t := range tools {
+		tMap, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if schema, ok := tMap["input_schema"].(map[string]interface{}); ok {
+			tMap["input_schema"] = cleanJSONSchema(schema, true)
+			changed = true
+		}
+	}
+	if !changed {
+		return rawBody, nil
+	}
+	return json.Marshal(payload)
+}
+

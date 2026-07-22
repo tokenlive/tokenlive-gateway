@@ -33,6 +33,7 @@ func main() {
 	conf := config.NewConfig(*envConf)
 
 	logger := log.NewLog(conf)
+	zap.ReplaceGlobals(logger.Logger)
 
 	app, cleanup, err := wire.NewWire(conf, logger)
 	if err != nil {

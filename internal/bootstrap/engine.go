@@ -271,10 +271,6 @@ func NewGatewayEngine(
 	// Inject policyService as core.PolicyProvider.
 	engine := core.NewEngine(engineConfig, gwDiscovery, stateStore, policyService, logger.Logger)
 
-	// Shared Redis client + metrics for circuit breaker.
-	if rdb != nil {
-		engine.CircuitBreakerManager().SetRDB(rdb)
-	}
 	cbMetrics := core.NewCircuitBreakerMetrics(metricsRegistry.CircuitBreakerState)
 	engine.CircuitBreakerManager().SetMetrics(cbMetrics)
 
