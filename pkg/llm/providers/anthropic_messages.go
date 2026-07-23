@@ -44,7 +44,19 @@ func (i *anthropicMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Prov
 	if !isOAuth {
 		h.Set("x-api-key", ap.apiKey)
 	}
-	h.Set("anthropic-version", "2023-06-01")
+
+	// Forward client Anthropic protocol headers. Claude Code relies on anthropic-beta
+	// for tools/thinking/caching features; dropping it breaks xAI Anthropic-compat.
+	version := "2023-06-01"
+	if gctx.Request != nil {
+		if ver := gctx.Request.Header.Get("anthropic-version"); ver != "" {
+			version = ver
+		}
+		if beta := gctx.Request.Header.Get("anthropic-beta"); beta != "" {
+			h.Set("anthropic-beta", beta)
+		}
+	}
+	h.Set("anthropic-version", version)
 
 	resp, err := upstream.Call(gctx, upstream.Request{
 		Client: ap.client,

@@ -45,6 +45,7 @@ func TestAnthropicMessagesInvoker_NonStream(t *testing.T) {
 		IsStream:    false,
 	}
 
+
 	err := p.Invoke(gctx)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -240,5 +241,34 @@ func TestAnthropicMessages_ProbeStream(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, "event: message_start") || !strings.Contains(body, "event: message_stop") {
 		t.Errorf("expected stream events, got %s", body)
+	}
+}
+
+func TestAnthropicMessagesInvoker_ForwardsBetaHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("anthropic-beta"); got != "fine-grained-tool-streaming-2025-05-14" {
+			t.Errorf("anthropic-beta = %q", got)
+		}
+		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
+			t.Errorf("anthropic-version = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	p := NewAnthropicProvider("anthropic", server.URL, "sk-ant-test", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude","messages":[{"role":"user","content":"hi"}],"max_tokens":10}`))
+	req.Header.Set("anthropic-beta", "fine-grained-tool-streaming-2025-05-14")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	gctx := core.AcquireContext(httptest.NewRecorder(), req)
+	defer core.ReleaseContext(gctx)
+	gctx.Ctx = context.Background()
+	gctx.RequestType = core.RequestTypeMessages
+	gctx.RawBody = []byte(`{"model":"claude","messages":[{"role":"user","content":"hi"}],"max_tokens":10}`)
+	gctx.IsStream = false
+
+	if err := p.Invoke(gctx); err != nil {
+		t.Fatalf("Invoke: %v", err)
 	}
 }

@@ -724,7 +724,7 @@ func IsOfficialOrTestBaseURL(baseURL string) bool {
 }
 
 // CorrectNativeMessagesRequest sanitizes tool input_schema in native Anthropic /messages requests.
-// Only tools are rewritten to avoid re-encoding the full (often huge) messages body.
+// Only tools[].input_schema is rewritten (e.g. required:null → []); message/tool semantics are preserved.
 func CorrectNativeMessagesRequest(rawBody []byte) ([]byte, error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(rawBody, &payload); err != nil {

@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +23,9 @@ func PassthroughStream(gctx *core.GatewayContext, resp *http.Response, extractor
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("Connection", "keep-alive")
 	writer.Header().Set("X-Accel-Buffering", "no")
-	writer.WriteHeader(http.StatusOK)
+	// Do not WriteHeader before the first upstream body byte. Calling WriteHeader
+	// early marks TTFT incorrectly and can make Claude Code think the stream has
+	// started while xAI is still computing the first event on large contexts.
 
 	buf := make([]byte, 4096)
 	for {
@@ -36,8 +40,29 @@ func PassthroughStream(gctx *core.GatewayContext, resp *http.Response, extractor
 			if err == io.EOF {
 				break
 			}
-			return fmt.Errorf("read upstream stream: %w", err)
+			return fmt.Errorf("read upstream stream: %w", classifyStreamReadError(gctx, err))
 		}
 	}
 	return nil
+}
+
+// classifyStreamReadError distinguishes client disconnect from gateway/upstream cancels.
+func classifyStreamReadError(gctx *core.GatewayContext, err error) error {
+	if err == nil {
+		return nil
+	}
+	if gctx != nil && gctx.Request != nil {
+		if cerr := gctx.Request.Context().Err(); cerr != nil {
+			return fmt.Errorf("client disconnected: %w", err)
+		}
+	}
+	if gctx != nil && gctx.Ctx != nil {
+		if cause := context.Cause(gctx.Ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+			return cause
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("context canceled: %w", err)
+	}
+	return err
 }
