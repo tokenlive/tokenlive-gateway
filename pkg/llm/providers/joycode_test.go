@@ -428,3 +428,56 @@ func TestJoyCode_CleanThinkingInHistory(t *testing.T) {
 		t.Errorf("unexpected content block left: %+v", block)
 	}
 }
+
+func TestJoyCodeMessages_GLM5_NonAnthropicModelStream(t *testing.T) {
+	// Mock upstream JoyCode OpenAI endpoint
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/api/saas/openai/v2/chat/completions") {
+			t.Errorf("expected OpenAI endpoint path, got: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-glm\",\"model\":\"glm-5.1\",\"choices\":[{\"delta\":{\"reasoning_content\":\"Thinking GLM5...\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-glm\",\"model\":\"glm-5.1\",\"choices\":[{\"delta\":{\"content\":\"Hello from GLM5.1\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p := &JoyCodeProvider{
+		name:    "test-joycode",
+		baseURL: server.URL,
+		apiKey:  "test-key",
+		client:  server.Client(),
+	}
+
+	reqBody := `{"model": "glm-5.1", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 100, "stream": true}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeMessages
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "glm-5.1"
+	gctx.IsStream = true
+
+	invoker := &joycodeMessagesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	out := w.Body.String()
+	if !strings.Contains(out, "event: message_start") {
+		t.Errorf("expected message_start event, got: %s", out)
+	}
+	if !strings.Contains(out, "Thinking GLM5...") {
+		t.Errorf("expected thinking content, got: %s", out)
+	}
+	if !strings.Contains(out, "Hello from GLM5.1") {
+		t.Errorf("expected text content, got: %s", out)
+	}
+	if !strings.Contains(out, "event: message_stop") {
+		t.Errorf("expected message_stop event, got: %s", out)
+	}
+}

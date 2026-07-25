@@ -191,7 +191,7 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 }
 
 // ==========================================
-// 3. Messages Invoker (native Anthropic Messages request)
+// 3. Messages Invoker (native Anthropic Messages request or protocol translation for OpenAI-style models)
 // ==========================================
 type joycodeMessagesInvoker struct{}
 
@@ -214,16 +214,40 @@ func (i *joycodeMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 		model = "claude-3-5-sonnet-v2"
 	}
 
-	// Native Anthropic messages passthrough
-	return jp.doAnthropicMessagesDirect(gctx, model)
+	if isAnthropicModel(model, gctx) {
+		// Native Anthropic messages passthrough for Claude models
+		return jp.doAnthropicMessagesDirect(gctx, model)
+	}
+
+	// For non-Anthropic models (e.g. GLM-5.1, GLM-5.2, Kimi-K2.6, GPT-4):
+	// Translate Anthropic Messages -> OpenAI Chat Completion
+	newBody, err := translate.MessagesRequestToChat(gctx.RawBody, translate.MessagesToChatOptions{
+		OfficialOrTest: translate.IsOfficialOrTestBaseURL(jp.baseURL),
+	})
+	if err != nil {
+		return err
+	}
+	gctx.RawBody = newBody
+
+	if err := jp.doOpenAIRequest(gctx, model); err != nil {
+		return err
+	}
+
+	if gctx.IsStream {
+		return handleMessagesStream(gctx, gctx.UpstreamResponse)
+	}
+	if err := translateNonStreamResponse(gctx); err != nil {
+		return fmt.Errorf("translate response: %w", err)
+	}
+	return nil
 }
 
 // ==========================================
 // JoyCode core request handling logic
 // ==========================================
 
-// invokeOpenAI sends a request to the standard OpenAI /v2 endpoint and handles the response
-func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) error {
+// doOpenAIRequest sends a request to the standard OpenAI /v2 endpoint and stores response on gctx
+func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, model string) error {
 	var endpoint string
 	if strings.HasPrefix(p.baseURL, "https://") {
 		var err error
@@ -247,23 +271,33 @@ func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) 
 		return err
 	}
 
-	if gctx.IsStream {
-		defer resp.Body.Close()
-		// Standard models use standard OpenAI stream parsing
-		return handleOpenAIStream(gctx, resp)
+	gctx.UpstreamResponse = resp
+	if !gctx.IsStream {
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("read response body: %w", err)
+		}
+		gctx.UpstreamBody = body
+		gctx.TriggerFirstByte()
+	}
+	return nil
+}
+
+// invokeOpenAI sends a request to the standard OpenAI /v2 endpoint and handles the response
+func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) error {
+	if err := p.doOpenAIRequest(gctx, model); err != nil {
+		return err
 	}
 
-	// Non-streaming response handling
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return fmt.Errorf("read response body: %w", err)
+	if gctx.IsStream {
+		defer gctx.UpstreamResponse.Body.Close()
+		// Standard models use standard OpenAI stream parsing
+		return handleOpenAIStream(gctx, gctx.UpstreamResponse)
 	}
-	gctx.UpstreamBody = body
-	gctx.TriggerFirstByte()
 
 	// Token stats
-	in, out, cached, cacheCreated := llm.OpenAITokenExtractor(string(body))
+	in, out, cached, cacheCreated := llm.OpenAITokenExtractor(string(gctx.UpstreamBody))
 	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
 	return nil
 }
