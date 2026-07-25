@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -127,6 +128,17 @@ type contentBlockStopEvent struct {
 	Index int    `json:"index"`
 }
 
+type messageDeltaEvent struct {
+	Type  string `json:"type"`
+	Delta struct {
+		StopReason   string      `json:"stop_reason"`
+		StopSequence interface{} `json:"stop_sequence"`
+	} `json:"delta"`
+	Usage struct {
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
 type messageStopEvent struct {
 	Type string `json:"type"`
 }
@@ -158,6 +170,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	parser := llm.NewSSEParser()
 	buf := make([]byte, 4096)
 	started := false
+	firstRead := true
 
 	var lastMessageID string
 
@@ -200,6 +213,14 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
+			if firstRead {
+				firstRead = false
+				trimmed := bytes.TrimSpace(buf[:n])
+				if bytes.HasPrefix(trimmed, []byte("<!DOCTYPE")) || bytes.HasPrefix(trimmed, []byte("<html")) || bytes.HasPrefix(trimmed, []byte("<HTML")) {
+					return fmt.Errorf("upstream returned HTML error response instead of SSE stream")
+				}
+			}
+
 			// Trigger first byte
 			gctx.TriggerFirstByte()
 
@@ -223,8 +244,10 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 					Model   string `json:"model"`
 					Choices []struct {
 						Delta struct {
-							Content   string `json:"content"`
-							ToolCalls []struct {
+							Content          string `json:"content"`
+							ReasoningContent string `json:"reasoning_content"`
+							Thinking         string `json:"thinking"`
+							ToolCalls        []struct {
 								Index    int    `json:"index"`
 								ID       string `json:"id"`
 								Type     string `json:"type"`
@@ -245,12 +268,18 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 					lastMessageID = chunk.ID
 				}
 
-
 				if len(chunk.Choices) > 0 {
 					choice := chunk.Choices[0]
 
-					// 1. Process text
+					// 1. Process reasoning/thinking or standard text
 					txt := choice.Delta.Content
+					if txt == "" {
+						txt = choice.Delta.ReasoningContent
+					}
+					if txt == "" {
+						txt = choice.Delta.Thinking
+					}
+
 					if txt != "" {
 						if err := startMessage(); err != nil {
 							return err
@@ -371,7 +400,9 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	}
 
 	if !started {
-		return fmt.Errorf("empty upstream stream: no content or tool calls received")
+		if err := startMessage(); err != nil {
+			return err
+		}
 	}
 
 	if started {
@@ -404,6 +435,15 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 			if err := writeEvent(gctx.ResponseWriter, "content_block_stop", blockStopEv); err != nil {
 				return err
 			}
+		}
+
+		// Send message_delta (stop_reason and usage)
+		var msgDeltaEv messageDeltaEvent
+		msgDeltaEv.Type = "message_delta"
+		msgDeltaEv.Delta.StopReason = "end_turn"
+		msgDeltaEv.Usage.OutputTokens = gctx.OutputTokens
+		if err := writeEvent(gctx.ResponseWriter, "message_delta", msgDeltaEv); err != nil {
+			return err
 		}
 
 		// Send message_stop
