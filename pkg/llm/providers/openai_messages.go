@@ -155,6 +155,28 @@ func writeEvent(w io.Writer, eventType string, data interface{}) error {
 func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error {
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		gctx.UpstreamBody = body
+		gctx.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if gctx.Request != nil {
+			if ver := gctx.Request.Header.Get("anthropic-version"); ver != "" {
+				gctx.ResponseWriter.Header().Set("anthropic-version", ver)
+			}
+		}
+		gctx.ResponseWriter.WriteHeader(resp.StatusCode)
+		errResp := map[string]interface{}{
+			"type": "error",
+			"error": map[string]interface{}{
+				"type":    "api_error",
+				"message": fmt.Sprintf("Upstream API returned status %d: %s", resp.StatusCode, string(body)),
+			},
+		}
+		jsonErr, _ := json.Marshal(errResp)
+		_, _ = gctx.ResponseWriter.Write(jsonErr)
+		return fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, string(body))
+	}
+
 	gctx.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 	gctx.ResponseWriter.Header().Set("Cache-Control", "no-cache")
 	gctx.ResponseWriter.Header().Set("Connection", "keep-alive")
@@ -247,6 +269,8 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 							Content          string `json:"content"`
 							ReasoningContent string `json:"reasoning_content"`
 							Thinking         string `json:"thinking"`
+							Reasoning        string `json:"reasoning"`
+							Thought          string `json:"thought"`
 							ToolCalls        []struct {
 								Index    int    `json:"index"`
 								ID       string `json:"id"`
@@ -278,6 +302,12 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 					}
 					if txt == "" {
 						txt = choice.Delta.Thinking
+					}
+					if txt == "" {
+						txt = choice.Delta.Reasoning
+					}
+					if txt == "" {
+						txt = choice.Delta.Thought
 					}
 
 					if txt != "" {
