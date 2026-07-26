@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/translate"
+	"go.uber.org/zap"
 )
 
 type openaiMessagesInvoker struct{}
@@ -152,6 +154,39 @@ func writeEvent(w io.Writer, eventType string, data interface{}) error {
 	return err
 }
 
+// mapOpenAIFinishReason maps OpenAI chat.completion finish_reason to Anthropic stop_reason.
+func mapOpenAIFinishReason(finishReason string) string {
+	switch finishReason {
+	case "length":
+		return "max_tokens"
+	case "tool_calls", "function_call":
+		return "tool_use"
+	case "content_filter":
+		return "end_turn"
+	case "stop", "":
+		return "end_turn"
+	default:
+		return "end_turn"
+	}
+}
+
+func markMessagesStreamCompleted(gctx *core.GatewayContext) {
+	if gctx.Tags == nil {
+		gctx.Tags = make(map[string]string)
+	}
+	gctx.Tags["message_stop_sent"] = "true"
+}
+
+func setStreamDiagTag(gctx *core.GatewayContext, key, value string) {
+	if gctx == nil || value == "" {
+		return
+	}
+	if gctx.Tags == nil {
+		gctx.Tags = make(map[string]string)
+	}
+	gctx.Tags[key] = value
+}
+
 func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error {
 	defer resp.Body.Close()
 
@@ -180,6 +215,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	gctx.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 	gctx.ResponseWriter.Header().Set("Cache-Control", "no-cache")
 	gctx.ResponseWriter.Header().Set("Connection", "keep-alive")
+	gctx.ResponseWriter.Header().Set("X-Accel-Buffering", "no")
 	if gctx.Request != nil {
 		if ver := gctx.Request.Header.Get("anthropic-version"); ver != "" {
 			gctx.ResponseWriter.Header().Set("anthropic-version", ver)
@@ -188,18 +224,29 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	gctx.ResponseWriter.WriteHeader(http.StatusOK)
 
 	flusher, hasFlusher := gctx.ResponseWriter.(http.Flusher)
+	flush := func() {
+		if hasFlusher {
+			flusher.Flush()
+		}
+	}
 
 	parser := llm.NewSSEParser()
 	buf := make([]byte, 4096)
 	started := false
 	firstRead := true
+	sawDone := false
+	finishReason := ""
+	textChars := 0
+	thinkingChars := 0
+	hasToolUse := false
 
 	var lastMessageID string
 
 	activeBlocks := make(map[int]bool)
-	blockTypes := make(map[int]string) // index -> "text" or "tool_use"
 	oaiToAnthropicIndex := make(map[int]int)
 	nextBlockIndex := 0
+	thinkingBlockIndex := -1
+	textBlockIndex := -1
 
 	startMessage := func() error {
 		if started {
@@ -225,9 +272,168 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 		if err := writeEvent(gctx.ResponseWriter, "message_start", startEv); err != nil {
 			return err
 		}
+		flush()
+		return nil
+	}
 
-		if hasFlusher {
-			flusher.Flush()
+	ensureBlock := func(blockType string) (int, error) {
+		switch blockType {
+		case "thinking":
+			if thinkingBlockIndex >= 0 {
+				return thinkingBlockIndex, nil
+			}
+		case "text":
+			if textBlockIndex >= 0 {
+				return textBlockIndex, nil
+			}
+		}
+
+		idx := nextBlockIndex
+		nextBlockIndex++
+		activeBlocks[idx] = true
+
+		switch blockType {
+		case "thinking":
+			thinkingBlockIndex = idx
+			var blockStartEv struct {
+				Type         string `json:"type"`
+				Index        int    `json:"index"`
+				ContentBlock struct {
+					Type     string `json:"type"`
+					Thinking string `json:"thinking"`
+				} `json:"content_block"`
+			}
+			blockStartEv.Type = "content_block_start"
+			blockStartEv.Index = idx
+			blockStartEv.ContentBlock.Type = "thinking"
+			blockStartEv.ContentBlock.Thinking = ""
+			if err := writeEvent(gctx.ResponseWriter, "content_block_start", blockStartEv); err != nil {
+				return 0, err
+			}
+		case "text":
+			textBlockIndex = idx
+			var blockStartEv contentBlockStartEvent
+			blockStartEv.Type = "content_block_start"
+			blockStartEv.Index = idx
+			blockStartEv.ContentBlock.Type = "text"
+			blockStartEv.ContentBlock.Text = ""
+			if err := writeEvent(gctx.ResponseWriter, "content_block_start", blockStartEv); err != nil {
+				return 0, err
+			}
+		default:
+			return 0, fmt.Errorf("unsupported content block type: %s", blockType)
+		}
+		return idx, nil
+	}
+
+	emitTextDelta := func(idx int, text string) error {
+		var deltaEv contentBlockDeltaEvent
+		deltaEv.Type = "content_block_delta"
+		deltaEv.Index = idx
+		deltaEv.Delta.Type = "text_delta"
+		deltaEv.Delta.Text = text
+		if err := writeEvent(gctx.ResponseWriter, "content_block_delta", deltaEv); err != nil {
+			return err
+		}
+		textChars += len(text)
+		gctx.TransmittedChars += len(text)
+		flush()
+		return nil
+	}
+
+	emitThinkingDelta := func(idx int, text string) error {
+		var deltaEv struct {
+			Type  string `json:"type"`
+			Index int    `json:"index"`
+			Delta struct {
+				Type     string `json:"type"`
+				Thinking string `json:"thinking"`
+			} `json:"delta"`
+		}
+		deltaEv.Type = "content_block_delta"
+		deltaEv.Index = idx
+		deltaEv.Delta.Type = "thinking_delta"
+		deltaEv.Delta.Thinking = text
+		if err := writeEvent(gctx.ResponseWriter, "content_block_delta", deltaEv); err != nil {
+			return err
+		}
+		thinkingChars += len(text)
+		gctx.TransmittedChars += len(text)
+		flush()
+		return nil
+	}
+
+	closeOpenBlocks := func() error {
+		if len(activeBlocks) == 0 {
+			return nil
+		}
+		var activeIndices []int
+		for idx := range activeBlocks {
+			activeIndices = append(activeIndices, idx)
+		}
+		sort.Ints(activeIndices)
+		for _, idx := range activeIndices {
+			var blockStopEv contentBlockStopEvent
+			blockStopEv.Type = "content_block_stop"
+			blockStopEv.Index = idx
+			if err := writeEvent(gctx.ResponseWriter, "content_block_stop", blockStopEv); err != nil {
+				return err
+			}
+		}
+		activeBlocks = make(map[int]bool)
+		return nil
+	}
+
+	finalizeSuccess := func(stopReason string) error {
+		if !started {
+			if err := startMessage(); err != nil {
+				return err
+			}
+		}
+		if len(activeBlocks) == 0 {
+			// Anthropic clients expect at least one content block before stop.
+			if _, err := ensureBlock("text"); err != nil {
+				return err
+			}
+		}
+		if err := closeOpenBlocks(); err != nil {
+			return err
+		}
+
+		var msgDeltaEv messageDeltaEvent
+		msgDeltaEv.Type = "message_delta"
+		msgDeltaEv.Delta.StopReason = stopReason
+		msgDeltaEv.Usage.OutputTokens = gctx.OutputTokens
+		if err := writeEvent(gctx.ResponseWriter, "message_delta", msgDeltaEv); err != nil {
+			return err
+		}
+
+		var stopEv messageStopEvent
+		stopEv.Type = "message_stop"
+		if err := writeEvent(gctx.ResponseWriter, "message_stop", stopEv); err != nil {
+			return err
+		}
+		flush()
+		markMessagesStreamCompleted(gctx)
+		// Diagnostics only — never rewrite a legitimate upstream completion.
+		setStreamDiagTag(gctx, "upstream_finish_reason", finishReason)
+		setStreamDiagTag(gctx, "anthropic_stop_reason", stopReason)
+		setStreamDiagTag(gctx, "stream_saw_done", strconv.FormatBool(sawDone))
+		setStreamDiagTag(gctx, "transmitted_chars", strconv.Itoa(gctx.TransmittedChars))
+		setStreamDiagTag(gctx, "text_chars", strconv.Itoa(textChars))
+		setStreamDiagTag(gctx, "thinking_chars", strconv.Itoa(thinkingChars))
+		if stopReason == "end_turn" && !hasToolUse && gctx.InputTokens >= 50000 && textChars < 100 {
+			gctx.Logger(zap.L()).Info("messages stream short end_turn on large context",
+				zap.String("finish_reason", finishReason),
+				zap.String("stop_reason", stopReason),
+				zap.Bool("saw_done", sawDone),
+				zap.Int("input_tokens", gctx.InputTokens),
+				zap.Int("output_tokens", gctx.OutputTokens),
+				zap.Int("text_chars", textChars),
+				zap.Int("thinking_chars", thinkingChars),
+				zap.String("model", gctx.Model),
+				zap.String("original_model", gctx.OriginalModel),
+			)
 		}
 		return nil
 	}
@@ -249,7 +455,8 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 			events := parser.Feed(buf[:n])
 			for _, ev := range events {
 				if ev.Done {
-					break
+					sawDone = true
+					continue
 				}
 
 				// Extract tokens
@@ -281,6 +488,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 								} `json:"function"`
 							} `json:"tool_calls"`
 						} `json:"delta"`
+						FinishReason *string `json:"finish_reason"`
 					} `json:"choices"`
 				}
 
@@ -292,131 +500,115 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 					lastMessageID = chunk.ID
 				}
 
-				if len(chunk.Choices) > 0 {
-					choice := chunk.Choices[0]
+				if len(chunk.Choices) == 0 {
+					continue
+				}
+				choice := chunk.Choices[0]
 
-					// 1. Process reasoning/thinking or standard text
-					txt := choice.Delta.Content
-					if txt == "" {
-						txt = choice.Delta.ReasoningContent
+				// 1. Process reasoning/thinking as Anthropic thinking blocks.
+				thinkingText := choice.Delta.ReasoningContent
+				if thinkingText == "" {
+					thinkingText = choice.Delta.Thinking
+				}
+				if thinkingText == "" {
+					thinkingText = choice.Delta.Reasoning
+				}
+				if thinkingText == "" {
+					thinkingText = choice.Delta.Thought
+				}
+				if thinkingText != "" {
+					if err := startMessage(); err != nil {
+						return err
 					}
-					if txt == "" {
-						txt = choice.Delta.Thinking
+					idx, err := ensureBlock("thinking")
+					if err != nil {
+						return err
 					}
-					if txt == "" {
-						txt = choice.Delta.Reasoning
+					if err := emitThinkingDelta(idx, thinkingText); err != nil {
+						return err
 					}
-					if txt == "" {
-						txt = choice.Delta.Thought
-					}
+				}
 
-					if txt != "" {
-						if err := startMessage(); err != nil {
-							return err
+				// 2. Process standard assistant text.
+				if choice.Delta.Content != "" {
+					if err := startMessage(); err != nil {
+						return err
+					}
+					idx, err := ensureBlock("text")
+					if err != nil {
+						return err
+					}
+					if err := emitTextDelta(idx, choice.Delta.Content); err != nil {
+						return err
+					}
+				}
+
+				// 3. Process tool calls
+				if len(choice.Delta.ToolCalls) > 0 {
+					if err := startMessage(); err != nil {
+						return err
+					}
+					for _, tc := range choice.Delta.ToolCalls {
+						anthropicIdx, mapped := oaiToAnthropicIndex[tc.Index]
+						if !mapped {
+							anthropicIdx = nextBlockIndex
+							oaiToAnthropicIndex[tc.Index] = anthropicIdx
+							nextBlockIndex++
 						}
-						textIdx := 0 // text is always index 0 in Anthropic
-						if !activeBlocks[textIdx] {
-							activeBlocks[textIdx] = true
-							blockTypes[textIdx] = "text"
-							if nextBlockIndex == 0 {
-								nextBlockIndex = 1
-							}
 
-							// Send content_block_start (text)
-							var blockStartEv contentBlockStartEvent
+						if !activeBlocks[anthropicIdx] {
+							activeBlocks[anthropicIdx] = true
+							hasToolUse = true
+
+							var blockStartEv struct {
+								Type         string `json:"type"`
+								Index        int    `json:"index"`
+								ContentBlock struct {
+									Type  string                 `json:"type"`
+									ID    string                 `json:"id"`
+									Name  string                 `json:"name"`
+									Input map[string]interface{} `json:"input"`
+								} `json:"content_block"`
+							}
 							blockStartEv.Type = "content_block_start"
-							blockStartEv.Index = textIdx
-							blockStartEv.ContentBlock.Type = "text"
-							blockStartEv.ContentBlock.Text = ""
+							blockStartEv.Index = anthropicIdx
+							blockStartEv.ContentBlock.Type = "tool_use"
+							blockStartEv.ContentBlock.ID = translate.NormalizeToolUseID(tc.ID)
+							blockStartEv.ContentBlock.Name = tc.Function.Name
+							blockStartEv.ContentBlock.Input = make(map[string]interface{})
 
 							if err := writeEvent(gctx.ResponseWriter, "content_block_start", blockStartEv); err != nil {
 								return err
 							}
+						} else {
+							hasToolUse = true
 						}
 
-						// Send content_block_delta
-						var deltaEv contentBlockDeltaEvent
-						deltaEv.Type = "content_block_delta"
-						deltaEv.Index = textIdx
-						deltaEv.Delta.Type = "text_delta"
-						deltaEv.Delta.Text = txt
+						if tc.Function.Arguments != "" {
+							var deltaEv struct {
+								Type  string `json:"type"`
+								Index int    `json:"index"`
+								Delta struct {
+									Type        string `json:"type"`
+									PartialJSON string `json:"partial_json"`
+								} `json:"delta"`
+							}
+							deltaEv.Type = "content_block_delta"
+							deltaEv.Index = anthropicIdx
+							deltaEv.Delta.Type = "input_json_delta"
+							deltaEv.Delta.PartialJSON = tc.Function.Arguments
 
-						if err := writeEvent(gctx.ResponseWriter, "content_block_delta", deltaEv); err != nil {
-							return err
+							if err := writeEvent(gctx.ResponseWriter, "content_block_delta", deltaEv); err != nil {
+								return err
+							}
 						}
 
-						gctx.TransmittedChars += len(txt)
-
-						if hasFlusher {
-							flusher.Flush()
-						}
+						flush()
 					}
+				}
 
-					// 2. Process tool calls
-					if len(choice.Delta.ToolCalls) > 0 {
-						if err := startMessage(); err != nil {
-							return err
-						}
-						for _, tc := range choice.Delta.ToolCalls {
-							anthropicIdx, mapped := oaiToAnthropicIndex[tc.Index]
-							if !mapped {
-								anthropicIdx = nextBlockIndex
-								oaiToAnthropicIndex[tc.Index] = anthropicIdx
-								nextBlockIndex++
-							}
-
-							if !activeBlocks[anthropicIdx] {
-								activeBlocks[anthropicIdx] = true
-								blockTypes[anthropicIdx] = "tool_use"
-
-								// Send content_block_start (tool_use)
-								var blockStartEv struct {
-									Type         string `json:"type"`
-									Index        int    `json:"index"`
-									ContentBlock struct {
-										Type  string                 `json:"type"`
-										ID    string                 `json:"id"`
-										Name  string                 `json:"name"`
-										Input map[string]interface{} `json:"input"`
-									} `json:"content_block"`
-								}
-								blockStartEv.Type = "content_block_start"
-								blockStartEv.Index = anthropicIdx
-								blockStartEv.ContentBlock.Type = "tool_use"
-								blockStartEv.ContentBlock.ID = translate.NormalizeToolUseID(tc.ID)
-								blockStartEv.ContentBlock.Name = tc.Function.Name
-								blockStartEv.ContentBlock.Input = make(map[string]interface{})
-
-								if err := writeEvent(gctx.ResponseWriter, "content_block_start", blockStartEv); err != nil {
-									return err
-								}
-							}
-
-							// Send arguments delta
-							if tc.Function.Arguments != "" {
-								var deltaEv struct {
-									Type  string `json:"type"`
-									Index int    `json:"index"`
-									Delta struct {
-										Type        string `json:"type"`
-										PartialJSON string `json:"partial_json"`
-									} `json:"delta"`
-								}
-								deltaEv.Type = "content_block_delta"
-								deltaEv.Index = anthropicIdx
-								deltaEv.Delta.Type = "input_json_delta"
-								deltaEv.Delta.PartialJSON = tc.Function.Arguments
-
-								if err := writeEvent(gctx.ResponseWriter, "content_block_delta", deltaEv); err != nil {
-									return err
-								}
-							}
-
-							if hasFlusher {
-								flusher.Flush()
-							}
-						}
-					}
+				if choice.FinishReason != nil && *choice.FinishReason != "" {
+					finishReason = *choice.FinishReason
 				}
 			}
 		}
@@ -429,65 +621,18 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 		}
 	}
 
-	if !started {
-		if err := startMessage(); err != nil {
-			return err
-		}
+	// Normal completion: OpenAI finish_reason and/or [DONE] sentinel.
+	// Many OpenAI-compatible providers (incl. JoyCode/GLM) only send [DONE].
+	if finishReason != "" || sawDone {
+		return finalizeSuccess(mapOpenAIFinishReason(finishReason))
 	}
 
+	// Upstream closed the body without a completion signal. Do NOT forge end_turn —
+	// that makes Claude Code treat a truncated stream as a successful reply.
 	if started {
-		// If no blocks were activated, send a fallback empty text content block before stopping
-		if len(activeBlocks) == 0 {
-			textIdx := 0
-			activeBlocks[textIdx] = true
-			blockTypes[textIdx] = "text"
-			var blockStartEv contentBlockStartEvent
-			blockStartEv.Type = "content_block_start"
-			blockStartEv.Index = textIdx
-			blockStartEv.ContentBlock.Type = "text"
-			blockStartEv.ContentBlock.Text = ""
-			if err := writeEvent(gctx.ResponseWriter, "content_block_start", blockStartEv); err != nil {
-				return err
-			}
-		}
-
-		// Send content_block_stop events in index order
-		var activeIndices []int
-		for idx := range activeBlocks {
-			activeIndices = append(activeIndices, idx)
-		}
-		sort.Ints(activeIndices)
-
-		for _, idx := range activeIndices {
-			var blockStopEv contentBlockStopEvent
-			blockStopEv.Type = "content_block_stop"
-			blockStopEv.Index = idx
-			if err := writeEvent(gctx.ResponseWriter, "content_block_stop", blockStopEv); err != nil {
-				return err
-			}
-		}
-
-		// Send message_delta (stop_reason and usage)
-		var msgDeltaEv messageDeltaEvent
-		msgDeltaEv.Type = "message_delta"
-		msgDeltaEv.Delta.StopReason = "end_turn"
-		msgDeltaEv.Usage.OutputTokens = gctx.OutputTokens
-		if err := writeEvent(gctx.ResponseWriter, "message_delta", msgDeltaEv); err != nil {
-			return err
-		}
-
-		// Send message_stop
-		var stopEv messageStopEvent
-		stopEv.Type = "message_stop"
-
-		if err := writeEvent(gctx.ResponseWriter, "message_stop", stopEv); err != nil {
-			return err
-		}
-
-		if hasFlusher {
-			flusher.Flush()
-		}
+		_ = closeOpenBlocks()
+		flush()
+		return fmt.Errorf("upstream stream closed prematurely without completion event")
 	}
-
-	return nil
+	return fmt.Errorf("empty upstream stream: no content or completion signal received")
 }

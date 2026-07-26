@@ -77,10 +77,15 @@ type GatewayContext struct {
 // perAttemptTagKeys lists dynamic tag keys cleared on each retry.
 // Register new per-attempt tags here to prevent stale value leakage on retry.
 var perAttemptTagKeys = []string{
-	"response_id",
-	"response_model",
-	"response_completed_sent",
-}
+		"response_id",
+		"response_model",
+		"response_completed_sent",
+		"message_stop_sent",
+		"upstream_finish_reason",
+		"anthropic_stop_reason",
+		"stream_saw_done",
+		"transmitted_chars",
+	}
 
 // ResetAttempt clears per-attempt fields and token stats to prevent stale values on retry.
 func (c *GatewayContext) ResetAttempt() {

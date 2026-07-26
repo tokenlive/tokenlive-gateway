@@ -356,8 +356,19 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Write response
-	if gctx.Err == nil && gctx.RequestType == RequestTypeResponses && gctx.TTFT > 0 && gctx.GetTagValue("response_completed_sent") != "true" {
-		gctx.Err = fmt.Errorf("upstream stream closed prematurely without completion event")
+	// Detect streams that started (TTFT>0) but never emitted a protocol completion frame.
+	// Responses uses response_completed_sent; Messages uses message_stop_sent.
+	if gctx.Err == nil && gctx.IsStream && gctx.TTFT > 0 {
+		switch gctx.RequestType {
+		case RequestTypeResponses:
+			if gctx.GetTagValue("response_completed_sent") != "true" {
+				gctx.Err = fmt.Errorf("upstream stream closed prematurely without completion event")
+			}
+		case RequestTypeMessages:
+			if gctx.GetTagValue("message_stop_sent") != "true" {
+				gctx.Err = fmt.Errorf("upstream stream closed prematurely without completion event")
+			}
+		}
 	}
 
 	if gctx.Err != nil {

@@ -19,11 +19,14 @@ func TestPassthroughStream_RelaysAndExtractsTokens(t *testing.T) {
 		ResponseWriter: flusher,
 		StartTime:      time.Now(),
 		IsStream:       true,
+		RequestType:    core.RequestTypeMessages,
+		Tags:           make(map[string]string),
 	}
 
 	sse := "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":10}}}\n\n" +
 		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
-		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n"
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(sse))}
 
 	if err := PassthroughStream(gctx, resp, AnthropicTokenExtractor); err != nil {
@@ -45,6 +48,33 @@ func TestPassthroughStream_RelaysAndExtractsTokens(t *testing.T) {
 	// TTFT recorded.
 	if gctx.TTFT <= 0 {
 		t.Error("expected TTFT > 0")
+	}
+	if gctx.Tags["message_stop_sent"] != "true" {
+		t.Error("expected message_stop_sent tag after Anthropic message_stop")
+	}
+}
+
+func TestPassthroughStream_PrematureEOF_NoMessageStopTag(t *testing.T) {
+	rec := httptest.NewRecorder()
+	flusher := &mockFlusher{ResponseRecorder: rec}
+	gctx := &core.GatewayContext{
+		Ctx:            t.Context(),
+		ResponseWriter: flusher,
+		StartTime:      time.Now(),
+		IsStream:       true,
+		RequestType:    core.RequestTypeMessages,
+		Tags:           make(map[string]string),
+	}
+
+	sse := "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":10}}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(sse))}
+
+	if err := PassthroughStream(gctx, resp, AnthropicTokenExtractor); err != nil {
+		t.Fatalf("PassthroughStream: %v", err)
+	}
+	if gctx.Tags["message_stop_sent"] == "true" {
+		t.Error("message_stop_sent must stay unset on premature EOF")
 	}
 }
 

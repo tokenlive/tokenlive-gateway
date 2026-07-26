@@ -1,7 +1,9 @@
 package llm
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
@@ -49,24 +51,52 @@ func (w *SSEInterceptWriter) Write(p []byte) (int, error) {
 		w.gctx.TriggerFirstByte()
 	}
 
-	events := w.parser.Feed(p)
-	for _, ev := range events {
-		var in, out, cached, cacheCreated int
-		if w.tokenExtractor != nil {
-			in, out, cached, cacheCreated = w.tokenExtractor(ev.Data)
-		} else {
-			in, out, cached, cacheCreated = ev.InputTokens, ev.OutputTokens, ev.CachedTokens, ev.CacheCreationTokens
-		}
-		ApplyUsage(w.gctx, in, out, cached, cacheCreated)
+events := w.parser.Feed(p)
+		for _, ev := range events {
+			var in, out, cached, cacheCreated int
+			if w.tokenExtractor != nil {
+				in, out, cached, cacheCreated = w.tokenExtractor(ev.Data)
+			} else {
+				in, out, cached, cacheCreated = ev.InputTokens, ev.OutputTokens, ev.CachedTokens, ev.CacheCreationTokens
+			}
+			ApplyUsage(w.gctx, in, out, cached, cacheCreated)
 
-		protocol := ""
-		if w.gctx.SelectedEndpoint != nil {
-			protocol = w.gctx.SelectedEndpoint.ProviderProtocol
+			protocol := ""
+			if w.gctx.SelectedEndpoint != nil {
+				protocol = w.gctx.SelectedEndpoint.ProviderProtocol
+			}
+			w.gctx.TransmittedChars += ExtractContentLength(protocol, ev.Data)
+
+			// Native Anthropic Messages passthrough: mark completion when message_stop is seen
+			// so engine can distinguish normal EOF from premature disconnect.
+			if w.gctx.RequestType == core.RequestTypeMessages && isAnthropicMessageStop(ev.Data) {
+				if w.gctx.Tags == nil {
+					w.gctx.Tags = make(map[string]string)
+				}
+				w.gctx.Tags["message_stop_sent"] = "true"
+			}
 		}
-		w.gctx.TransmittedChars += ExtractContentLength(protocol, ev.Data)
+
+		return w.ResponseWriter.Write(p)
 	}
 
-	return w.ResponseWriter.Write(p)
+// isAnthropicMessageStop reports whether SSE data is an Anthropic message_stop event payload.
+func isAnthropicMessageStop(data string) bool {
+	data = strings.TrimSpace(data)
+	if data == "" || data == "[DONE]" {
+		return false
+	}
+	// Fast path before JSON parse.
+	if !strings.Contains(data, "message_stop") {
+		return false
+	}
+	var ev struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return false
+	}
+	return ev.Type == "message_stop"
 }
 
 // Flush delegates to the underlying Flusher if supported.

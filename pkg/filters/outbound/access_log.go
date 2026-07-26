@@ -139,12 +139,22 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 		zap.Int("output_tokens", gctx.OutputTokens),
 		zap.Int("cached_tokens", gctx.CachedTokens),
 		zap.Int("cache_creation_tokens", gctx.CacheCreationTokens),
+		zap.Int("transmitted_chars", gctx.TransmittedChars),
 		zap.Float64("cost", gctx.Cost),
 		zap.Int("attempts", gctx.AttemptCount),
 		zap.Strings("fallback_chain", gctx.FallbackChain),
 		zap.String("api_key", redactKey(gctx.APIKey)),
 		zap.String("user_id", gctx.UserID),
 		zap.String("session_id", gctx.SessionID),
+	}
+	if fr := gctx.GetTagValue("upstream_finish_reason"); fr != "" {
+		fields = append(fields, zap.String("upstream_finish_reason", fr))
+	}
+	if sr := gctx.GetTagValue("anthropic_stop_reason"); sr != "" {
+		fields = append(fields, zap.String("anthropic_stop_reason", sr))
+	}
+	if sd := gctx.GetTagValue("stream_saw_done"); sd != "" {
+		fields = append(fields, zap.String("stream_saw_done", sd))
 	}
 	if gctx.Err != nil {
 		fields = append(fields, zap.Error(gctx.Err))
