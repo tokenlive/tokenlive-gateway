@@ -494,8 +494,8 @@ func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected content block to be map")
 		}
-		if c0["type"] != "text" {
-			t.Errorf("expected content type to be text, got %v", c0["type"])
+		if c0["type"] != "input_text" {
+			t.Errorf("expected content type to be input_text, got %v", c0["type"])
 		}
 
 		// 验证 tools 是否被正确清洗并转发

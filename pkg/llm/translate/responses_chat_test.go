@@ -131,8 +131,44 @@ func TestCorrectNativeResponsesRequest_Namespace(t *testing.T) {
 	}
 	content := item["content"].([]interface{})
 	c0 := content[0].(map[string]interface{})
-	if c0["type"] != "text" {
-		t.Errorf("content type = %v", c0["type"])
+	if c0["type"] != "input_text" {
+		t.Errorf("content type = %v, want input_text", c0["type"])
+	}
+}
+
+func TestCorrectNativeResponsesRequest_KeepsInputTextAndNormalizesTextAlias(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"role": "user", "type": "message", "content": [{"type": "input_text", "text": "ping"}]},
+			{"role": "user", "content": [{"type": "text", "text": "legacy"}]}
+		]
+	}`)
+	body, _, _, _, err := CorrectNativeResponsesRequest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	input := payload["input"].([]interface{})
+	if len(input) != 2 {
+		t.Fatalf("input len = %d", len(input))
+	}
+
+	item0 := input[0].(map[string]interface{})
+	if _, exists := item0["type"]; exists {
+		t.Fatalf("expected message item type to be removed, got %v", item0["type"])
+	}
+	c0 := item0["content"].([]interface{})[0].(map[string]interface{})
+	if c0["type"] != "input_text" {
+		t.Fatalf("item0 content type = %v, want input_text", c0["type"])
+	}
+
+	item1 := input[1].(map[string]interface{})
+	c1 := item1["content"].([]interface{})[0].(map[string]interface{})
+	if c1["type"] != "input_text" {
+		t.Fatalf("item1 content type = %v, want input_text (normalized from text)", c1["type"])
 	}
 }
 

@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -158,12 +159,34 @@ func Call(gctx *core.GatewayContext, req Request) (*http.Response, error) {
 
 		contentType := resp.Header.Get("Content-Type")
 		if !strings.Contains(strings.ToLower(contentType), "text/event-stream") {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			timer.Stop()
-			singleCancel(nil)
-			gctx.UpstreamBody = body
-			return nil, fmt.Errorf("upstream stream request returned non-stream content-type: %s, body: %s", contentType, string(body))
+			originalBody := resp.Body
+			buffered := bufio.NewReaderSize(originalBody, maxSSEProbeLineSize)
+			firstLine, isSSE, probeErr := probeSSELine(buffered)
+			if isSSE {
+				gctx.UpstreamBody = firstLine
+				resp.Body = &replayReadCloser{
+					Reader: io.MultiReader(bytes.NewReader(firstLine), buffered),
+					closer: originalBody,
+				}
+			} else {
+				var rest []byte
+				var readErr error
+				if probeErr != bufio.ErrBufferFull {
+					rest, readErr = io.ReadAll(buffered)
+				}
+				body := append(bytes.Clone(firstLine), rest...)
+				originalBody.Close()
+				timer.Stop()
+				singleCancel(nil)
+				gctx.UpstreamBody = body
+				if probeErr != nil && probeErr != io.EOF {
+					return nil, fmt.Errorf("upstream stream request returned non-stream content-type: %s, body: %s: %w", contentType, string(body), probeErr)
+				}
+				if readErr != nil {
+					return nil, fmt.Errorf("upstream stream request returned non-stream content-type: %s, body: %s: %w", contentType, string(body), readErr)
+				}
+				return nil, fmt.Errorf("upstream stream request returned non-stream content-type: %s, body: %s", contentType, string(body))
+			}
 		}
 	}
 
@@ -190,4 +213,50 @@ func (c *cancelReadCloser) Close() error {
 		c.onClose = nil
 	}
 	return err
+}
+
+const maxSSEProbeLineSize = 4096
+
+type replayReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r *replayReadCloser) Close() error {
+	return r.closer.Close()
+}
+
+func probeSSELine(reader *bufio.Reader) ([]byte, bool, error) {
+	var probed []byte
+	for len(probed) < maxSSEProbeLineSize {
+		line, err := reader.ReadSlice('\n')
+		probed = append(probed, line...)
+		if len(probed) > maxSSEProbeLineSize {
+			return probed, false, bufio.ErrBufferFull
+		}
+		if looksLikeSSELine(line) && (err == nil || err == io.EOF || err == bufio.ErrBufferFull) {
+			return probed, true, err
+		}
+		if err != nil {
+			return probed, false, err
+		}
+	}
+	return probed, false, bufio.ErrBufferFull
+}
+
+// looksLikeSSELine checks the first line for a valid SSE comment or field.
+func looksLikeSSELine(line []byte) bool {
+	line = bytes.TrimPrefix(line, []byte("\xef\xbb\xbf"))
+	s := strings.TrimSpace(string(line))
+	if strings.HasPrefix(s, ":") {
+		return true
+	}
+
+	field, _, _ := strings.Cut(s, ":")
+	switch field {
+	case "data", "event", "id", "retry":
+		return true
+	default:
+		return false
+	}
 }

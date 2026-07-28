@@ -473,6 +473,11 @@ func correctInputForNativeResponses(payload map[string]interface{}) {
 			}
 		}
 
+		// Keep Responses content part types as-is.
+		// OpenAI Responses / Codex backend only accept:
+		// input_text, input_image, output_text, refusal, input_file, ...
+		// Rewriting input_text -> text breaks upstream with:
+		// Invalid value: 'text'. Supported values are: 'input_text', ...
 		if contentVal, ok := itemMap["content"]; ok && contentVal != nil {
 			if contentArr, ok := contentVal.([]interface{}); ok {
 				for _, c := range contentArr {
@@ -481,14 +486,21 @@ func correctInputForNativeResponses(payload map[string]interface{}) {
 						continue
 					}
 					if cType, ok := cMap["type"].(string); ok {
-						if cType == "input_text" {
-							cMap["type"] = "text"
+						// Normalize legacy/compat alias "text" to official input_text.
+						if cType == "text" {
+							cMap["type"] = "input_text"
 						}
 					}
 				}
 			}
 		}
 
-		delete(itemMap, "type")
+		// Drop item-level type when role/content message shape is used.
+		// Keep typed items (e.g. function_call / reasoning) intact.
+		if _, hasRole := itemMap["role"]; hasRole {
+			if _, hasContent := itemMap["content"]; hasContent {
+				delete(itemMap, "type")
+			}
+		}
 	}
 }
