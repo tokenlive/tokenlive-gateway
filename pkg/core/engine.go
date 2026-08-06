@@ -401,20 +401,20 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 					},
 				}
 				if data, err := json.Marshal(errEvent); err == nil {
-					payload := fmt.Sprintf("event: response.done\ndata: %s\n\n", string(data))
+					payload := fmt.Sprintf("\nevent: response.done\ndata: %s\n\n", string(data))
 					_, _ = fmt.Fprintf(gctx.ResponseWriter, "%s", payload)
 				}
 
 				errEvent["type"] = "response.completed"
 				if data, err := json.Marshal(errEvent); err == nil {
-					payload := fmt.Sprintf("event: response.completed\ndata: %s\n\n", string(data))
+					payload := fmt.Sprintf("\nevent: response.completed\ndata: %s\n\n", string(data))
 					_, _ = fmt.Fprintf(gctx.ResponseWriter, "%s", payload)
 				}
 			} else {
 				// Attempt to write a final SSE error frame to deliver the real error to the client
 				formatter := ErrorFormatterForRequestType(gctx.RequestType)
 				payload := formatter.FormatSSE(e.getErrorCode(gctx.Err), gctx.Err)
-				_, _ = fmt.Fprintf(gctx.ResponseWriter, "%s", payload)
+				_, _ = fmt.Fprintf(gctx.ResponseWriter, "\n%s", payload)
 			}
 
 			if flusher, ok := gctx.ResponseWriter.(http.Flusher); ok {

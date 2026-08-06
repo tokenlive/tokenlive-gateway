@@ -158,13 +158,12 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 		return fmt.Errorf("expected *JoyCodeProvider, got %T", p)
 	}
 
-	// Protocol downgrade: convert responses to chatCompletions format
+	// Map Responses payload to messages array for JoyCode backend requirements
 	newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
 	if err != nil {
 		return fmt.Errorf("translate responses to chat completion: %w", err)
 	}
 	gctx.RawBody = newBody
-
 	model := gctx.Model
 	if model == "" {
 		model = "Kimi-K2.6"
@@ -175,7 +174,7 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 			return err
 		}
 	} else {
-		if err := jp.invokeOpenAI(gctx, model); err != nil {
+		if err := jp.doOpenAIResponsesRequest(gctx, model); err != nil {
 			return err
 		}
 	}
@@ -284,6 +283,44 @@ func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, model strin
 	return nil
 }
 
+// doOpenAIResponsesRequest sends a request using JoyCode official responses_completions functionId
+func (p *JoyCodeProvider) doOpenAIResponsesRequest(gctx *core.GatewayContext, model string) error {
+	var endpoint string
+	if strings.HasPrefix(p.baseURL, "https://") {
+		var err error
+		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "responses_completions")
+		if err != nil {
+			return err
+		}
+	} else {
+		endpoint = p.baseURL + "/api/saas/openai/v2/chat/completions"
+	}
+
+	reqBody := injectJoyCodePayload(gctx.RawBody)
+	resp, err := upstream.Call(gctx, upstream.Request{
+		Client: p.client,
+		URL:    endpoint,
+		Body:   reqBody,
+		Header: joyCodeAuthHeaders(gctx, p.apiKey, false),
+		Stream: upstream.Consume,
+	})
+	if err != nil {
+		return err
+	}
+
+	gctx.UpstreamResponse = resp
+	if !gctx.IsStream {
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("read response body: %w", err)
+		}
+		gctx.UpstreamBody = body
+		gctx.TriggerFirstByte()
+	}
+	return nil
+}
+
 // invokeOpenAI sends a request to the standard OpenAI /v2 endpoint and handles the response
 func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) error {
 	if err := p.doOpenAIRequest(gctx, model); err != nil {
@@ -301,6 +338,7 @@ func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) 
 	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
 	return nil
 }
+
 
 // invokeAnthropic converts OpenAI request format to Anthropic messages format, sends to upstream,
 // and converts the response back to OpenAI format.

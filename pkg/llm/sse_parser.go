@@ -65,8 +65,14 @@ func (p *SSEParser) parseBlock(block string) (SSEEvent, bool) {
 			continue
 		}
 
-		if after, ok := strings.CutPrefix(line, "data:"); ok {
-			dataLines = append(dataLines, strings.TrimSpace(after))
+		if strings.HasPrefix(line, "data:") {
+			cleanLine := line
+			for strings.HasPrefix(cleanLine, "data:") {
+				cleanLine = strings.TrimSpace(strings.TrimPrefix(cleanLine, "data:"))
+			}
+			if cleanLine != "" {
+				dataLines = append(dataLines, cleanLine)
+			}
 		}
 		// Ignore event:, id:, retry: fields
 	}

@@ -214,6 +214,7 @@ type responseOutputItemAddedFunctionCallEvent struct {
 	OutputIndex int    `json:"output_index"`
 	Item        struct {
 		ID        string `json:"id"`
+		CallID    string `json:"call_id"`
 		Type      string `json:"type"`
 		Status    string `json:"status"`
 		Name      string `json:"name"`
@@ -225,6 +226,7 @@ type responseFunctionCallArgumentsDeltaEvent struct {
 	Type        string `json:"type"`
 	ResponseID  string `json:"response_id"`
 	ItemID      string `json:"item_id"`
+	CallID      string `json:"call_id"`
 	OutputIndex int    `json:"output_index"`
 	Delta       string `json:"delta"`
 }
@@ -233,6 +235,7 @@ type responseFunctionCallArgumentsDoneEvent struct {
 	Type        string `json:"type"`
 	ResponseID  string `json:"response_id"`
 	ItemID      string `json:"item_id"`
+	CallID      string `json:"call_id"`
 	OutputIndex int    `json:"output_index"`
 	Arguments   string `json:"arguments"`
 }
@@ -243,6 +246,7 @@ type responseOutputItemDoneFunctionCallEvent struct {
 	OutputIndex int    `json:"output_index"`
 	Item        struct {
 		ID        string `json:"id"`
+		CallID    string `json:"call_id"`
 		Type      string `json:"type"`
 		Status    string `json:"status"`
 		Name      string `json:"name"`
@@ -442,8 +446,10 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 					Model   string `json:"model"`
 					Choices []struct {
 						Delta struct {
-							Content   string `json:"content"`
-							ToolCalls []struct {
+							Content          string `json:"content"`
+							ReasoningContent string `json:"reasoning_content"`
+							Reasoning        string `json:"reasoning"`
+							ToolCalls        []struct {
 								Index    int    `json:"index"`
 								ID       string `json:"id"`
 								Type     string `json:"type"`
@@ -460,6 +466,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 					gctx.Logger(zap.L()).Warn("[DEBUG-responses-stream] json.Unmarshal failed", zap.String("raw_data", ev.Data), zap.Error(err))
 					continue
 				}
+				gctx.Logger(zap.L()).Warn("[RAW-SSE-DATA]", zap.String("data", ev.Data))
 
 				if chunk.ID != "" {
 					lastResponseID = chunk.ID
@@ -535,37 +542,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 						return err
 					}
 
-					// 2.1 Pre-emptively send response.output_item.added (message) so the client renderer can register view element IDs
-					messageAdded = true
-					textOutputIndex = currentOutputIndex
-					currentOutputIndex++
 
-					var evItemAdded responseOutputItemAddedEvent
-					evItemAdded.Type = "response.output_item.added"
-					evItemAdded.ResponseID = respID
-					evItemAdded.OutputIndex = textOutputIndex
-					evItemAdded.Item.ID = msgID
-					evItemAdded.Item.Type = "message"
-					evItemAdded.Item.Status = "in_progress"
-					evItemAdded.Item.Role = "assistant"
-					evItemAdded.Item.Content = []interface{}{}
-					if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", evItemAdded); err != nil {
-						return err
-					}
-
-					// 2.2 Pre-send response.content_part.added (output_text)
-					var evPartAdded responseContentPartAddedEvent
-					evPartAdded.Type = "response.content_part.added"
-					evPartAdded.ResponseID = respID
-					evPartAdded.ItemID = msgID
-					evPartAdded.OutputIndex = textOutputIndex
-					evPartAdded.ContentIndex = 0
-					evPartAdded.Part.Type = "output_text"
-					evPartAdded.Part.Text = ""
-					evPartAdded.Part.Annotations = []interface{}{}
-					if err := writeResponseEvent(gctx.ResponseWriter, "response.content_part.added", evPartAdded); err != nil {
-						return err
-					}
 
 					if hasFlusher {
 						flusher.Flush()
@@ -574,6 +551,19 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 
 				if len(chunk.Choices) > 0 {
 					choice := chunk.Choices[0]
+
+					// Process reasoning text (thinking process)
+					reasoning := choice.Delta.ReasoningContent
+					if reasoning == "" {
+						reasoning = choice.Delta.Reasoning
+					}
+					if reasoning != "" {
+						if err := sendPlainResponsesText(gctx, respID, reasoning, msgID, &messageAdded, &textOutputIndex, &currentOutputIndex); err != nil {
+							return err
+						}
+						fullText.WriteString(reasoning)
+						gctx.TransmittedChars += len(reasoning)
+					}
 
 					// Process text
 					txt := choice.Delta.Content
@@ -613,6 +603,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 								evTCAdded.ResponseID = respID
 								evTCAdded.OutputIndex = localTC.OutputIndex
 								evTCAdded.Item.ID = localTC.ID
+								evTCAdded.Item.CallID = localTC.ID
 								evTCAdded.Item.Type = "function_call"
 								evTCAdded.Item.Status = "in_progress"
 								evTCAdded.Item.Name = localTC.Name
@@ -623,19 +614,18 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 							}
 
 							argDelta := tc.Function.Arguments
-							if argDelta != "" {
-								localTC.Arguments.WriteString(argDelta)
+							localTC.Arguments.WriteString(argDelta)
 
-								// Send arguments delta
-								var evTCDelta responseFunctionCallArgumentsDeltaEvent
-								evTCDelta.Type = "response.function_call.arguments.delta"
-								evTCDelta.ResponseID = respID
-								evTCDelta.ItemID = localTC.ID
-								evTCDelta.OutputIndex = localTC.OutputIndex
-								evTCDelta.Delta = argDelta
-								if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.delta", evTCDelta); err != nil {
-									return err
-								}
+							// Send arguments delta (always emit event to ensure client schema compliance)
+							var evTCDelta responseFunctionCallArgumentsDeltaEvent
+							evTCDelta.Type = "response.function_call.arguments.delta"
+							evTCDelta.ResponseID = respID
+							evTCDelta.ItemID = localTC.ID
+							evTCDelta.CallID = localTC.ID
+							evTCDelta.OutputIndex = localTC.OutputIndex
+							evTCDelta.Delta = argDelta
+							if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.delta", evTCDelta); err != nil {
+								return err
 							}
 						}
 					}
@@ -780,6 +770,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			evTCDone.Type = "response.function_call.arguments.done"
 			evTCDone.ResponseID = respID
 			evTCDone.ItemID = tc.ID
+			evTCDone.CallID = tc.ID
 			evTCDone.OutputIndex = tc.OutputIndex
 			evTCDone.Arguments = finalArgs
 			if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.done", evTCDone); err != nil {
@@ -792,6 +783,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			evTCItemDone.ResponseID = respID
 			evTCItemDone.OutputIndex = tc.OutputIndex
 			evTCItemDone.Item.ID = tc.ID
+			evTCItemDone.Item.CallID = tc.ID
 			evTCItemDone.Item.Type = "function_call"
 			evTCItemDone.Item.Status = "completed"
 			evTCItemDone.Item.Name = tc.Name
@@ -802,6 +794,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 
 			outputs = append(outputs, map[string]interface{}{
 				"id":        tc.ID,
+				"call_id":   tc.ID,
 				"type":      "function_call",
 				"status":    "completed",
 				"name":      tc.Name,

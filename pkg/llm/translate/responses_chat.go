@@ -42,19 +42,92 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 				})
 			}
 		} else if inputArr, ok := inputVal.([]interface{}); ok {
+			// First pass: collect all valid tool_call_ids that actually have corresponding function_call_output
+			validToolCallIDs := make(map[string]bool)
 			for _, item := range inputArr {
 				itemMap, ok := item.(map[string]interface{})
 				if !ok {
 					continue
 				}
+				if itemType, _ := itemMap["type"].(string); itemType == "function_call_output" {
+					if callID, _ := itemMap["call_id"].(string); callID != "" {
+						validToolCallIDs[callID] = true
+					}
+				}
+			}
+
+			// Second pass: assemble openAIMessages while merging contiguous function_call items
+			var pendingToolCalls []interface{}
+
+			flushPendingToolCalls := func() {
+				if len(pendingToolCalls) > 0 {
+					openAIMessages = append(openAIMessages, map[string]interface{}{
+						"role":       "assistant",
+						"tool_calls": pendingToolCalls,
+					})
+					pendingToolCalls = nil
+				}
+			}
+
+			for _, item := range inputArr {
+				itemMap, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				itemType, _ := itemMap["type"].(string)
+
+				// 1. Function Call item
+				if itemType == "function_call" {
+					callID, _ := itemMap["call_id"].(string)
+					if callID == "" {
+						callID, _ = itemMap["id"].(string)
+					}
+					// Only keep tool calls that have a corresponding output in context to avoid "unresponded tool_call_id" upstream error
+					if !validToolCallIDs[callID] {
+						continue
+					}
+					name, _ := itemMap["name"].(string)
+					args, _ := itemMap["arguments"].(string)
+					pendingToolCalls = append(pendingToolCalls, map[string]interface{}{
+						"id":   callID,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      name,
+							"arguments": args,
+						},
+					})
+					continue
+				}
+
+				// Flush pending tool_calls before any non-function_call item
+				flushPendingToolCalls()
+
+				// 2. Function Call Output item from Responses payload (Tool Result)
+				if itemType == "function_call_output" {
+					callID, _ := itemMap["call_id"].(string)
+					outputStr := ""
+					if outVal, ok := itemMap["output"]; ok {
+						if str, ok := outVal.(string); ok {
+							outputStr = str
+						} else if bytes, err := json.Marshal(outVal); err == nil {
+							outputStr = string(bytes)
+						}
+					}
+					openAIMessages = append(openAIMessages, map[string]interface{}{
+						"role":         "tool",
+						"tool_call_id": callID,
+						"content":      outputStr,
+					})
+					continue
+				}
+
+				// 3. Regular Message item
 				role, _ := itemMap["role"].(string)
 				openAIRole := "user"
-				if role == "developer" {
+				if role == "developer" || role == "system" {
 					openAIRole = "system"
 				} else if role == "assistant" {
 					openAIRole = "assistant"
-				} else if role == "system" {
-					openAIRole = "system"
 				} else if role != "" {
 					openAIRole = role
 				}
@@ -66,11 +139,22 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 					} else if contentArr, ok := contentVal.([]interface{}); ok {
 						for _, c := range contentArr {
 							if cMap, ok := c.(map[string]interface{}); ok {
-								if text, ok := cMap["text"].(string); ok {
+								if text, ok := cMap["text"].(string); ok && text != "" {
+									textContent.WriteString(text)
+								} else if text, ok := cMap["input_text"].(string); ok && text != "" {
+									textContent.WriteString(text)
+								} else if text, ok := cMap["value"].(string); ok && text != "" {
 									textContent.WriteString(text)
 								}
 							}
 						}
+					}
+				}
+
+				// Filter out empty assistant messages without tool calls, as they corrupt upstream context
+				if openAIRole == "assistant" && strings.TrimSpace(textContent.String()) == "" {
+					if toolCalls, ok := itemMap["tool_calls"]; !ok || toolCalls == nil {
+						continue
 					}
 				}
 
@@ -90,6 +174,7 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 
 				openAIMessages = append(openAIMessages, msg)
 			}
+			flushPendingToolCalls()
 		}
 	}
 	payload["messages"] = openAIMessages
