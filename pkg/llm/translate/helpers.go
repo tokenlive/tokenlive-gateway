@@ -140,9 +140,15 @@ func degradeMessagesToTextOnly(msgs []interface{}) []interface{} {
 			continue
 		}
 		if lastMap["role"] == mMap["role"] {
-			lastContent, _ := lastMap["content"].(string)
-			thisContent, _ := mMap["content"].(string)
-			lastMap["content"] = lastContent + "\n\n" + thisContent
+			lastContent, lastOK := lastMap["content"].(string)
+			thisContent, thisOK := mMap["content"].(string)
+			if lastOK && thisOK {
+				lastMap["content"] = lastContent + "\n\n" + thisContent
+			} else {
+				// Non-string content (e.g. multimodal image array) can't be
+				// string-merged; keep as a separate message to avoid data loss.
+				res = append(res, mMap)
+			}
 		} else {
 			res = append(res, mMap)
 		}

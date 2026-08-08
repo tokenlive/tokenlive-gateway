@@ -16,8 +16,10 @@ type MessagesToChatOptions struct {
 
 // TokenUsage is token stats from translation (does not touch GatewayContext).
 type TokenUsage struct {
-	InputTokens  int
-	OutputTokens int
+	InputTokens         int
+	OutputTokens        int
+	CachedTokens        int
+	CacheCreationTokens int
 }
 
 // ChatCompletionToMessagesResult is non-stream Chat→Messages result.
@@ -86,6 +88,7 @@ func MessagesRequestToChat(rawBody []byte, opts MessagesToChatOptions) ([]byte, 
 			} else if contentArr, ok := content.([]interface{}); ok {
 				var textParts []string
 				var toolCalls []interface{}
+				var imageParts []interface{}
 				var hasToolResult bool
 
 				for _, block := range contentArr {
@@ -98,6 +101,15 @@ func MessagesRequestToChat(rawBody []byte, opts MessagesToChatOptions) ([]byte, 
 					case "text":
 						if txt, ok := blockMap["text"].(string); ok {
 							textParts = append(textParts, txt)
+						}
+					case "image":
+						if imgURL := anthropicImageToOpenAIURL(blockMap); imgURL != "" {
+							imageParts = append(imageParts, map[string]interface{}{
+								"type": "image_url",
+								"image_url": map[string]interface{}{
+									"url": imgURL,
+								},
+							})
 						}
 					case "tool_use":
 						id, _ := blockMap["id"].(string)
@@ -147,25 +159,30 @@ func MessagesRequestToChat(rawBody []byte, opts MessagesToChatOptions) ([]byte, 
 				}
 
 				if hasToolResult {
-					if len(textParts) > 0 {
-						openAIMessages = append(openAIMessages, map[string]interface{}{
-							"role":    role,
-							"content": strings.Join(textParts, "\n"),
-						})
+					if len(textParts) > 0 || len(imageParts) > 0 {
+						openAIMessages = append(openAIMessages, buildOpenAIContentMessage(role, textParts, imageParts))
 					}
 				} else {
 					mergedText := strings.Join(textParts, "\n")
-					if role == "user" && mergedText == "" {
-						mergedText = " "
+					if len(imageParts) > 0 {
+						msgObj := buildOpenAIContentMessage(role, textParts, imageParts)
+						if len(toolCalls) > 0 {
+							msgObj["tool_calls"] = toolCalls
+						}
+						openAIMessages = append(openAIMessages, msgObj)
+					} else {
+						if role == "user" && mergedText == "" {
+							mergedText = " "
+						}
+						msgObj := map[string]interface{}{
+							"role":    role,
+							"content": mergedText,
+						}
+						if len(toolCalls) > 0 {
+							msgObj["tool_calls"] = toolCalls
+						}
+						openAIMessages = append(openAIMessages, msgObj)
 					}
-					msgObj := map[string]interface{}{
-						"role":    role,
-						"content": mergedText,
-					}
-					if len(toolCalls) > 0 {
-						msgObj["tool_calls"] = toolCalls
-					}
-					openAIMessages = append(openAIMessages, msgObj)
 				}
 			}
 		}
@@ -483,9 +500,10 @@ func ChatCompletionToMessages(chatBody []byte, model string) (ChatCompletionToMe
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Role      string `json:"role"`
-				Content   string `json:"content"`
-				ToolCalls []struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Type     string `json:"type"`
 					Function struct {
@@ -509,6 +527,12 @@ func ChatCompletionToMessages(chatBody []byte, model string) (ChatCompletionToMe
 	var anthropicContent []interface{}
 	if len(oaiResp.Choices) > 0 {
 		msg := oaiResp.Choices[0].Message
+		if msg.ReasoningContent != "" {
+			anthropicContent = append(anthropicContent, map[string]interface{}{
+				"type":     "thinking",
+				"thinking": msg.ReasoningContent,
+			})
+		}
 		if msg.Content != "" {
 			anthropicContent = append(anthropicContent, map[string]interface{}{
 				"type": "text",
@@ -613,6 +637,7 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 	}
 
 	var textContent strings.Builder
+	var thinkingContent strings.Builder
 	var toolCalls []interface{}
 	if contentArr, exists := aResp["content"].([]interface{}); exists {
 		for _, block := range contentArr {
@@ -625,6 +650,9 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 			case "text":
 				txt, _ := blockMap["text"].(string)
 				textContent.WriteString(txt)
+			case "thinking":
+				think, _ := blockMap["thinking"].(string)
+				thinkingContent.WriteString(think)
 			case "tool_use":
 				toolID, _ := blockMap["id"].(string)
 				name, _ := blockMap["name"].(string)
@@ -647,12 +675,18 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 		}
 	}
 
-	var inputTokens, outputTokens int
+	var inputTokens, outputTokens, cachedTokens, cacheCreationTokens int
 	if usage, exists := aResp["usage"].(map[string]interface{}); exists {
 		it, _ := usage["input_tokens"].(float64)
 		ot, _ := usage["output_tokens"].(float64)
-		inputTokens = int(it)
+		cr, _ := usage["cache_read_input_tokens"].(float64)
+		cc, _ := usage["cache_creation_input_tokens"].(float64)
+		cachedTokens = int(cr)
+		cacheCreationTokens = int(cc)
 		outputTokens = int(ot)
+		// Normalize to total input (input + cache read + cache creation), aligning
+		// with OpenAI prompt_tokens semantics (which already include cached tokens).
+		inputTokens = int(it) + cachedTokens + cacheCreationTokens
 	}
 
 	finishReason := "stop"
@@ -675,11 +709,25 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 		"role":    "assistant",
 		"content": textContent.String(),
 	}
+	if thinkingContent.Len() > 0 {
+		message["reasoning_content"] = thinkingContent.String()
+	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 		// OpenAI: content may be null with tool_calls; keep empty string for clients
 		if textContent.Len() == 0 {
 			message["content"] = nil
+		}
+	}
+
+	usageMap := map[string]interface{}{
+		"prompt_tokens":     inputTokens,
+		"completion_tokens": outputTokens,
+		"total_tokens":      inputTokens + outputTokens,
+	}
+	if cachedTokens > 0 {
+		usageMap["prompt_tokens_details"] = map[string]interface{}{
+			"cached_tokens": cachedTokens,
 		}
 	}
 
@@ -695,11 +743,7 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 				"finish_reason": finishReason,
 			},
 		},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     inputTokens,
-			"completion_tokens": outputTokens,
-			"total_tokens":      inputTokens + outputTokens,
-		},
+		"usage": usageMap,
 	}
 
 	body, err := json.Marshal(openaiResp)
@@ -710,10 +754,56 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 	return MessagesToChatCompletionResult{
 		Body: body,
 		Usage: TokenUsage{
-			InputTokens:  inputTokens,
-			OutputTokens: outputTokens,
+			InputTokens:         inputTokens,
+			OutputTokens:        outputTokens,
+			CachedTokens:        cachedTokens,
+			CacheCreationTokens: cacheCreationTokens,
 		},
 	}, nil
+}
+
+// anthropicImageToOpenAIURL converts an Anthropic image block to an OpenAI image_url string.
+// Supports base64 sources (→ data: URI) and url sources (passed through).
+func anthropicImageToOpenAIURL(blockMap map[string]interface{}) string {
+	source, ok := blockMap["source"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	srcType, _ := source["type"].(string)
+	switch srcType {
+	case "base64":
+		mediaType, _ := source["media_type"].(string)
+		data, _ := source["data"].(string)
+		if data == "" {
+			return ""
+		}
+		if mediaType == "" {
+			mediaType = "image/png"
+		}
+		return fmt.Sprintf("data:%s;base64,%s", mediaType, data)
+	case "url":
+		url, _ := source["url"].(string)
+		return url
+	default:
+		return ""
+	}
+}
+
+// buildOpenAIContentMessage assembles an OpenAI message whose content is a
+// multimodal array (text parts followed by image parts).
+func buildOpenAIContentMessage(role string, textParts []string, imageParts []interface{}) map[string]interface{} {
+	var parts []interface{}
+	if merged := strings.Join(textParts, "\n"); merged != "" {
+		parts = append(parts, map[string]interface{}{
+			"type": "text",
+			"text": merged,
+		})
+	}
+	parts = append(parts, imageParts...)
+	return map[string]interface{}{
+		"role":    role,
+		"content": parts,
+	}
 }
 
 // IsOfficialOrTestBaseURL reports whether baseURL uses official OpenAI compat.

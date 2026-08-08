@@ -163,6 +163,46 @@ func TestMessagesToChatStream_MultiTools(t *testing.T) {
 	}
 }
 
+func TestMessagesToChatStream_CacheTokens(t *testing.T) {
+	s := NewMessagesToChatStream("claude-3-5-sonnet")
+	frames := []string{
+		`{"type":"message_start","message":{"id":"msg_cache","usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":50}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
+		`{"type":"message_stop"}`,
+	}
+	_, metas := feedAll(t, s, frames)
+
+	var cached, cacheCreated, in, out int
+	for _, m := range metas {
+		if m.CachedTokens > 0 {
+			cached = m.CachedTokens
+		}
+		if m.CacheCreationTokens > 0 {
+			cacheCreated = m.CacheCreationTokens
+		}
+		if m.InputTokens > 0 {
+			in = m.InputTokens
+		}
+		if m.OutputTokens > 0 {
+			out = m.OutputTokens
+		}
+	}
+	if cached != 100 {
+		t.Errorf("cached = %d, want 100", cached)
+	}
+	if cacheCreated != 50 {
+		t.Errorf("cacheCreated = %d, want 50", cacheCreated)
+	}
+	// meta.InputTokens holds the raw (uncached) value; normalization happens at the caller.
+	if in != 10 {
+		t.Errorf("input = %d, want 10 (raw)", in)
+	}
+	if out != 7 {
+		t.Errorf("output = %d, want 7", out)
+	}
+}
+
 func TestMessagesToChatStream_Error(t *testing.T) {
 	s := NewMessagesToChatStream("m")
 	chunks, metas := feedAll(t, s, []string{

@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,191 @@ import (
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
+
+func TestJoyCodeResponses_ChatOnlyEndpointUsesChatTranslation(t *testing.T) {
+	var received map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","model":"Kimi-K2.6","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}`)
+	}))
+	defer server.Close()
+	p := NewJoyCodeProvider("joycode", server.URL, "key", nil)
+	reqBody := `{"model":"Kimi-K2.6","input":"hello"}`
+	gctx := core.AcquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody)))
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType, gctx.RawBody, gctx.Model = core.RequestTypeResponses, []byte(reqBody), "Kimi-K2.6"
+	gctx.SelectedEndpoint = &core.Endpoint{RequestTypes: []core.RequestType{core.RequestTypeChatCompletion}}
+	if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if _, ok := received["messages"]; !ok {
+		t.Fatalf("chat-only endpoint did not receive messages: %v", received)
+	}
+	if _, ok := received["input"]; ok {
+		t.Fatalf("chat-only endpoint received Responses input: %v", received)
+	}
+	clientResponse, ok := gctx.Response.(map[string]interface{})
+	if !ok || clientResponse["object"] != "response" {
+		t.Fatalf("client response = %v", gctx.Response)
+	}
+}
+
+func TestJoyCodeResponses_NativeEndpointKeepsResponsesBody(t *testing.T) {
+	var received map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","model":"native","output":[],"usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}}`)
+	}))
+	defer server.Close()
+	p := NewJoyCodeProvider("joycode", server.URL, "key", nil)
+	reqBody := `{"model":"native","input":"hello"}`
+	gctx := core.AcquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody)))
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType, gctx.RawBody, gctx.Model = core.RequestTypeResponses, []byte(reqBody), "native"
+	gctx.SelectedEndpoint = &core.Endpoint{RequestTypes: []core.RequestType{core.RequestTypeResponses}}
+	if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if _, ok := received["messages"]; !ok {
+		t.Fatalf("native endpoint did not receive messages payload: %v", received)
+	}
+	if !strings.Contains(string(gctx.UpstreamBody), `"object":"response"`) {
+		t.Fatalf("native response was not preserved: %s", gctx.UpstreamBody)
+	}
+	if gctx.InputTokens != 1 || gctx.OutputTokens != 0 {
+		t.Fatalf("native usage = (%d, %d)", gctx.InputTokens, gctx.OutputTokens)
+	}
+}
+
+func TestJoyCodeResponses_ClaudeNonStreamUsesMessagesToResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_2","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+	p := NewJoyCodeProvider("joycode", server.URL, "key", nil)
+	reqBody := `{"model":"claude-test","input":"hello"}`
+	gctx := core.AcquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody)))
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType, gctx.RawBody, gctx.Model = core.RequestTypeResponses, []byte(reqBody), "claude-test"
+	gctx.SelectedEndpoint = &core.Endpoint{RequestTypes: []core.RequestType{core.RequestTypeMessages}}
+	if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	response, ok := gctx.Response.(map[string]interface{})
+	if !ok || response["object"] != "response" {
+		t.Fatalf("response = %v", gctx.Response)
+	}
+	if gctx.InputTokens != 3 || gctx.OutputTokens != 1 {
+		t.Fatalf("usage = (%d, %d)", gctx.InputTokens, gctx.OutputTokens)
+	}
+}
+
+func TestJoyCodeResponses_ClaudeStreamUsesMessagesToResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var received map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if _, ok := received["messages"]; !ok {
+			http.Error(w, "missing messages", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		frames := []string{
+			`{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":2}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			`{"type":"message_stop"}`,
+		}
+		for _, frame := range frames {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
+		}
+	}))
+	defer server.Close()
+
+	p := NewJoyCodeProvider("joycode", server.URL, "key", nil)
+	reqBody := `{"model":"claude-test","input":"hello","stream":true}`
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody)))
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType, gctx.RawBody, gctx.Model, gctx.IsStream = core.RequestTypeResponses, []byte(reqBody), "claude-test", true
+	gctx.SelectedEndpoint = &core.Endpoint{RequestTypes: []core.RequestType{core.RequestTypeMessages}}
+
+	if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "event: response.output_text.delta") || !strings.Contains(body, `"delta":"ok"`) {
+		t.Fatalf("missing Responses text events: %s", body)
+	}
+	if strings.Contains(body, `"object":"chat.completion.chunk"`) {
+		t.Fatalf("Claude Responses leaked Chat events: %s", body)
+	}
+	if !strings.Contains(body, "event: response.completed") {
+		t.Fatalf("missing Responses completion: %s", body)
+	}
+}
+
+func TestJoyCodeResponses_SelectsFunctionIDFromEndpointCapability(t *testing.T) {
+	tests := []struct {
+		name         string
+		requestTypes []core.RequestType
+		upstreamBody string
+		want         string
+	}{
+		{
+			name:         "chat fallback",
+			requestTypes: []core.RequestType{core.RequestTypeChatCompletion},
+			upstreamBody: `{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`,
+			want:         "chat_completions",
+		},
+		{
+			name:         "native responses",
+			requestTypes: []core.RequestType{core.RequestTypeResponses},
+			upstreamBody: `{"id":"resp_1","object":"response","status":"completed","output":[]}`,
+			want:         "responses_completions",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL.Query().Get("functionId")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tt.upstreamBody)
+			}))
+			defer server.Close()
+			t.Setenv("JOYCODE_APPID", "app")
+			t.Setenv("JOYCODE_SIGN_KEY", "secret")
+
+			p := NewJoyCodeProvider("joycode", server.URL, "key", nil)
+			p.client = server.Client()
+			reqBody := `{"model":"m","input":"hello"}`
+			gctx := core.AcquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody)))
+			defer core.ReleaseContext(gctx)
+			gctx.RequestType, gctx.RawBody, gctx.Model = core.RequestTypeResponses, []byte(reqBody), "m"
+			gctx.SelectedEndpoint = &core.Endpoint{RequestTypes: tt.requestTypes}
+			if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("functionId = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 // TestJoyCode_TranslateOpenAIToAnthropic 测试 OpenAI 到 Anthropic 的请求体翻译，包括连续 tool 消息的合并
 func TestJoyCode_TranslateOpenAIToAnthropic(t *testing.T) {
@@ -426,6 +612,68 @@ func TestJoyCode_CleanThinkingInHistory(t *testing.T) {
 	block := contentArr[0].(map[string]interface{})
 	if block["type"] != "text" || block["text"] != "Hello, how can I help you?" {
 		t.Errorf("unexpected content block left: %+v", block)
+	}
+}
+
+func TestJoyCodeMessages_NativeAnthropicCleansToolSchema(t *testing.T) {
+	var received map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/api/saas/anthropic/v1/messages") {
+			t.Errorf("expected anthropic endpoint path, got: %s", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &received)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-sonnet-v2","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	p := &JoyCodeProvider{
+		name:    "test-joycode",
+		baseURL: server.URL,
+		apiKey:  "test-key",
+		client:  server.Client(),
+	}
+
+	reqBody := `{
+		"model": "claude-3-5-sonnet-v2",
+		"messages": [{"role": "user", "content": "hi"}],
+		"max_tokens": 100,
+		"tools": [{
+			"name": "get_weather",
+			"description": "w",
+			"input_schema": {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "properties": {}, "required": null}
+		}]
+	}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeMessages
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "claude-3-5-sonnet-v2"
+
+	invoker := &joycodeMessagesInvoker{}
+	if err := invoker.Invoke(gctx, p); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	tools, ok := received["tools"].([]interface{})
+	if !ok || len(tools) == 0 {
+		t.Fatalf("expected tools forwarded, got %v", received["tools"])
+	}
+	schema := tools[0].(map[string]interface{})["input_schema"].(map[string]interface{})
+	if _, exists := schema["$schema"]; exists {
+		t.Error("expected $schema to be stripped from tool input_schema")
+	}
+	req0, ok := schema["required"].([]interface{})
+	if !ok {
+		t.Fatalf("expected required to be normalized to array, got %T (%v)", schema["required"], schema["required"])
+	}
+	if len(req0) != 0 {
+		t.Errorf("expected empty required array, got %v", req0)
 	}
 }
 

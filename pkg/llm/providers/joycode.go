@@ -158,25 +158,26 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 		return fmt.Errorf("expected *JoyCodeProvider, got %T", p)
 	}
 
-	// Map Responses payload to messages array for JoyCode backend requirements
-	newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
-	if err != nil {
-		return fmt.Errorf("translate responses to chat completion: %w", err)
-	}
-	gctx.RawBody = newBody
 	model := gctx.Model
 	if model == "" {
 		model = "Kimi-K2.6"
 	}
 
 	if isAnthropicModel(model, gctx) {
-		if err := jp.invokeAnthropic(gctx, model); err != nil {
-			return err
-		}
-	} else {
-		if err := jp.doOpenAIResponsesRequest(gctx, model); err != nil {
-			return err
-		}
+		return jp.invokeAnthropicResponses(gctx, model)
+	}
+
+	if endpointDeclaresRequestType(gctx.SelectedEndpoint, core.RequestTypeResponses) {
+		return jp.invokeNativeResponses(gctx)
+	}
+
+	newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
+	if err != nil {
+		return fmt.Errorf("translate responses to chat completion: %w", err)
+	}
+	gctx.RawBody = newBody
+	if err := jp.doOpenAIRequest(gctx, "chat_completions"); err != nil {
+		return err
 	}
 
 	// Reverse-translate response body (OpenAI Chat -> Responses)
@@ -185,6 +186,103 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 	}
 	if err := translateResponsesNonStreamResponse(gctx); err != nil {
 		return fmt.Errorf("translate response: %w", err)
+	}
+	return nil
+}
+
+func (p *JoyCodeProvider) invokeAnthropicResponses(gctx *core.GatewayContext, model string) error {
+	translated, err := translate.ResponsesRequestToMessages(gctx.RawBody, model)
+	if err != nil {
+		return fmt.Errorf("translate responses to messages: %w", err)
+	}
+	gctx.RawBody = injectJoyCodePayload(adaptThinkingBehavior(translated.Body))
+
+	resp, err := p.callAnthropic(gctx, gctx.RawBody, upstream.Handoff)
+	if err != nil {
+		return enrichAnthropicError(err, gctx.UpstreamBody)
+	}
+	if gctx.IsStream {
+		return handleAnthropicResponsesStream(gctx, resp)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response body: %w", err)
+	}
+	gctx.TriggerFirstByte()
+	result, err := translate.MessagesResponseToResponses(body, responsesReplyModel(gctx))
+	if err != nil {
+		return fmt.Errorf("translate messages response: %w", err)
+	}
+	gctx.UpstreamBody = result.Body
+	var response map[string]interface{}
+	if err := json.Unmarshal(result.Body, &response); err != nil {
+		return fmt.Errorf("parse translated response: %w", err)
+	}
+	gctx.Response = response
+	llm.ApplyUsage(gctx, result.Usage.InputTokens, result.Usage.OutputTokens, result.CachedTokens, result.CacheCreationTokens)
+	return nil
+}
+
+func (p *JoyCodeProvider) callAnthropic(gctx *core.GatewayContext, body []byte, streamMode upstream.StreamDisposition) (*http.Response, error) {
+	var endpoint string
+	if strings.HasPrefix(p.baseURL, "https://") {
+		var err error
+		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "anthropic_completions")
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		endpoint = p.baseURL + "/api/saas/anthropic/v1/messages"
+	}
+	return upstream.Call(gctx, upstream.Request{
+		Client: p.client,
+		URL:    endpoint,
+		Body:   body,
+		Header: joyCodeAuthHeaders(gctx, p.apiKey, true),
+		Stream: streamMode,
+	})
+}
+
+func endpointDeclaresRequestType(ep *core.Endpoint, requestType core.RequestType) bool {
+	if ep == nil {
+		return false
+	}
+	for _, declared := range ep.RequestTypes {
+		if declared == requestType {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *JoyCodeProvider) invokeNativeResponses(gctx *core.GatewayContext) error {
+	newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
+	if err != nil {
+		return fmt.Errorf("translate responses for joycode: %w", err)
+	}
+	gctx.RawBody = newBody
+	if err := p.doOpenAIRequest(gctx, "responses_completions"); err != nil {
+		return err
+	}
+	if gctx.IsStream {
+		return handleResponsesStream(gctx, gctx.UpstreamResponse)
+	}
+	var response map[string]interface{}
+	if err := json.Unmarshal(gctx.UpstreamBody, &response); err == nil {
+		gctx.Response = response
+	}
+	var usage struct {
+		Usage struct {
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			InputTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(gctx.UpstreamBody, &usage); err == nil {
+		llm.ApplyUsage(gctx, usage.Usage.InputTokens, usage.Usage.OutputTokens, usage.Usage.InputTokensDetails.CachedTokens, 0)
 	}
 	return nil
 }
@@ -228,7 +326,7 @@ func (i *joycodeMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 	}
 	gctx.RawBody = newBody
 
-	if err := jp.doOpenAIRequest(gctx, model); err != nil {
+	if err := jp.doOpenAIRequest(gctx, "chat_completions"); err != nil {
 		return err
 	}
 
@@ -246,49 +344,11 @@ func (i *joycodeMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 // ==========================================
 
 // doOpenAIRequest sends a request to the standard OpenAI /v2 endpoint and stores response on gctx
-func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, model string) error {
+func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, functionID string) error {
 	var endpoint string
 	if strings.HasPrefix(p.baseURL, "https://") {
 		var err error
-		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "chat_completions")
-		if err != nil {
-			return err
-		}
-	} else {
-		endpoint = p.baseURL + "/api/saas/openai/v2/chat/completions"
-	}
-
-	reqBody := injectJoyCodePayload(gctx.RawBody)
-	resp, err := upstream.Call(gctx, upstream.Request{
-		Client: p.client,
-		URL:    endpoint,
-		Body:   reqBody,
-		Header: joyCodeAuthHeaders(gctx, p.apiKey, false),
-		Stream: upstream.Consume,
-	})
-	if err != nil {
-		return err
-	}
-
-	gctx.UpstreamResponse = resp
-	if !gctx.IsStream {
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return fmt.Errorf("read response body: %w", err)
-		}
-		gctx.UpstreamBody = body
-		gctx.TriggerFirstByte()
-	}
-	return nil
-}
-
-// doOpenAIResponsesRequest sends a request using JoyCode official responses_completions functionId
-func (p *JoyCodeProvider) doOpenAIResponsesRequest(gctx *core.GatewayContext, model string) error {
-	var endpoint string
-	if strings.HasPrefix(p.baseURL, "https://") {
-		var err error
-		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "responses_completions")
+		endpoint, err = signJoyCodeGatewayURL(p.baseURL, functionID)
 		if err != nil {
 			return err
 		}
@@ -323,7 +383,7 @@ func (p *JoyCodeProvider) doOpenAIResponsesRequest(gctx *core.GatewayContext, mo
 
 // invokeOpenAI sends a request to the standard OpenAI /v2 endpoint and handles the response
 func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) error {
-	if err := p.doOpenAIRequest(gctx, model); err != nil {
+	if err := p.doOpenAIRequest(gctx, "chat_completions"); err != nil {
 		return err
 	}
 
@@ -339,21 +399,9 @@ func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) 
 	return nil
 }
 
-
 // invokeAnthropic converts OpenAI request format to Anthropic messages format, sends to upstream,
 // and converts the response back to OpenAI format.
 func (p *JoyCodeProvider) invokeAnthropic(gctx *core.GatewayContext, model string) error {
-	var endpoint string
-	if strings.HasPrefix(p.baseURL, "https://") {
-		var err error
-		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "anthropic_completions")
-		if err != nil {
-			return err
-		}
-	} else {
-		endpoint = p.baseURL + "/api/saas/anthropic/v1/messages"
-	}
-
 	// 1. OpenAI -> Anthropic request body translation
 	anthropicBody, err := translate.ChatRequestToMessages(gctx.RawBody, model)
 	if err != nil {
@@ -362,13 +410,7 @@ func (p *JoyCodeProvider) invokeAnthropic(gctx *core.GatewayContext, model strin
 	anthropicBody = adaptThinkingBehavior(anthropicBody)
 	anthropicBody = injectJoyCodePayload(anthropicBody)
 
-	resp, err := upstream.Call(gctx, upstream.Request{
-		Client: p.client,
-		URL:    endpoint,
-		Body:   anthropicBody,
-		Header: joyCodeAuthHeaders(gctx, p.apiKey, true),
-		Stream: upstream.Consume,
-	})
+	resp, err := p.callAnthropic(gctx, anthropicBody, upstream.Consume)
 	if err != nil {
 		return err
 	}
@@ -394,32 +436,18 @@ func (p *JoyCodeProvider) invokeAnthropic(gctx *core.GatewayContext, model strin
 
 	gctx.UpstreamBody = res.Body
 	gctx.TriggerFirstByte()
-	gctx.InputTokens = res.Usage.InputTokens
-	gctx.OutputTokens = res.Usage.OutputTokens
+	llm.ApplyUsage(gctx, res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.CachedTokens, res.Usage.CacheCreationTokens)
 	return nil
 }
 
 // doAnthropicMessagesDirect forwards native Anthropic /messages requests without format conversion; only injects headers.
 func (p *JoyCodeProvider) doAnthropicMessagesDirect(gctx *core.GatewayContext, model string) error {
-	var endpoint string
-	if strings.HasPrefix(p.baseURL, "https://") {
-		var err error
-		endpoint, err = signJoyCodeGatewayURL(p.baseURL, "anthropic_completions")
-		if err != nil {
-			return err
-		}
-	} else {
-		endpoint = p.baseURL + "/api/saas/anthropic/v1/messages"
+	rawBody := gctx.RawBody
+	if corrected, err := translate.CorrectNativeMessagesRequest(rawBody); err == nil {
+		rawBody = corrected
 	}
-
-	adaptedBody := injectJoyCodePayload(adaptThinkingBehavior(cleanThinkingInHistory(gctx.RawBody)))
-	resp, err := upstream.Call(gctx, upstream.Request{
-		Client: p.client,
-		URL:    endpoint,
-		Body:   adaptedBody,
-		Header: joyCodeAuthHeaders(gctx, p.apiKey, true),
-		Stream: upstream.Consume,
-	})
+	adaptedBody := injectJoyCodePayload(adaptThinkingBehavior(cleanThinkingInHistory(rawBody)))
+	resp, err := p.callAnthropic(gctx, adaptedBody, upstream.Consume)
 	if err != nil {
 		return err
 	}
@@ -505,8 +533,16 @@ func (p *JoyCodeProvider) handleAnthropicStreamToOpenAI(gctx *core.GatewayContex
 				}
 
 				chunks, meta := stream.FeedJSON(ev.Data)
+				if meta.CachedTokens > 0 {
+					gctx.CachedTokens = meta.CachedTokens
+				}
+				if meta.CacheCreationTokens > 0 {
+					gctx.CacheCreationTokens = meta.CacheCreationTokens
+				}
 				if meta.InputTokens > 0 {
-					gctx.InputTokens = meta.InputTokens
+					// Normalize to total input (input + cache read + cache creation),
+					// aligning with AnthropicTokenExtractor / OpenAI prompt_tokens semantics.
+					gctx.InputTokens = meta.InputTokens + meta.CachedTokens + meta.CacheCreationTokens
 				}
 				if meta.OutputTokens > 0 {
 					gctx.OutputTokens = meta.OutputTokens
@@ -699,5 +735,3 @@ func injectJoyCodePayload(rawBody []byte) []byte {
 	}
 	return rawBody
 }
-
-

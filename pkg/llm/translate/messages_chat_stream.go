@@ -68,6 +68,12 @@ func (s *MessagesToChatStream) FeedJSON(data string) (chunks [][]byte, meta Stre
 		if ot, ok := usage["output_tokens"].(float64); ok {
 			meta.OutputTokens = int(ot)
 		}
+		if cr, ok := usage["cache_read_input_tokens"].(float64); ok {
+			meta.CachedTokens = int(cr)
+		}
+		if cc, ok := usage["cache_creation_input_tokens"].(float64); ok {
+			meta.CacheCreationTokens = int(cc)
+		}
 	}
 	if message, ok := ev["message"].(map[string]interface{}); ok {
 		if usage, ok := message["usage"].(map[string]interface{}); ok {
@@ -76,6 +82,12 @@ func (s *MessagesToChatStream) FeedJSON(data string) (chunks [][]byte, meta Stre
 			}
 			if ot, ok := usage["output_tokens"].(float64); ok && meta.OutputTokens == 0 {
 				meta.OutputTokens = int(ot)
+			}
+			if cr, ok := usage["cache_read_input_tokens"].(float64); ok {
+				meta.CachedTokens = int(cr)
+			}
+			if cc, ok := usage["cache_creation_input_tokens"].(float64); ok {
+				meta.CacheCreationTokens = int(cc)
 			}
 		}
 		if id, ok := message["id"].(string); ok && id != "" {
@@ -211,6 +223,12 @@ func (s *MessagesToChatStream) FeedJSON(data string) (chunks [][]byte, meta Stre
 			}
 			if it, ok := usage["input_tokens"].(float64); ok {
 				meta.InputTokens = int(it)
+			}
+			if cr, ok := usage["cache_read_input_tokens"].(float64); ok {
+				meta.CachedTokens = int(cr)
+			}
+			if cc, ok := usage["cache_creation_input_tokens"].(float64); ok {
+				meta.CacheCreationTokens = int(cc)
 			}
 		}
 		finish := "stop"

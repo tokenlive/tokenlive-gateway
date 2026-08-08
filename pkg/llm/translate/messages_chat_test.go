@@ -221,3 +221,189 @@ func TestMessagesToChatCompletion_TextOnly(t *testing.T) {
 		t.Errorf("content = %v", msg["content"])
 	}
 }
+
+func TestMessagesToChatCompletion_CacheTokens(t *testing.T) {
+	anthropic := []byte(`{
+		"id": "msg_123",
+		"content": [{"type": "text", "text": "hi"}],
+		"stop_reason": "end_turn",
+		"usage": {"input_tokens": 10, "output_tokens": 7, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 50}
+	}`)
+
+	res, err := MessagesToChatCompletion(anthropic, "claude-3-5-sonnet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Normalized total input = 10 + 100 + 50.
+	if res.Usage.InputTokens != 160 {
+		t.Errorf("InputTokens = %d, want 160", res.Usage.InputTokens)
+	}
+	if res.Usage.CachedTokens != 100 {
+		t.Errorf("CachedTokens = %d, want 100", res.Usage.CachedTokens)
+	}
+	if res.Usage.CacheCreationTokens != 50 {
+		t.Errorf("CacheCreationTokens = %d, want 50", res.Usage.CacheCreationTokens)
+	}
+
+	var oResp map[string]interface{}
+	_ = json.Unmarshal(res.Body, &oResp)
+	usage := oResp["usage"].(map[string]interface{})
+	if usage["prompt_tokens"].(float64) != 160 {
+		t.Errorf("prompt_tokens = %v, want 160", usage["prompt_tokens"])
+	}
+	details := usage["prompt_tokens_details"].(map[string]interface{})
+	if details["cached_tokens"].(float64) != 100 {
+		t.Errorf("cached_tokens = %v, want 100", details["cached_tokens"])
+	}
+}
+
+func TestMessagesRequestToChat_ImageBlock(t *testing.T) {
+	raw := []byte(`{
+		"model": "glm-4v",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "What is this?"},
+				{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}
+			]
+		}]
+	}`)
+
+	// OfficialOrTest true so degradeMessagesToTextOnly does not run.
+	out, err := MessagesRequestToChat(raw, MessagesToChatOptions{OfficialOrTest: true})
+	if err != nil {
+		t.Fatalf("MessagesRequestToChat: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	msgs := req["messages"].([]interface{})
+	user := msgs[len(msgs)-1].(map[string]interface{})
+	parts, ok := user["content"].([]interface{})
+	if !ok {
+		t.Fatalf("expected multimodal content array, got %T", user["content"])
+	}
+	var sawText, sawImage bool
+	for _, p := range parts {
+		pm := p.(map[string]interface{})
+		switch pm["type"] {
+		case "text":
+			sawText = true
+		case "image_url":
+			sawImage = true
+			iu := pm["image_url"].(map[string]interface{})
+			if iu["url"] != "data:image/jpeg;base64,AAAA" {
+				t.Errorf("image url = %v", iu["url"])
+			}
+		}
+	}
+	if !sawText || !sawImage {
+		t.Errorf("expected both text and image parts, sawText=%v sawImage=%v", sawText, sawImage)
+	}
+}
+
+func TestMessagesRequestToChat_ImageBlockCompat(t *testing.T) {
+	// Compat path (OfficialOrTest=false) routes through degradeMessagesToTextOnly.
+	// The image message must survive rather than being flattened to an empty string.
+	raw := []byte(`{
+		"model": "glm-4v",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "describe"},
+				{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "BBBB"}}
+			]
+		}]
+	}`)
+
+	out, err := MessagesRequestToChat(raw, MessagesToChatOptions{OfficialOrTest: false})
+	if err != nil {
+		t.Fatalf("MessagesRequestToChat: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	msgs := req["messages"].([]interface{})
+	user := msgs[len(msgs)-1].(map[string]interface{})
+	parts, ok := user["content"].([]interface{})
+	if !ok {
+		t.Fatalf("compat path dropped image: content is %T (%v)", user["content"], user["content"])
+	}
+	var sawImage bool
+	for _, p := range parts {
+		if pm, ok := p.(map[string]interface{}); ok && pm["type"] == "image_url" {
+			sawImage = true
+		}
+	}
+	if !sawImage {
+		t.Error("expected image_url part to survive compat degrade")
+	}
+}
+
+func TestMessagesToChatCompletion_Thinking(t *testing.T) {
+	anthropic := []byte(`{
+		"id": "msg_123",
+		"content": [
+			{"type": "thinking", "thinking": "Let me reason."},
+			{"type": "text", "text": "The answer is 42."}
+		],
+		"stop_reason": "end_turn",
+		"usage": {"input_tokens": 10, "output_tokens": 20}
+	}`)
+
+	res, err := MessagesToChatCompletion(anthropic, "claude-3-5-sonnet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oResp map[string]interface{}
+	_ = json.Unmarshal(res.Body, &oResp)
+	msg := oResp["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})
+	if msg["reasoning_content"] != "Let me reason." {
+		t.Errorf("reasoning_content = %v", msg["reasoning_content"])
+	}
+	if msg["content"] != "The answer is 42." {
+		t.Errorf("content = %v", msg["content"])
+	}
+}
+
+func TestChatCompletionToMessages_Reasoning(t *testing.T) {
+	chat := []byte(`{
+		"id": "chatcmpl-abc",
+		"choices": [{
+			"message": {
+				"role": "assistant",
+				"content": "Final answer.",
+				"reasoning_content": "Thinking step by step."
+			},
+			"finish_reason": "stop"
+		}],
+		"usage": {"prompt_tokens": 5, "completion_tokens": 7}
+	}`)
+
+	res, err := ChatCompletionToMessages(chat, "gpt-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg map[string]interface{}
+	_ = json.Unmarshal(res.Body, &msg)
+	content := msg["content"].([]interface{})
+	var sawThinking, sawText bool
+	for _, b := range content {
+		bm := b.(map[string]interface{})
+		switch bm["type"] {
+		case "thinking":
+			sawThinking = true
+			if bm["thinking"] != "Thinking step by step." {
+				t.Errorf("thinking = %v", bm["thinking"])
+			}
+		case "text":
+			sawText = true
+		}
+	}
+	if !sawThinking || !sawText {
+		t.Errorf("expected thinking+text blocks, sawThinking=%v sawText=%v", sawThinking, sawText)
+	}
+}
