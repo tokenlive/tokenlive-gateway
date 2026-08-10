@@ -361,6 +361,10 @@ func ChatCompletionToResponses(chatBody []byte, model string) (ChatCompletionToR
 // CorrectNativeResponsesRequest sanitizes native /responses (roles/types + tools).
 // Returns body and final tools summary for logging.
 func CorrectNativeResponsesRequest(rawBody []byte) (body []byte, originalToolCount, finalToolCount int, toolSummary []string, err error) {
+	// [TEMPORARY] 暂时注释掉工具与请求体清洗干预逻辑，完全原样透传客户端 rawBody
+	return rawBody, 0, 0, nil, nil
+
+	/*
 	var payload map[string]interface{}
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
 		return nil, 0, 0, nil, fmt.Errorf("parse raw body: %w", err)
@@ -432,6 +436,7 @@ func CorrectNativeResponsesRequest(rawBody []byte) (body []byte, originalToolCou
 		return nil, originalToolCount, 0, nil, fmt.Errorf("marshal corrected body: %w", err)
 	}
 	return newBody, originalToolCount, len(finalTools), toolSummary, nil
+	*/
 }
 
 // BuildStandardTool normalizes a client tool to flat standard form.
