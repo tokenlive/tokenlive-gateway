@@ -1,6 +1,8 @@
 package providers
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -40,8 +42,8 @@ type JoyCodeProvider struct {
 
 // NewJoyCodeProvider creates a JoyCode provider instance.
 func NewJoyCodeProvider(name, baseURL, apiKey string, models []string) *JoyCodeProvider {
-	if baseURL == "" {
-		baseURL = "http://joycode-api-saas.jd.com"
+	if baseURL == "" || baseURL == "http://joycode-api-saas.jd.com" {
+		baseURL = "https://api-ai.jd.com"
 	}
 	return &JoyCodeProvider{
 		name:    name,
@@ -167,27 +169,27 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 		return jp.invokeAnthropicResponses(gctx, model)
 	}
 
-	if endpointDeclaresRequestType(gctx.SelectedEndpoint, core.RequestTypeResponses) {
-		return jp.invokeNativeResponses(gctx)
+	if endpointDeclaresRequestType(gctx.SelectedEndpoint, core.RequestTypeChatCompletion) &&
+		!endpointDeclaresRequestType(gctx.SelectedEndpoint, core.RequestTypeResponses) {
+		newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
+		if err != nil {
+			return fmt.Errorf("translate responses to chat completion: %w", err)
+		}
+		gctx.RawBody = newBody
+		if err := jp.doOpenAIRequest(gctx, "chat_completions"); err != nil {
+			return err
+		}
+
+		if gctx.IsStream {
+			return handleResponsesStream(gctx, gctx.UpstreamResponse)
+		}
+		if err := translateResponsesNonStreamResponse(gctx); err != nil {
+			return fmt.Errorf("translate response: %w", err)
+		}
+		return nil
 	}
 
-	newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
-	if err != nil {
-		return fmt.Errorf("translate responses to chat completion: %w", err)
-	}
-	gctx.RawBody = newBody
-	if err := jp.doOpenAIRequest(gctx, "chat_completions"); err != nil {
-		return err
-	}
-
-	// Reverse-translate response body (OpenAI Chat -> Responses)
-	if gctx.IsStream {
-		return handleResponsesStream(gctx, gctx.UpstreamResponse)
-	}
-	if err := translateResponsesNonStreamResponse(gctx); err != nil {
-		return fmt.Errorf("translate response: %w", err)
-	}
-	return nil
+	return jp.invokeNativeResponses(gctx)
 }
 
 func (p *JoyCodeProvider) invokeAnthropicResponses(gctx *core.GatewayContext, model string) error {
@@ -257,34 +259,98 @@ func endpointDeclaresRequestType(ep *core.Endpoint, requestType core.RequestType
 }
 
 func (p *JoyCodeProvider) invokeNativeResponses(gctx *core.GatewayContext) error {
-	newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
-	if err != nil {
-		return fmt.Errorf("translate responses for joycode: %w", err)
-	}
-	gctx.RawBody = newBody
 	if err := p.doOpenAIRequest(gctx, "responses_completions"); err != nil {
 		return err
 	}
 	if gctx.IsStream {
-		return handleResponsesStream(gctx, gctx.UpstreamResponse)
+		// JoyCode responses_completions 返回双层包裹的 SSE（data: event: xxx / data: data: {...}），
+		// 需还原为标准的 event:/data: 成对帧，否则客户端无法解析。
+		gctx.UpstreamResponse.Body = newJoycodeResponsesUnwrapReader(gctx.UpstreamResponse.Body)
+		defer gctx.UpstreamResponse.Body.Close()
+		return handleOpenAIStream(gctx, gctx.UpstreamResponse)
 	}
 	var response map[string]interface{}
 	if err := json.Unmarshal(gctx.UpstreamBody, &response); err == nil {
 		gctx.Response = response
 	}
-	var usage struct {
-		Usage struct {
-			InputTokens        int `json:"input_tokens"`
-			OutputTokens       int `json:"output_tokens"`
-			InputTokensDetails struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"input_tokens_details"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(gctx.UpstreamBody, &usage); err == nil {
-		llm.ApplyUsage(gctx, usage.Usage.InputTokens, usage.Usage.OutputTokens, usage.Usage.InputTokensDetails.CachedTokens, 0)
-	}
+	in, out, cached, cacheCreated := llm.ResponsesTokenExtractor(string(gctx.UpstreamBody))
+	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
 	return nil
+}
+
+// joycodeResponsesUnwrapReader 将 JoyCode responses_completions 的双层包裹 SSE 还原为标准格式：
+//
+//	data: event: response.created   ->  event: response.created
+//	data: data: {...}               ->  data: {...}
+//
+// 上游把内层流的每一行都再包一层 data:，且 event 行与 data 行各自独立成块；
+// 这里将相邻的 event/data 重新配对为单个 SSE 块（event + data + 空行），
+// 与 OpenAI Responses API 的标准流格式一致。
+type joycodeResponsesUnwrapReader struct {
+	underlying io.ReadCloser
+	reader     *bufio.Reader
+	buf        bytes.Buffer
+	pendEvent  string // 待配对的 "event: xxx\n" 行
+}
+
+func newJoycodeResponsesUnwrapReader(rc io.ReadCloser) io.ReadCloser {
+	return &joycodeResponsesUnwrapReader{
+		underlying: rc,
+		reader:     bufio.NewReader(rc),
+	}
+}
+
+func (r *joycodeResponsesUnwrapReader) Read(p []byte) (int, error) {
+	for r.buf.Len() == 0 {
+		line, err := r.reader.ReadString('\n')
+		if len(line) > 0 {
+			r.processLine(line)
+		}
+		if err != nil {
+			if r.pendEvent != "" {
+				r.buf.WriteString(r.pendEvent)
+				r.buf.WriteString("\n")
+				r.pendEvent = ""
+			}
+			if r.buf.Len() > 0 {
+				break
+			}
+			return 0, err
+		}
+	}
+	return r.buf.Read(p)
+}
+
+func (r *joycodeResponsesUnwrapReader) processLine(line string) {
+	switch {
+	case strings.HasPrefix(line, "data: event:"):
+		// 上一个 event 行没有等到配对的 data 行，先原样吐出（不丢事件）。
+		if r.pendEvent != "" {
+			r.buf.WriteString(r.pendEvent)
+			r.buf.WriteString("\n")
+		}
+		r.pendEvent = "event:" + strings.TrimPrefix(line, "data: event:")
+		if !strings.HasSuffix(r.pendEvent, "\n") {
+			r.pendEvent += "\n"
+		}
+	case strings.HasPrefix(line, "data: data:"):
+		if r.pendEvent != "" {
+			r.buf.WriteString(r.pendEvent)
+			r.pendEvent = ""
+		}
+		dataLine := "data:" + strings.TrimPrefix(line, "data: data:")
+		if !strings.HasSuffix(dataLine, "\n") {
+			dataLine += "\n"
+		}
+		r.buf.WriteString(dataLine)
+		r.buf.WriteString("\n")
+	default:
+		// 空行或其它包裹块分隔符，直接忽略。
+	}
+}
+
+func (r *joycodeResponsesUnwrapReader) Close() error {
+	return r.underlying.Close()
 }
 
 // ==========================================
@@ -353,7 +419,11 @@ func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, functionID 
 			return err
 		}
 	} else {
-		endpoint = p.baseURL + "/api/saas/openai/v2/chat/completions"
+		if functionID == "responses_completions" {
+			endpoint = p.baseURL + "/api/saas/openai/v2/responses/completions"
+		} else {
+			endpoint = p.baseURL + "/api/saas/openai/v2/chat/completions"
+		}
 	}
 
 	reqBody := injectJoyCodePayload(gctx.RawBody)
@@ -696,13 +766,22 @@ func signJoyCodeGatewayURL(baseURL, functionID string) (string, error) {
 	t := time.Now().UnixNano() / int64(time.Millisecond)
 
 	appID := os.Getenv("JOYCODE_APPID")
-	if appID == "" {
-		return "", fmt.Errorf("JOYCODE_APPID environment variable is missing")
-	}
-
 	signKey := os.Getenv("JOYCODE_SIGN_KEY")
-	if signKey == "" {
-		return "", fmt.Errorf("JOYCODE_SIGN_KEY environment variable is missing")
+
+	if appID == "" && signKey == "" {
+		if strings.Contains(baseURL, "api-ai.jd.com") {
+			appID = "joycode_ide"
+			signKey = "0691a3f0b37b4a85aeb63ad0fc7db3ed"
+		} else {
+			return "", fmt.Errorf("JOYCODE_APPID environment variable is missing")
+		}
+	} else {
+		if appID == "" {
+			return "", fmt.Errorf("JOYCODE_APPID environment variable is missing")
+		}
+		if signKey == "" {
+			return "", fmt.Errorf("JOYCODE_SIGN_KEY environment variable is missing")
+		}
 	}
 
 	stringToSign := fmt.Sprintf("%s&%s&%d", appID, functionID, t)
@@ -727,8 +806,13 @@ func injectJoyCodePayload(rawBody []byte) []byte {
 	if err := json.Unmarshal(rawBody, &m); err != nil {
 		return rawBody
 	}
-	m["client"] = "JoyCodeIDE"
-	m["clientVersion"] = "3.8.61"
+
+	if clientVal, ok := m["client"].(string); !ok || clientVal == "" || clientVal == "JoyCodeIDE" {
+		m["client"] = "JoyCode IDE"
+	}
+	if versionVal, ok := m["clientVersion"].(string); !ok || versionVal == "" {
+		m["clientVersion"] = "3.0.10"
+	}
 
 	if out, err := json.Marshal(m); err == nil {
 		return out

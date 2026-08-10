@@ -65,14 +65,86 @@ func TestJoyCodeResponses_NativeEndpointKeepsResponsesBody(t *testing.T) {
 	if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	if _, ok := received["messages"]; !ok {
-		t.Fatalf("native endpoint did not receive messages payload: %v", received)
+	if _, ok := received["input"]; !ok {
+		t.Fatalf("native endpoint did not receive input payload: %v", received)
 	}
 	if !strings.Contains(string(gctx.UpstreamBody), `"object":"response"`) {
 		t.Fatalf("native response was not preserved: %s", gctx.UpstreamBody)
 	}
 	if gctx.InputTokens != 1 || gctx.OutputTokens != 0 {
 		t.Fatalf("native usage = (%d, %d)", gctx.InputTokens, gctx.OutputTokens)
+	}
+}
+
+func TestJoyCodeResponses_NativeStreamUnwrapsDoubleWrappedSSE(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		frames := []string{
+			"data: event: response.created",
+			`data: data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+			"data: event: response.output_text.delta",
+			`data: data: {"type":"response.output_text.delta","delta":"hi"}`,
+			"data: event: response.completed",
+			`data: data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":3,"output_tokens":2}}}`,
+		}
+		for _, f := range frames {
+			_, _ = fmt.Fprintf(w, "%s\n\n", f)
+		}
+	}))
+	defer server.Close()
+
+	p := NewJoyCodeProvider("joycode", server.URL, "key", nil)
+	reqBody := `{"model":"native","input":"hello","stream":true}`
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody)))
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType, gctx.RawBody, gctx.Model, gctx.IsStream = core.RequestTypeResponses, []byte(reqBody), "native", true
+	gctx.SelectedEndpoint = &core.Endpoint{RequestTypes: []core.RequestType{core.RequestTypeResponses}}
+
+	if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+
+	body := w.Body.String()
+	if strings.Contains(body, "data: event:") || strings.Contains(body, "data: data:") {
+		t.Fatalf("double-wrapped SSE leaked to client: %s", body)
+	}
+	if !strings.Contains(body, "event: response.created\ndata: {\"type\":\"response.created\"") {
+		t.Fatalf("event/data not paired into one block: %s", body)
+	}
+	if !strings.Contains(body, "event: response.completed") {
+		t.Fatalf("missing completion event: %s", body)
+	}
+	if gctx.Tags["response_completed_sent"] != "true" {
+		t.Fatalf("response_completed_sent tag not set: %v", gctx.Tags)
+	}
+	if gctx.InputTokens != 3 || gctx.OutputTokens != 2 {
+		t.Fatalf("usage = (%d, %d)", gctx.InputTokens, gctx.OutputTokens)
+	}
+}
+
+func TestJoycodeResponsesUnwrapReader(t *testing.T) {
+	input := "data: event: response.created\n\n" +
+		`data: data: {"type":"response.created"}` + "\n\n" +
+		"data: event: response.done\n" + // 无配对 data 的孤立 event 行
+		"data: event: response.completed\n\n" +
+		`data: data: {"type":"response.completed"}` // 结尾无换行
+	r := newJoycodeResponsesUnwrapReader(io.NopCloser(strings.NewReader(input)))
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	got := string(out)
+	want := "event: response.created\n" +
+		`data: {"type":"response.created"}` + "\n\n" +
+		"event: response.done\n\n" +
+		"event: response.completed\n" +
+		`data: {"type":"response.completed"}` + "\n\n"
+	if got != want {
+		t.Fatalf("unwrap mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 

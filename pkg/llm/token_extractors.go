@@ -124,21 +124,29 @@ func AnthropicTokenExtractor(data string) (int, int, int, int) {
 // Usage is nested under response.usage in terminal events (response.completed/response.done),
 // not at the top level like Chat Completions chunks.
 func ResponsesTokenExtractor(data string) (int, int, int, int) {
+	type usage struct {
+		InputTokens        int `json:"input_tokens"`
+		OutputTokens       int `json:"output_tokens"`
+		InputTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
+	}
 	var payload struct {
+		Usage    *usage `json:"usage"`
 		Response *struct {
-			Usage *struct {
-				InputTokens        int `json:"input_tokens"`
-				OutputTokens       int `json:"output_tokens"`
-				InputTokensDetails *struct {
-					CachedTokens int `json:"cached_tokens"`
-				} `json:"input_tokens_details"`
-			} `json:"usage"`
+			Usage *usage `json:"usage"`
 		} `json:"response"`
 	}
-	if err := json.Unmarshal([]byte(data), &payload); err != nil || payload.Response == nil || payload.Response.Usage == nil {
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
 		return 0, 0, 0, 0
 	}
-	u := payload.Response.Usage
+	u := payload.Usage
+	if u == nil && payload.Response != nil {
+		u = payload.Response.Usage
+	}
+	if u == nil {
+		return 0, 0, 0, 0
+	}
 	cached := 0
 	if u.InputTokensDetails != nil {
 		cached = u.InputTokensDetails.CachedTokens
