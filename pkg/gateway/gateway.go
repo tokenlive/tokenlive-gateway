@@ -234,6 +234,9 @@ func (g *Gateway) ApplyGatewayConfig(gwCfg *config.GatewayConfig) error {
 	g.Engine.SetProviders(providerImpls)
 	if g.Config != nil {
 		g.Config.UpdateYAMLConfig(gwCfg)
+		if g.modelService != nil {
+			g.modelService.UpdateFallbackModels(config.KnownModels(gwCfg))
+		}
 	}
 	return nil
 }

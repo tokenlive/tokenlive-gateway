@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
@@ -14,6 +15,7 @@ import (
 )
 
 type ModelService struct {
+	mu             sync.RWMutex
 	rdb            *redis.Client
 	logger         *log.Logger
 	fallbackModels map[string]bool
@@ -38,14 +40,24 @@ func NewModelService(rdb *redis.Client, logger *log.Logger, conf *viper.Viper) *
 	}
 }
 
+func (s *ModelService) UpdateFallbackModels(models map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fallbackModels = models
+}
+
 // ValidateModel 校验指定用户的 model 是否存在且合法
 // model 参数为客户端请求的模型标识（应为 model_code）
 func (s *ModelService) ValidateModel(ctx context.Context, model string, tenant string, userID string) (bool, error) {
 	// 1. ToB 租户模式校验
 	if tenant != "" {
+		s.mu.RLock()
+		isFallback := s.fallbackModels[model]
+		s.mu.RUnlock()
+
 		if s.rdb == nil {
 			s.logger.Logger.Debug("redis client is nil in ToB, fallback to local config validation", zap.String("model", model))
-			return s.fallbackModels[model], nil
+			return isFallback, nil
 		}
 
 		redisKey := "aigw:tenant:" + tenant + ":models"
@@ -59,7 +71,7 @@ func (s *ModelService) ValidateModel(ctx context.Context, model string, tenant s
 				zap.String("key", redisKey),
 				zap.String("model", model),
 			)
-			return s.fallbackModels[model], nil
+			return isFallback, nil
 		}
 
 		exists := existsCmd.Val()
@@ -69,7 +81,7 @@ func (s *ModelService) ValidateModel(ctx context.Context, model string, tenant s
 				zap.String("key", redisKey),
 				zap.String("model", model),
 			)
-			if s.fallbackModels[model] {
+			if isFallback {
 				return true, nil
 			}
 			configKey := store.RedisKeyConfigEndpoints(model)
@@ -88,7 +100,11 @@ func (s *ModelService) ValidateModel(ctx context.Context, model string, tenant s
 	}
 
 	// 2. ToC 个人模式校验：放通系统中所有已配置/可用的模型
-	if s.fallbackModels[model] {
+	s.mu.RLock()
+	isFallback := s.fallbackModels[model]
+	s.mu.RUnlock()
+
+	if isFallback {
 		return true, nil
 	}
 	if s.rdb != nil {
