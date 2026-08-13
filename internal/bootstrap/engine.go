@@ -833,6 +833,7 @@ func (a *dynamicEndpointAdapter) GetEndpoints(ctx context.Context, model string)
 			APIKey:             ep.APIKey,
 			RealModel:          ep.RealModel,
 			Weight:             ep.Weight,
+			Priority:           ep.Priority,
 			Headers:            ep.Headers,
 			Metadata:           ep.Metadata,
 			RequestTypes:       ep.RequestTypes,
