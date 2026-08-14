@@ -193,7 +193,11 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 }
 
 func (p *JoyCodeProvider) invokeAnthropicResponses(gctx *core.GatewayContext, model string) error {
-	translated, err := translate.ResponsesRequestToMessages(gctx.RawBody, model)
+	var maxOutputTokens int
+	if gctx.SelectedEndpoint != nil {
+		maxOutputTokens = int(gctx.SelectedEndpoint.MaxOutputTokens)
+	}
+	translated, err := translate.ResponsesRequestToMessages(gctx.RawBody, model, maxOutputTokens)
 	if err != nil {
 		return fmt.Errorf("translate responses to messages: %w", err)
 	}
@@ -473,7 +477,11 @@ func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) 
 // and converts the response back to OpenAI format.
 func (p *JoyCodeProvider) invokeAnthropic(gctx *core.GatewayContext, model string) error {
 	// 1. OpenAI -> Anthropic request body translation
-	anthropicBody, err := translate.ChatRequestToMessages(gctx.RawBody, model)
+	var maxOutputTokens int
+	if gctx.SelectedEndpoint != nil {
+		maxOutputTokens = int(gctx.SelectedEndpoint.MaxOutputTokens)
+	}
+	anthropicBody, err := translate.ChatRequestToMessages(gctx.RawBody, model, maxOutputTokens)
 	if err != nil {
 		return fmt.Errorf("translate openAI to anthropic request: %w", err)
 	}

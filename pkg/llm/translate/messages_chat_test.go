@@ -407,3 +407,41 @@ func TestChatCompletionToMessages_Reasoning(t *testing.T) {
 		t.Errorf("expected thinking+text blocks, sawThinking=%v sawText=%v", sawThinking, sawText)
 	}
 }
+
+func TestChatRequestToMessages_MaxOutputTokens_DefaultingAndClamping(t *testing.T) {
+	// Case 1: No max_tokens provided -> defaults to maxOutputTokens (8192)
+	raw1 := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hi"}]}`)
+	out1, err := ChatRequestToMessages(raw1, "claude-3-5-sonnet", 8192)
+	if err != nil {
+		t.Fatalf("ChatRequestToMessages case 1: %v", err)
+	}
+	var aReq1 map[string]interface{}
+	_ = json.Unmarshal(out1, &aReq1)
+	if aReq1["max_tokens"].(float64) != 8192 {
+		t.Errorf("max_tokens = %v, want 8192", aReq1["max_tokens"])
+	}
+
+	// Case 2: Client sends max_tokens 32000 > maxOutputTokens 8192 -> clamped to 8192
+	raw2 := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hi"}],"max_tokens":32000}`)
+	out2, err := ChatRequestToMessages(raw2, "claude-3-5-sonnet", 8192)
+	if err != nil {
+		t.Fatalf("ChatRequestToMessages case 2: %v", err)
+	}
+	var aReq2 map[string]interface{}
+	_ = json.Unmarshal(out2, &aReq2)
+	if aReq2["max_tokens"].(float64) != 8192 {
+		t.Errorf("max_tokens = %v, want clamped 8192", aReq2["max_tokens"])
+	}
+
+	// Case 3: Client sends max_tokens 500 < maxOutputTokens 8192 -> keeps 500
+	raw3 := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hi"}],"max_tokens":500}`)
+	out3, err := ChatRequestToMessages(raw3, "claude-3-5-sonnet", 8192)
+	if err != nil {
+		t.Fatalf("ChatRequestToMessages case 3: %v", err)
+	}
+	var aReq3 map[string]interface{}
+	_ = json.Unmarshal(out3, &aReq3)
+	if aReq3["max_tokens"].(float64) != 500 {
+		t.Errorf("max_tokens = %v, want 500", aReq3["max_tokens"])
+	}
+}

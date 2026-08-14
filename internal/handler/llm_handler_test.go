@@ -143,13 +143,28 @@ func (s stubModelLister) ListTenantModels(ctx context.Context, tenant string) ([
 	return s.models, s.err
 }
 
+type modelCap struct {
+	ContextLength   int64
+	MaxOutputTokens int64
+}
+
 type stubModelOwner struct {
 	owners      map[string]string
+	capacities  map[string]modelCap
 	knownModels map[string]bool
 }
 
 func (s stubModelOwner) OwnerOf(ctx context.Context, model string) string {
 	return s.owners[model]
+}
+
+func (s stubModelOwner) ModelCapacityOf(ctx context.Context, model string) (int64, int64) {
+	if s.capacities != nil {
+		if cap, ok := s.capacities[model]; ok {
+			return cap.ContextLength, cap.MaxOutputTokens
+		}
+	}
+	return 0, 0
 }
 
 func (s stubModelOwner) AllKnownModels() map[string]bool {
@@ -351,4 +366,51 @@ func TestListModels_Wildcard_ReturnsAllKnownModels(t *testing.T) {
 	}
 	assert.Contains(t, ids, "gpt-4")
 	assert.Contains(t, ids, "claude-3")
+}
+
+func TestListModels_ReturnsCapacityAndAliasInheritance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	lister := stubModelLister{models: []string{"claude-3-5-sonnet"}}
+	owner := stubModelOwner{
+		owners: map[string]string{"claude-3-5-sonnet": "anthropic"},
+		capacities: map[string]modelCap{
+			"claude-3-5-sonnet": {ContextLength: 200000, MaxOutputTokens: 8192},
+		},
+	}
+	aliasQuerier := stubAliasQuerier{
+		aliases: map[string][]string{
+			"claude-3-5-sonnet": {"claude-sonnet-latest"},
+		},
+	}
+	h := handler.NewLLMHandlerWithDeps(lister, owner, aliasQuerier)
+
+	r := gin.New()
+	r.GET("/v1/models", func(c *gin.Context) {
+		c.Set("tenant", "t1")
+		c.Set("user_id", "u1")
+		h.ListModels(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "list", resp["object"])
+	data := resp["data"].([]any)
+	require.Len(t, data, 2)
+
+	mainModel := data[0].(map[string]any)
+	assert.Equal(t, "claude-3-5-sonnet", mainModel["id"])
+	assert.Equal(t, "anthropic", mainModel["owned_by"])
+	assert.EqualValues(t, 200000, mainModel["context_length"])
+	assert.EqualValues(t, 8192, mainModel["max_output_tokens"])
+
+	aliasModel := data[1].(map[string]any)
+	assert.Equal(t, "claude-sonnet-latest", aliasModel["id"])
+	assert.Equal(t, "anthropic", aliasModel["owned_by"])
+	assert.EqualValues(t, 200000, aliasModel["context_length"])
+	assert.EqualValues(t, 8192, aliasModel["max_output_tokens"])
 }

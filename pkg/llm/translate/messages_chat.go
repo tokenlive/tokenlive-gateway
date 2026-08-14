@@ -289,7 +289,7 @@ func MessagesRequestToChat(rawBody []byte, opts MessagesToChatOptions) ([]byte, 
 }
 
 // ChatRequestToMessages translates OpenAI Chat request to Anthropic Messages.
-func ChatRequestToMessages(rawBody []byte, model string) ([]byte, error) {
+func ChatRequestToMessages(rawBody []byte, model string, maxOutputTokens ...int) ([]byte, error) {
 	var oaiReq map[string]interface{}
 	if err := json.Unmarshal(rawBody, &oaiReq); err != nil {
 		return nil, err
@@ -411,7 +411,9 @@ func ChatRequestToMessages(rawBody []byte, model string) ([]byte, error) {
 					newMsg["content"] = content
 				}
 
-				anthropicMsgs = append(anthropicMsgs, newMsg)
+				if newMsg["content"] != nil {
+					anthropicMsgs = append(anthropicMsgs, newMsg)
+				}
 			}
 		}
 	}
@@ -476,11 +478,21 @@ func ChatRequestToMessages(rawBody []byte, model string) ([]byte, error) {
 		anthropicReq["stop_sequences"] = stops
 	}
 
-	maxTokens := 4000
+	maxTokens := 4096
+	limit := 0
+	if len(maxOutputTokens) > 0 && maxOutputTokens[0] > 0 {
+		maxTokens = maxOutputTokens[0]
+		limit = maxOutputTokens[0]
+	}
+
 	if mt, exists := oaiReq["max_tokens"].(float64); exists {
 		maxTokens = int(mt)
 	} else if mct, exists := oaiReq["max_completion_tokens"].(float64); exists {
 		maxTokens = int(mct)
+	}
+
+	if limit > 0 && maxTokens > limit {
+		maxTokens = limit
 	}
 	anthropicReq["max_tokens"] = maxTokens
 

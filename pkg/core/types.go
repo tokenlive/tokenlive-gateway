@@ -35,6 +35,8 @@ type Endpoint struct {
 	APIKey           string            // Auth credential
 	AuthType         string            // Auth type: api_key, oauth_token
 	ProviderProtocol string            // Protocol, e.g. "openai", "anthropic"
+	ContextLength    int64             // Context window limit in tokens
+	MaxOutputTokens  int64             // Max output tokens limit
 
 	// Per-endpoint rates; nil inherits Model Policy.Billing
 	InputPrice         *float64

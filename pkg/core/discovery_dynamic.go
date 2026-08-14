@@ -19,6 +19,8 @@ type DynamicEndpoint struct {
 	Headers            map[string]string
 	Metadata           map[string]string
 	RequestTypes       []string
+	ContextLength      int64
+	MaxOutputTokens    int64
 	InputPrice         *float64
 	OutputPrice        *float64
 	CachedPrice        *float64
@@ -87,6 +89,8 @@ func (d *DynamicDiscovery) List(ctx context.Context, model string) ([]*Endpoint,
 			OutputPrice:        de.OutputPrice,
 			CachedPrice:        de.CachedPrice,
 			CacheCreationPrice: de.CacheCreationPrice,
+			ContextLength:      de.ContextLength,
+			MaxOutputTokens:    de.MaxOutputTokens,
 			Healthy:            true,
 			RequestTypes:       apis,
 		}

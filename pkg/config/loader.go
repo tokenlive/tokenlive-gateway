@@ -75,6 +75,15 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				authType = "api_key"
 			}
 
+			contextLength := ep.ContextLength
+			if contextLength == 0 {
+				contextLength = m.ContextLength
+			}
+			maxOutputTokens := ep.MaxOutputTokens
+			if maxOutputTokens == 0 {
+				maxOutputTokens = m.MaxOutputTokens
+			}
+
 			re := ResolvedEndpoint{
 				ID:               ep.ID,
 				Code:             ep.Code,
@@ -86,6 +95,8 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				RequestTypes:     m.RequestTypes,
 				Metadata:         ep.Metadata,
 				AuthType:         authType,
+				ContextLength:    contextLength,
+				MaxOutputTokens:  maxOutputTokens,
 			}
 
 			// RealModel is required at endpoint level (no provider fallback).

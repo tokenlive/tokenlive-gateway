@@ -779,6 +779,8 @@ func registerEndpointsFromResolvedEndpoints(sd *core.StaticDiscovery, resolved m
 				OutputPrice:        re.OutputPrice,
 				CachedPrice:        re.CachedPrice,
 				CacheCreationPrice: re.CacheCreationPrice,
+				ContextLength:      re.ContextLength,
+				MaxOutputTokens:    re.MaxOutputTokens,
 				Healthy:            true,
 				RequestTypes:       requestTypes,
 			}
@@ -841,6 +843,8 @@ func (a *dynamicEndpointAdapter) GetEndpoints(ctx context.Context, model string)
 			OutputPrice:        ep.OutputPrice,
 			CachedPrice:        ep.CachedPrice,
 			CacheCreationPrice: ep.CacheCreationPrice,
+			ContextLength:      ep.ContextLength,
+			MaxOutputTokens:    ep.MaxOutputTokens,
 		}
 	}
 	return res

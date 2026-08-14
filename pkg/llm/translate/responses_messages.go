@@ -44,7 +44,7 @@ type MessagesToResponsesResult struct {
 // model is the upstream model name (engine-resolved), not the client alias.
 // Only function tools are converted; built-in tools (web_search etc.) are dropped.
 // Stateless params (store, previous_response_id, include, background) are dropped by design.
-func ResponsesRequestToMessages(rawBody []byte, model string) (ResponsesToMessagesResult, error) {
+func ResponsesRequestToMessages(rawBody []byte, model string, maxOutputTokens ...int) (ResponsesToMessagesResult, error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
 		return ResponsesToMessagesResult{}, fmt.Errorf("parse raw body: %w", err)
@@ -90,7 +90,7 @@ func ResponsesRequestToMessages(rawBody []byte, model string) (ResponsesToMessag
 	}
 
 	// thinking first: tool_choice compatibility depends on it.
-	thinking, maxTokens, thinkWarnings := resolveThinking(payload)
+	thinking, maxTokens, thinkWarnings := resolveThinking(payload, maxOutputTokens...)
 	res.Warnings = append(res.Warnings, thinkWarnings...)
 	if thinking != nil {
 		out["thinking"] = thinking
@@ -144,7 +144,14 @@ func ResponsesRequestToMessages(rawBody []byte, model string) (ResponsesToMessag
 //   - effort without client cap: max_tokens = budget + DefaultMessagesMaxTokens
 //   - effort with client cap: budget clamps to max_tokens-MinThinkingBudget;
 //     if even MinThinkingBudget cannot fit, thinking is disabled entirely.
-func resolveThinking(payload map[string]interface{}) (thinking map[string]interface{}, maxTokens int, warnings []string) {
+func resolveThinking(payload map[string]interface{}, maxOutputTokens ...int) (thinking map[string]interface{}, maxTokens int, warnings []string) {
+	defaultMax := DefaultMessagesMaxTokens
+	limit := 0
+	if len(maxOutputTokens) > 0 && maxOutputTokens[0] > 0 {
+		defaultMax = maxOutputTokens[0]
+		limit = maxOutputTokens[0]
+	}
+
 	effort := ""
 	if r, ok := payload["reasoning"].(map[string]interface{}); ok {
 		effort, _ = r["effort"].(string)
@@ -155,15 +162,25 @@ func resolveThinking(payload map[string]interface{}) (thinking map[string]interf
 
 	if !hasBudget {
 		if hasClientMax && clientMax > 0 {
-			return nil, int(clientMax), nil
+			res := int(clientMax)
+			if limit > 0 && res > limit {
+				res = limit
+			}
+			return nil, res, nil
 		}
-		return nil, DefaultMessagesMaxTokens, nil
+		return nil, defaultMax, nil
 	}
 
 	if !hasClientMax || clientMax <= 0 {
-		maxTokens = budget + DefaultMessagesMaxTokens
+		maxTokens = budget + defaultMax
+		if limit > 0 && maxTokens > limit {
+			maxTokens = limit
+		}
 	} else {
 		maxTokens = int(clientMax)
+		if limit > 0 && maxTokens > limit {
+			maxTokens = limit
+		}
 		if budget > maxTokens-MinThinkingBudget {
 			budget = maxTokens - MinThinkingBudget
 		}

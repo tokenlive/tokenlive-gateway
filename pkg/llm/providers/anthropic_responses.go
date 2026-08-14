@@ -26,7 +26,11 @@ func (i *anthropicResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Pro
 
 	// 1. Protocol translation: Responses -> Anthropic Messages (pure function).
 	// gctx.Model is the engine-resolved upstream model name.
-	req, err := translate.ResponsesRequestToMessages(gctx.RawBody, gctx.Model)
+	var maxOutputTokens int
+	if gctx.SelectedEndpoint != nil {
+		maxOutputTokens = int(gctx.SelectedEndpoint.MaxOutputTokens)
+	}
+	req, err := translate.ResponsesRequestToMessages(gctx.RawBody, gctx.Model, maxOutputTokens)
 	if err != nil {
 		return fmt.Errorf("translate responses request: %w", err)
 	}

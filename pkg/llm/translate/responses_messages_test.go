@@ -495,3 +495,38 @@ func TestMessagesErrorToResponses(t *testing.T) {
 		})
 	}
 }
+
+func TestResponsesRequestToMessages_MaxOutputTokens_DefaultingAndClamping(t *testing.T) {
+	// Case 1: No max_output_tokens -> defaults to passed maxOutputTokens (4096)
+	raw1 := []byte(`{"model":"m","instructions":"hi","input":"hello"}`)
+	res1, err := ResponsesRequestToMessages(raw1, "claude-sonnet-4-20250514", 4096)
+	if err != nil {
+		t.Fatalf("ResponsesRequestToMessages case 1: %v", err)
+	}
+	req1 := toMap(t, res1.Body)
+	if req1["max_tokens"].(float64) != 4096 {
+		t.Errorf("max_tokens = %v, want 4096", req1["max_tokens"])
+	}
+
+	// Case 2: Client sends max_output_tokens: 32000 > maxOutputTokens: 8192 -> clamped to 8192
+	raw2 := []byte(`{"model":"m","instructions":"hi","input":"hello","max_output_tokens":32000}`)
+	res2, err := ResponsesRequestToMessages(raw2, "claude-sonnet-4-20250514", 8192)
+	if err != nil {
+		t.Fatalf("ResponsesRequestToMessages case 2: %v", err)
+	}
+	req2 := toMap(t, res2.Body)
+	if req2["max_tokens"].(float64) != 8192 {
+		t.Errorf("max_tokens = %v, want clamped 8192", req2["max_tokens"])
+	}
+
+	// Case 3: Client sends max_output_tokens: 1000 < maxOutputTokens: 8192 -> keeps 1000
+	raw3 := []byte(`{"model":"m","instructions":"hi","input":"hello","max_output_tokens":1000}`)
+	res3, err := ResponsesRequestToMessages(raw3, "claude-sonnet-4-20250514", 8192)
+	if err != nil {
+		t.Fatalf("ResponsesRequestToMessages case 3: %v", err)
+	}
+	req3 := toMap(t, res3.Body)
+	if req3["max_tokens"].(float64) != 1000 {
+		t.Errorf("max_tokens = %v, want 1000", req3["max_tokens"])
+	}
+}

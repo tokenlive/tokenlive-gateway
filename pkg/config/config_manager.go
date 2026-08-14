@@ -64,6 +64,15 @@ func (m *ConfigManager) OwnerOf(ctx context.Context, model string) string {
 	return eps[0].ProviderName
 }
 
+// ModelCapacityOf returns context_length and max_output_tokens for a model, or (0, 0) if not configured.
+func (m *ConfigManager) ModelCapacityOf(ctx context.Context, model string) (int64, int64) {
+	eps := m.GetEndpoints(ctx, model)
+	if len(eps) == 0 {
+		return 0, 0
+	}
+	return eps[0].ContextLength, eps[0].MaxOutputTokens
+}
+
 func (m *ConfigManager) GetFallbacks() map[string][]string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

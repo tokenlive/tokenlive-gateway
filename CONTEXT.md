@@ -5,7 +5,7 @@ LLM API 网关，提供统一的 OpenAI 兼容接口，将请求路由到多个�
 ## Language
 
 **Model**:
-用户请求的 LLM 模型，客户端用 `model_name` 标识。Model 是路由的一等入口（类似微服务的服务角色），通过 `requestTypes`（能力列表）声明自己支持的多项能力类型（如 `chat_completion`、`embedding`）。每个 Model 持有一组 Endpoint，表达"这个模型可以通过哪些端点被服务"。
+用户请求的 LLM 模型，客户端用 `model_name` 标识。Model 是路由的一等入口（类似微服务的服务角色），通过 `requestTypes`（能力列表）声明自己支持的多项能力类型（如 `chat_completion`、`embedding`），并定义默认的物理容量上限（`context_length` 最大上下文窗口与 `max_output_tokens` 最大输出 Token）。每个 Model 持有一组 Endpoint，表达"这个模型可以通过哪些端点被服务"。
 _Avoid_: litellm_model, upstream_model
 
 **Provider**:
@@ -13,7 +13,7 @@ _Avoid_: litellm_model, upstream_model
 _Avoid_: source, vendor, supplier
 
 **Endpoint**:
-路由的最小单元，每个 Endpoint 自描述完整的路由信息：关联的 Model、Provider、上游 URL、real_model、priority、weight。Endpoint 是 Model 和 Provider 的关联点，取代原 ModelProvider 的职责。Admin 将已合并的 Endpoint 数据写入 Redis，Gateway 按 Model 维度读取。
+路由的最小单元，每个 Endpoint 自描述完整的路由信息：关联的 Model、Provider、上游 URL、real_model、priority、weight、context_length、max_output_tokens。Endpoint 是 Model 和 Provider 的关联点，取代原 ModelProvider 的职责。Admin 将已合并的 Endpoint 数据写入 Redis，Gateway 按 Model 维度读取。
 _Avoid_: model_provider, binding
 
 **ModelProvider** _(已废弃)_:

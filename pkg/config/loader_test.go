@@ -253,3 +253,38 @@ func TestLoad_WithPipelines(t *testing.T) {
 	assert.Equal(t, 150, p.Invoker.Retry.BaseMs)
 	assert.Equal(t, []string{"502", "504"}, p.Invoker.Retry.ErrorCodes)
 }
+
+func TestResolve_CapacityInheritance(t *testing.T) {
+	v := viper.New()
+	v.Set("models.test-model.context_length", 128000)
+	v.Set("models.test-model.max_output_tokens", 8192)
+	v.Set("models.test-model.request_types", []string{"chat_completion"})
+	v.Set("models.test-model.endpoints", []map[string]interface{}{
+		{
+			"provider": "openai-official",
+			"url":      "https://api.openai.com/v1",
+		},
+		{
+			"provider":          "openai-official",
+			"url":               "https://api.openai.com/v1",
+			"context_length":    32768,
+			"max_output_tokens": 4096,
+		},
+	})
+	v.Set("providers.openai-official.protocol", "openai")
+
+	cfg, err := Load(v)
+	require.NoError(t, err)
+
+	resolved := Resolve(cfg)
+	eps := resolved["test-model"]
+	require.Len(t, eps, 2)
+
+	// Endpoint 0 inherits Model capacity
+	assert.EqualValues(t, 128000, eps[0].ContextLength)
+	assert.EqualValues(t, 8192, eps[0].MaxOutputTokens)
+
+	// Endpoint 1 overrides Model capacity
+	assert.EqualValues(t, 32768, eps[1].ContextLength)
+	assert.EqualValues(t, 4096, eps[1].MaxOutputTokens)
+}

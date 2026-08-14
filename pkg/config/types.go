@@ -9,8 +9,10 @@ import (
 
 // ModelConfig is a model-centric model definition.
 type ModelConfig struct {
-	RequestTypes []string         `mapstructure:"request_types" yaml:"request_types" json:"request_types"` // Optional API list
-	Endpoints    []EndpointConfig `mapstructure:"endpoints" yaml:"endpoints" json:"endpoints"`         // Endpoints for this model
+	RequestTypes    []string         `mapstructure:"request_types" yaml:"request_types" json:"request_types"` // Optional API list
+	ContextLength   int64            `mapstructure:"context_length" yaml:"context_length" json:"context_length,omitempty"`
+	MaxOutputTokens int64            `mapstructure:"max_output_tokens" yaml:"max_output_tokens" json:"max_output_tokens,omitempty"`
+	Endpoints       []EndpointConfig `mapstructure:"endpoints" yaml:"endpoints" json:"endpoints"`         // Endpoints for this model
 }
 
 // ProviderConfig is provider infrastructure (no endpoints).
@@ -23,19 +25,21 @@ type ProviderConfig struct {
 
 // EndpointConfig is under a model and references a provider.
 type EndpointConfig struct {
-	ID        string            `mapstructure:"id" yaml:"id" json:"id,omitempty"`                             // Optional unique endpoint ID
-	Code      string            `mapstructure:"code" yaml:"code" json:"code,omitempty"`                         // Optional business code
-	Provider  string            `mapstructure:"provider" yaml:"provider" json:"provider"`                 // Provider name (required)
-	URL       string            `mapstructure:"url" yaml:"url" json:"url"`                           // Upstream URL (required)
-	RealModel string            `mapstructure:"real_model" yaml:"real_model" json:"real_model,omitempty"`             // Optional override of model real_model
-	APIKey    string            `mapstructure:"api_key" yaml:"api_key" json:"api_key,omitempty"`                   // Optional override of provider api_key
-	AuthType  string            `mapstructure:"auth_type" yaml:"auth_type" json:"auth_type,omitempty"`             // Auth type
-	Protocol  string            `mapstructure:"protocol" yaml:"protocol" json:"protocol,omitempty"`                 // Optional override of provider protocol
-	Timeout   time.Duration     `mapstructure:"timeout" yaml:"timeout" json:"timeout,omitempty"`                   // Optional override of provider timeout
-	Priority  int               `mapstructure:"priority" yaml:"priority" json:"priority"`                 // Failover priority (lower first)
-	Weight    int               `mapstructure:"weight" yaml:"weight" json:"weight"`                     // LB weight within same priority
-	Headers   map[string]string `mapstructure:"headers" yaml:"headers" json:"headers,omitempty"`                   // Custom headers
-	Metadata  map[string]string `mapstructure:"metadata" yaml:"metadata" json:"metadata,omitempty"` // Metadata
+	ID              string            `mapstructure:"id" yaml:"id" json:"id,omitempty"`                             // Optional unique endpoint ID
+	Code            string            `mapstructure:"code" yaml:"code" json:"code,omitempty"`                         // Optional business code
+	Provider        string            `mapstructure:"provider" yaml:"provider" json:"provider"`                 // Provider name (required)
+	URL             string            `mapstructure:"url" yaml:"url" json:"url"`                           // Upstream URL (required)
+	RealModel       string            `mapstructure:"real_model" yaml:"real_model" json:"real_model,omitempty"`             // Optional override of model real_model
+	APIKey          string            `mapstructure:"api_key" yaml:"api_key" json:"api_key,omitempty"`                   // Optional override of provider api_key
+	AuthType        string            `mapstructure:"auth_type" yaml:"auth_type" json:"auth_type,omitempty"`             // Auth type
+	Protocol        string            `mapstructure:"protocol" yaml:"protocol" json:"protocol,omitempty"`                 // Optional override of provider protocol
+	Timeout         time.Duration     `mapstructure:"timeout" yaml:"timeout" json:"timeout,omitempty"`                   // Optional override of provider timeout
+	Priority        int               `mapstructure:"priority" yaml:"priority" json:"priority"`                 // Failover priority (lower first)
+	Weight          int               `mapstructure:"weight" yaml:"weight" json:"weight"`                     // LB weight within same priority
+	Headers         map[string]string `mapstructure:"headers" yaml:"headers" json:"headers,omitempty"`                   // Custom headers
+	Metadata        map[string]string `mapstructure:"metadata" yaml:"metadata" json:"metadata,omitempty"` // Metadata
+	ContextLength   int64             `mapstructure:"context_length" yaml:"context_length" json:"context_length,omitempty"`
+	MaxOutputTokens int64             `mapstructure:"max_output_tokens" yaml:"max_output_tokens" json:"max_output_tokens,omitempty"`
 }
 
 // GatewayConfig is model-centric two-layer gateway config.
@@ -65,6 +69,8 @@ type ResolvedEndpoint struct {
 	Headers            map[string]string `json:"headers,omitempty"`
 	Metadata           map[string]string `json:"metadata,omitempty"`
 	RequestTypes       []string          `mapstructure:"request_types" json:"request_types,omitempty"`
+	ContextLength      int64             `mapstructure:"context_length" json:"context_length,omitempty"`
+	MaxOutputTokens    int64             `mapstructure:"max_output_tokens" json:"max_output_tokens,omitempty"`
 	InputPrice         *float64          `json:"input_price,omitempty"`
 	OutputPrice        *float64          `json:"output_price,omitempty"`
 	CachedPrice        *float64          `json:"cached_price,omitempty"`

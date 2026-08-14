@@ -20,6 +20,7 @@ type modelLister interface {
 // modelOwner 抽象 model→provider 归属解析与所有已知模型查询，用于测试注入。
 type modelOwner interface {
 	OwnerOf(ctx context.Context, model string) string
+	ModelCapacityOf(ctx context.Context, model string) (int64, int64)
 	AllKnownModels() map[string]bool
 }
 
@@ -59,29 +60,33 @@ func NewLLMHandler(
 // 因为 engine == nil。生产 HTTP 路由请使用 NewLLMHandler。
 func NewLLMHandlerWithDeps(modelService modelLister, configManager modelOwner, aliasService aliasQuerier) *LLMHandler {
 	return &LLMHandler{
-		engine:        nil,
 		modelService:  modelService,
 		configManager: configManager,
 		aliasService:  aliasService,
 	}
 }
 
-// ChatCompletion 处理聊天完成请求
+// ChatCompletion 处理聊天补全请求
 func (h *LLMHandler) ChatCompletion(c *gin.Context) {
 	h.engine.HandleRequest(c.Writer, c.Request)
 }
 
-// CreateEmbedding 处理嵌入请求
+// CreateEmbedding 处理向量生成请求
 func (h *LLMHandler) CreateEmbedding(c *gin.Context) {
 	h.engine.HandleRequest(c.Writer, c.Request)
 }
 
-// Messages 处理 Anthropic 原生 Messages 协议请求
+// CreateImage 处理图像生成请求
+func (h *LLMHandler) CreateImage(c *gin.Context) {
+	h.engine.HandleRequest(c.Writer, c.Request)
+}
+
+// Messages 处理 Anthropic Messages 协议请求
 func (h *LLMHandler) Messages(c *gin.Context) {
 	h.engine.HandleRequest(c.Writer, c.Request)
 }
 
-// Responses 处理 responses 协议请求
+// Responses 处理 OpenAI Responses 协议请求
 func (h *LLMHandler) Responses(c *gin.Context) {
 	if strings.ToLower(c.GetHeader("Upgrade")) == "websocket" {
 		h.engine.HandleWebSocketRequest(c.Writer, c.Request)
@@ -140,24 +145,29 @@ func (h *LLMHandler) ListModels(c *gin.Context) {
 		if owner == "" {
 			owner = "github.com/tokenlive/tokenlive-gateway"
 		}
+		contextLength, maxOutputTokens := h.configManager.ModelCapacityOf(ctx, id)
 
 		// 添加主模型
 		data = append(data, gin.H{
-			"id":       id,
-			"object":   "model",
-			"created":  0,
-			"owned_by": owner,
+			"id":                id,
+			"object":            "model",
+			"created":           0,
+			"owned_by":          owner,
+			"context_length":    contextLength,
+			"max_output_tokens": maxOutputTokens,
 		})
 
-		// 查询并添加别名作为独立模型
+		// 查询并添加别名作为独立模型（继承主模型容量）
 		if h.aliasService != nil {
 			if aliases, err := h.aliasService.GetAliases(ctx, id); err == nil {
 				for _, alias := range aliases {
 					data = append(data, gin.H{
-						"id":       alias,
-						"object":   "model",
-						"created":  0,
-						"owned_by": owner,
+						"id":                alias,
+						"object":            "model",
+						"created":           0,
+						"owned_by":          owner,
+						"context_length":    contextLength,
+						"max_output_tokens": maxOutputTokens,
 					})
 				}
 			}
