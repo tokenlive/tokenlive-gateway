@@ -257,6 +257,74 @@ func TestOpenAIResponses_Translation_Stream(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponses_Translation_Stream_ReasoningSeparation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		chunks := []string{
+			`data: {"id":"chatcmpl-reason-stream","model":"gpt-5.4","choices":[{"index":0,"delta":{"reasoning_content":"thinking"},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-reason-stream","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-reason-stream","model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			_, _ = w.Write([]byte(chunk + "\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	ep := &core.Endpoint{
+		ID:           "ep-reason-stream",
+		Provider:     "openai",
+		Model:        "gpt-5.4",
+		RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
+	}
+	p := NewOpenAIProvider("test-openai", server.URL, "test-key", []string{"gpt-5.4"})
+
+	reqBody := `{"model":"gpt-5.4","input":"hello","stream":true}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "gpt-5.4"
+	gctx.IsStream = true
+	gctx.SelectedEndpoint = ep
+
+	invoker := &openaiResponsesInvoker{}
+	if err := invoker.Invoke(gctx, p); err != nil {
+		t.Fatal(err)
+	}
+
+	respBody := w.Body.String()
+	expected := []string{
+		`event: response.reasoning_summary_part.added`,
+		`event: response.reasoning_summary_text.delta`,
+		`"delta":"thinking"`,
+		`event: response.reasoning_summary_text.done`,
+		`"text":"thinking"`,
+		`event: response.reasoning_summary_part.done`,
+	}
+	for _, substr := range expected {
+		if !strings.Contains(respBody, substr) {
+			t.Errorf("missing %q in stream:\n%s", substr, respBody)
+		}
+	}
+	if !strings.Contains(respBody, `"text":"answer"`) {
+		t.Errorf("message output should contain answer text only:\n%s", respBody)
+	}
+	if reasoningIndex := strings.Index(respBody, `"type":"reasoning"`); reasoningIndex < 0 || reasoningIndex > strings.Index(respBody, `"type":"message"`) {
+		t.Errorf("reasoning item should precede message item:\n%s", respBody)
+	}
+	if strings.Contains(respBody, `event: response.output_text.delta`+"\n"+"data: {\"delta\":\"thinking\"") {
+		t.Errorf("reasoning must not be emitted as output text:\n%s", respBody)
+	}
+}
+
 func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 	// 1. 模拟上游只提供 /chat/completions
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -839,8 +907,6 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream(t *testing.T) {
 		}
 	}
 }
-
-
 
 func TestOpenAIResponses_Translation_WithComplexInput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

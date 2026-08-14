@@ -76,6 +76,12 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 				}
 				itemType, _ := itemMap["type"].(string)
 
+				// Reasoning items are Responses protocol state, not conversation
+				// content. Dropping them prevents empty user messages upstream.
+				if itemType == "reasoning" {
+					continue
+				}
+
 				// 1. Function Call item
 				if itemType == "function_call" {
 					callID, _ := itemMap["call_id"].(string)
@@ -109,6 +115,23 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 					if outVal, ok := itemMap["output"]; ok {
 						if str, ok := outVal.(string); ok {
 							outputStr = str
+						} else if blocks, ok := outVal.([]interface{}); ok {
+							var blockText strings.Builder
+							for _, block := range blocks {
+								blockMap, ok := block.(map[string]interface{})
+								if !ok {
+									continue
+								}
+								if text, _ := blockMap["text"].(string); text != "" {
+									blockText.WriteString(text)
+								}
+							}
+							outputStr = blockText.String()
+							if outputStr == "" {
+								if bytes, err := json.Marshal(outVal); err == nil {
+									outputStr = string(bytes)
+								}
+							}
 						} else if bytes, err := json.Marshal(outVal); err == nil {
 							outputStr = string(bytes)
 						}
@@ -181,6 +204,19 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 	delete(payload, "input")
 	delete(payload, "instructions")
 
+	// Responses-only state and formatting parameters are invalid on Chat
+	// Completions. Preserve the reasoning effort in the Chat-native field.
+	if reasoningVal, ok := payload["reasoning"].(map[string]interface{}); ok {
+		if effort, _ := reasoningVal["effort"].(string); effort != "" {
+			if _, exists := payload["reasoning_effort"]; !exists {
+				payload["reasoning_effort"] = effort
+			}
+		}
+	}
+	for _, key := range []string{"store", "previous_response_id", "include", "background", "truncation", "text", "reasoning"} {
+		delete(payload, key)
+	}
+
 	if maxOutputTokens, ok := payload["max_output_tokens"]; ok {
 		payload["max_completion_tokens"] = maxOutputTokens
 		delete(payload, "max_output_tokens")
@@ -244,9 +280,11 @@ func ChatCompletionToResponses(chatBody []byte, model string) (ChatCompletionToR
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Role      string `json:"role"`
-				Content   string `json:"content"`
-				ToolCalls []struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
+				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Type     string `json:"type"`
 					Function struct {
@@ -291,10 +329,36 @@ func ChatCompletionToResponses(chatBody []byte, model string) (ChatCompletionToR
 
 	if len(oaiResp.Choices) > 0 {
 		choice := oaiResp.Choices[0]
+		reasoningText := choice.Message.ReasoningContent
+		if reasoningText == "" {
+			reasoningText = choice.Message.Reasoning
+		}
+		if reasoningText != "" {
+			reasoningID := oaiResp.ID
+			if strings.HasPrefix(reasoningID, "chatcmpl-") {
+				reasoningID = strings.Replace(reasoningID, "chatcmpl-", "rs_", 1)
+			} else if reasoningID == "" {
+				reasoningID = "rs_mock"
+			} else if !strings.HasPrefix(reasoningID, "rs_") {
+				reasoningID = "rs_" + reasoningID
+			}
+			outputList = append(outputList, map[string]interface{}{
+				"id":     reasoningID,
+				"type":   "reasoning",
+				"status": "completed",
+				"summary": []map[string]interface{}{
+					{
+						"type": "summary_text",
+						"text": reasoningText,
+					},
+				},
+			})
+		}
 		if len(choice.Message.ToolCalls) > 0 {
 			for _, tc := range choice.Message.ToolCalls {
 				outputList = append(outputList, map[string]interface{}{
 					"id":        tc.ID,
+					"call_id":   tc.ID,
 					"type":      "function_call",
 					"status":    "completed",
 					"name":      tc.Function.Name,
@@ -365,77 +429,77 @@ func CorrectNativeResponsesRequest(rawBody []byte) (body []byte, originalToolCou
 	return rawBody, 0, 0, nil, nil
 
 	/*
-	var payload map[string]interface{}
-	if err := json.Unmarshal(rawBody, &payload); err != nil {
-		return nil, 0, 0, nil, fmt.Errorf("parse raw body: %w", err)
-	}
-
-	correctInputForNativeResponses(payload)
-
-	tools, ok := payload["tools"].([]interface{})
-	if !ok {
-		newBody, mErr := json.Marshal(payload)
-		if mErr != nil {
-			return nil, 0, 0, nil, fmt.Errorf("marshal corrected body: %w", mErr)
+		var payload map[string]interface{}
+		if err := json.Unmarshal(rawBody, &payload); err != nil {
+			return nil, 0, 0, nil, fmt.Errorf("parse raw body: %w", err)
 		}
-		return newBody, 0, 0, nil, nil
-	}
 
-	originalToolCount = len(tools)
-	var finalTools []interface{}
-	for _, t := range tools {
-		toolMap, ok := t.(map[string]interface{})
+		correctInputForNativeResponses(payload)
+
+		tools, ok := payload["tools"].([]interface{})
 		if !ok {
-			continue
+			newBody, mErr := json.Marshal(payload)
+			if mErr != nil {
+				return nil, 0, 0, nil, fmt.Errorf("marshal corrected body: %w", mErr)
+			}
+			return newBody, 0, 0, nil, nil
 		}
-		toolType, _ := toolMap["type"].(string)
 
-		if toolType == "namespace" {
-			if subTools, ok := toolMap["tools"].([]interface{}); ok {
-				for _, st := range subTools {
-					subToolMap, ok := st.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					subType, _ := subToolMap["type"].(string)
-					if subType == "namespace" {
-						continue
-					}
+		originalToolCount = len(tools)
+		var finalTools []interface{}
+		for _, t := range tools {
+			toolMap, ok := t.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			toolType, _ := toolMap["type"].(string)
 
-					stdTool := BuildStandardTool(subToolMap)
-					if stdTool != nil {
-						finalTools = append(finalTools, stdTool)
+			if toolType == "namespace" {
+				if subTools, ok := toolMap["tools"].([]interface{}); ok {
+					for _, st := range subTools {
+						subToolMap, ok := st.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						subType, _ := subToolMap["type"].(string)
+						if subType == "namespace" {
+							continue
+						}
+
+						stdTool := BuildStandardTool(subToolMap)
+						if stdTool != nil {
+							finalTools = append(finalTools, stdTool)
+						}
 					}
 				}
+			} else {
+				stdTool := BuildStandardTool(toolMap)
+				if stdTool != nil {
+					finalTools = append(finalTools, stdTool)
+				}
 			}
+		}
+
+		if len(finalTools) > 0 {
+			payload["tools"] = finalTools
 		} else {
-			stdTool := BuildStandardTool(toolMap)
-			if stdTool != nil {
-				finalTools = append(finalTools, stdTool)
+			delete(payload, "tools")
+			delete(payload, "tool_choice")
+		}
+
+		for _, t := range finalTools {
+			if tm, ok := t.(map[string]interface{}); ok {
+				ttype, _ := tm["type"].(string)
+				tname, _ := tm["name"].(string)
+				toolSummary = append(toolSummary, fmt.Sprintf("%s:%s", ttype, tname))
 			}
 		}
-	}
 
-	if len(finalTools) > 0 {
-		payload["tools"] = finalTools
-	} else {
-		delete(payload, "tools")
-		delete(payload, "tool_choice")
-	}
-
-	for _, t := range finalTools {
-		if tm, ok := t.(map[string]interface{}); ok {
-			ttype, _ := tm["type"].(string)
-			tname, _ := tm["name"].(string)
-			toolSummary = append(toolSummary, fmt.Sprintf("%s:%s", ttype, tname))
+		newBody, err := json.Marshal(payload)
+		if err != nil {
+			return nil, originalToolCount, 0, nil, fmt.Errorf("marshal corrected body: %w", err)
 		}
-	}
-
-	newBody, err := json.Marshal(payload)
-	if err != nil {
-		return nil, originalToolCount, 0, nil, fmt.Errorf("marshal corrected body: %w", err)
-	}
-	return newBody, originalToolCount, len(finalTools), toolSummary, nil
+		return newBody, originalToolCount, len(finalTools), toolSummary, nil
 	*/
 }
 

@@ -263,8 +263,6 @@ func writeResponseEvent(w io.Writer, eventType string, data interface{}) error {
 	return err
 }
 
-
-
 func sendPlainResponsesText(gctx *core.GatewayContext, respID string, txt string, msgID string, messageAdded *bool, textOutputIndex *int, currentOutputIndex *int) error {
 	if !*messageAdded {
 		*messageAdded = true
@@ -311,6 +309,49 @@ func sendPlainResponsesText(gctx *core.GatewayContext, respID string, txt string
 	return writeResponseEvent(gctx.ResponseWriter, "response.output_text.delta", evDelta)
 }
 
+func sendResponsesReasoningDelta(gctx *core.GatewayContext, respID, reasoningID, delta string, reasoningAdded *bool, reasoningOutputIndex *int, currentOutputIndex *int) error {
+	if !*reasoningAdded {
+		*reasoningAdded = true
+		*reasoningOutputIndex = *currentOutputIndex
+		*currentOutputIndex++
+
+		err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", map[string]interface{}{
+			"type":         "response.output_item.added",
+			"response_id":  respID,
+			"output_index": *reasoningOutputIndex,
+			"item": map[string]interface{}{
+				"id":      reasoningID,
+				"type":    "reasoning",
+				"summary": []interface{}{},
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		err = writeResponseEvent(gctx.ResponseWriter, "response.reasoning_summary_part.added", map[string]interface{}{
+			"type":          "response.reasoning_summary_part.added",
+			"response_id":   respID,
+			"item_id":       reasoningID,
+			"output_index":  *reasoningOutputIndex,
+			"summary_index": 0,
+			"part":          map[string]interface{}{"type": "summary_text", "text": ""},
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return writeResponseEvent(gctx.ResponseWriter, "response.reasoning_summary_text.delta", map[string]interface{}{
+		"type":          "response.reasoning_summary_text.delta",
+		"response_id":   respID,
+		"item_id":       reasoningID,
+		"output_index":  *reasoningOutputIndex,
+		"summary_index": 0,
+		"delta":         delta,
+	})
+}
+
 func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error {
 	defer resp.Body.Close()
 
@@ -337,6 +378,9 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 	messageAdded := false
 	textOutputIndex := -1
 	currentOutputIndex := 0
+	reasoningAdded := false
+	reasoningOutputIndex := -1
+	var fullReasoning strings.Builder
 
 	type localToolCall struct {
 		ID          string
@@ -507,6 +551,15 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 					msgID = "msg_" + msgID
 				}
 
+				reasoningID := lastResponseID
+				if strings.HasPrefix(reasoningID, "chatcmpl-") {
+					reasoningID = strings.Replace(reasoningID, "chatcmpl-", "rs_", 1)
+				} else if reasoningID == "" {
+					reasoningID = "rs_mock"
+				} else if !strings.HasPrefix(reasoningID, "rs_") {
+					reasoningID = "rs_" + reasoningID
+				}
+
 				modelName := lastModelName
 				if modelName == "" {
 					modelName = gctx.Model
@@ -542,8 +595,6 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 						return err
 					}
 
-
-
 					if hasFlusher {
 						flusher.Flush()
 					}
@@ -558,10 +609,10 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 						reasoning = choice.Delta.Reasoning
 					}
 					if reasoning != "" {
-						if err := sendPlainResponsesText(gctx, respID, reasoning, msgID, &messageAdded, &textOutputIndex, &currentOutputIndex); err != nil {
+						if err := sendResponsesReasoningDelta(gctx, respID, reasoningID, reasoning, &reasoningAdded, &reasoningOutputIndex, &currentOutputIndex); err != nil {
 							return err
 						}
-						fullText.WriteString(reasoning)
+						fullReasoning.WriteString(reasoning)
 						gctx.TransmittedChars += len(reasoning)
 					}
 
@@ -678,7 +729,14 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			msgID = "msg_" + msgID
 		}
 
-
+		reasoningID := lastResponseID
+		if strings.HasPrefix(reasoningID, "chatcmpl-") {
+			reasoningID = strings.Replace(reasoningID, "chatcmpl-", "rs_", 1)
+		} else if reasoningID == "" {
+			reasoningID = "rs_mock"
+		} else if !strings.HasPrefix(reasoningID, "rs_") {
+			reasoningID = "rs_" + reasoningID
+		}
 
 		modelName := lastModelName
 		if modelName == "" {
@@ -686,6 +744,60 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 		}
 
 		now := time.Now().Unix()
+
+		// Finalize reasoning item
+		if reasoningAdded {
+			finalReasoning := fullReasoning.String()
+			reasoningDoneItem := map[string]interface{}{
+				"id":     reasoningID,
+				"type":   "reasoning",
+				"status": "completed",
+				"summary": []interface{}{
+					map[string]interface{}{"type": "summary_text", "text": finalReasoning},
+				},
+			}
+			reasoningEvents := []struct {
+				name    string
+				payload map[string]interface{}
+			}{
+				{
+					name: "response.reasoning_summary_text.done",
+					payload: map[string]interface{}{
+						"type":          "response.reasoning_summary_text.done",
+						"response_id":   respID,
+						"item_id":       reasoningID,
+						"output_index":  reasoningOutputIndex,
+						"summary_index": 0,
+						"text":          finalReasoning,
+					},
+				},
+				{
+					name: "response.reasoning_summary_part.done",
+					payload: map[string]interface{}{
+						"type":          "response.reasoning_summary_part.done",
+						"response_id":   respID,
+						"item_id":       reasoningID,
+						"output_index":  reasoningOutputIndex,
+						"summary_index": 0,
+						"part":          map[string]interface{}{"type": "summary_text", "text": finalReasoning},
+					},
+				},
+				{
+					name: "response.output_item.done",
+					payload: map[string]interface{}{
+						"type":         "response.output_item.done",
+						"response_id":  respID,
+						"output_index": reasoningOutputIndex,
+						"item":         reasoningDoneItem,
+					},
+				},
+			}
+			for _, ev := range reasoningEvents {
+				if err := writeResponseEvent(gctx.ResponseWriter, ev.name, ev.payload); err != nil {
+					return err
+				}
+			}
+		}
 
 		// Finalize text message
 		if messageAdded {
@@ -740,6 +852,16 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 
 		// Finalize tool calls
 		var outputs []interface{}
+		if reasoningAdded {
+			outputs = append(outputs, map[string]interface{}{
+				"id":     reasoningID,
+				"type":   "reasoning",
+				"status": "completed",
+				"summary": []interface{}{
+					map[string]interface{}{"type": "summary_text", "text": fullReasoning.String()},
+				},
+			})
+		}
 		outputs = append(outputs, map[string]interface{}{
 			"id":     msgID,
 			"type":   "message",
@@ -839,5 +961,3 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 
 	return nil
 }
-
-

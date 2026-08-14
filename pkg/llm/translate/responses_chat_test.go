@@ -35,6 +35,97 @@ func TestResponsesRequestToChat_Basic(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestToChat_DropsReasoningItems(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-4",
+		"input": [
+			{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "thinking"}]},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}
+		]
+	}`)
+	out, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	msgs, ok := req["messages"].([]interface{})
+	if !ok {
+		t.Fatalf("messages missing: %v", req)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("messages len = %d, want 1: %+v", len(msgs), msgs)
+	}
+	msg, _ := msgs[0].(map[string]interface{})
+	if msg["role"] != "user" || msg["content"] != "hello" {
+		t.Errorf("message = %v", msg)
+	}
+}
+
+func TestResponsesRequestToChat_StripsResponsesOnlyParams(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-4",
+		"input": "hello",
+		"store": false,
+		"previous_response_id": "resp_1",
+		"include": ["reasoning.encrypted_content"],
+		"background": true,
+		"truncation": "auto",
+		"text": {"format": {"type": "text"}},
+		"reasoning": {"effort": "medium"}
+	}`)
+	out, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"store", "previous_response_id", "include", "background", "truncation", "text", "reasoning"} {
+		if _, exists := req[key]; exists {
+			t.Errorf("responses-only param %q leaked to chat request", key)
+		}
+	}
+	if req["reasoning_effort"] != "medium" {
+		t.Errorf("reasoning_effort = %v, want medium", req["reasoning_effort"])
+	}
+}
+
+func TestResponsesRequestToChat_FunctionCallOutputArray(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-4",
+		"input": [
+			{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": [
+				{"type": "output_text", "text": "result text"}
+			]},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+		]
+	}`)
+	out, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := req["messages"].([]interface{})
+	if len(msgs) != 3 {
+		t.Fatalf("messages len = %d, want 3: %+v", len(msgs), msgs)
+	}
+	toolMsg, _ := msgs[1].(map[string]interface{})
+	if toolMsg["role"] != "tool" || toolMsg["tool_call_id"] != "call_1" {
+		t.Fatalf("tool message = %v", toolMsg)
+	}
+	if toolMsg["content"] != "result text" {
+		t.Errorf("tool content = %v, want extracted result text", toolMsg["content"])
+	}
+}
+
 func TestChatCompletionToResponses_Text(t *testing.T) {
 	chat := []byte(`{
 		"id": "chatcmpl-abc",
@@ -95,8 +186,52 @@ func TestChatCompletionToResponses_Tools(t *testing.T) {
 		t.Fatalf("output len = %d", len(out))
 	}
 	item := out[0].(map[string]interface{})
-	if item["type"] != "function_call" || item["name"] != "fn" {
+	if item["type"] != "function_call" || item["name"] != "fn" || item["call_id"] != "call_1" {
 		t.Errorf("item = %v", item)
+	}
+}
+
+func TestChatCompletionToResponses_Reasoning(t *testing.T) {
+	chat := []byte(`{
+		"id": "chatcmpl-reason",
+		"model": "gpt-4",
+		"choices": [{
+			"message": {
+				"role": "assistant",
+				"content": "answer",
+				"reasoning_content": "thinking"
+			},
+			"finish_reason": "stop"
+		}],
+		"usage": {"prompt_tokens": 1, "completion_tokens": 1}
+	}`)
+	res, err := ChatCompletionToResponses(chat, "gpt-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(res.Body, &resp); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := resp["output"].([]interface{})
+	if len(out) != 2 {
+		t.Fatalf("output len = %d, want 2: %+v", len(out), out)
+	}
+	reasoning, _ := out[0].(map[string]interface{})
+	if reasoning["type"] != "reasoning" {
+		t.Fatalf("first output type = %v, want reasoning", reasoning["type"])
+	}
+	summary, _ := reasoning["summary"].([]interface{})
+	if len(summary) != 1 {
+		t.Fatalf("summary len = %d", len(summary))
+	}
+	summaryPart, _ := summary[0].(map[string]interface{})
+	if summaryPart["type"] != "summary_text" || summaryPart["text"] != "thinking" {
+		t.Errorf("summary part = %v", summaryPart)
+	}
+	message, _ := out[1].(map[string]interface{})
+	if message["type"] != "message" {
+		t.Fatalf("second output type = %v, want message", message["type"])
 	}
 }
 
@@ -205,7 +340,6 @@ func TestCleanJSONSchema_RequiredNull(t *testing.T) {
 		t.Errorf("encoded JSON contains required:null: %s", string(encoded))
 	}
 }
-
 
 func TestCleanJSONSchema_RequiredEmptyArray(t *testing.T) {
 	schema := map[string]interface{}{
