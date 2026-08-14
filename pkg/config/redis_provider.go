@@ -46,6 +46,7 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 		tenantHMGetCmd   *redis.SliceCmd
 		tenantHGetAllCmd *redis.MapStringStringCmd
 		modelHMGetCmd    *redis.SliceCmd
+		globalHMGetCmd   *redis.SliceCmd
 	)
 
 	// User policies (levels 5 & 2).
@@ -73,6 +74,14 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 	if modelCode != "" {
 		modelHashKey := "aigw:policies:model:" + modelCode
 		modelHMGetCmd = pipe.HMGet(ctx, modelHashKey, "*", "*:billing")
+	}
+
+	// Global policies (level 0).
+	globalHashKey := "aigw:policies:global"
+	if modelCode != "" && modelCode != "*" {
+		globalHMGetCmd = pipe.HMGet(ctx, globalHashKey, modelCode, modelCode+":billing", "*", "*:billing")
+	} else {
+		globalHMGetCmd = pipe.HMGet(ctx, globalHashKey, "*", "*:billing")
 	}
 
 	// Ignore pipeline Exec error; check per-command errors below.
@@ -305,6 +314,91 @@ func (p *RedisGatewayProvider) GetPolicies(ctx context.Context, modelCode, userI
 					Model: "*",
 					Value: modelPolicy,
 				})
+			}
+		}
+	}
+
+	// Parse global policies.
+	if globalHMGetCmd != nil {
+		if vals, err := globalHMGetCmd.Result(); err == nil && len(vals) >= 2 {
+			var globalPolicy *policy.Policy
+			var globalDefaultPolicy *policy.Policy
+
+			if len(vals) == 4 {
+				if vals[0] != nil {
+					if valStr, ok := vals[0].(string); ok && valStr != "" {
+						_ = json.Unmarshal([]byte(valStr), &globalPolicy)
+					}
+				}
+				var modelBilling *policy.BillingPolicy
+				if vals[1] != nil {
+					if valStr, ok := vals[1].(string); ok && valStr != "" {
+						_ = json.Unmarshal([]byte(valStr), &modelBilling)
+					}
+				}
+				if modelBilling != nil {
+					if globalPolicy == nil {
+						globalPolicy = &policy.Policy{}
+					}
+					globalPolicy.Billing = modelBilling
+				}
+				if globalPolicy != nil {
+					items = append(items, HTTPPolicyItem{
+						Scope: "global",
+						Model: modelCode,
+						Value: globalPolicy,
+					})
+				}
+
+				if vals[2] != nil {
+					if valStr, ok := vals[2].(string); ok && valStr != "" {
+						_ = json.Unmarshal([]byte(valStr), &globalDefaultPolicy)
+					}
+				}
+				var defaultBilling *policy.BillingPolicy
+				if vals[3] != nil {
+					if valStr, ok := vals[3].(string); ok && valStr != "" {
+						_ = json.Unmarshal([]byte(valStr), &defaultBilling)
+					}
+				}
+				if defaultBilling != nil {
+					if globalDefaultPolicy == nil {
+						globalDefaultPolicy = &policy.Policy{}
+					}
+					globalDefaultPolicy.Billing = defaultBilling
+				}
+				if globalDefaultPolicy != nil {
+					items = append(items, HTTPPolicyItem{
+						Scope: "global",
+						Model: "*",
+						Value: globalDefaultPolicy,
+					})
+				}
+			} else if len(vals) == 2 {
+				if vals[0] != nil {
+					if valStr, ok := vals[0].(string); ok && valStr != "" {
+						_ = json.Unmarshal([]byte(valStr), &globalDefaultPolicy)
+					}
+				}
+				var defaultBilling *policy.BillingPolicy
+				if vals[1] != nil {
+					if valStr, ok := vals[1].(string); ok && valStr != "" {
+						_ = json.Unmarshal([]byte(valStr), &defaultBilling)
+					}
+				}
+				if defaultBilling != nil {
+					if globalDefaultPolicy == nil {
+						globalDefaultPolicy = &policy.Policy{}
+					}
+					globalDefaultPolicy.Billing = defaultBilling
+				}
+				if globalDefaultPolicy != nil {
+					items = append(items, HTTPPolicyItem{
+						Scope: "global",
+						Model: "*",
+						Value: globalDefaultPolicy,
+					})
+				}
 			}
 		}
 	}

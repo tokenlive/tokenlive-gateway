@@ -87,7 +87,7 @@ func (s *PolicyService) GetPolicy(ctx context.Context, tenantCode, userID, model
 			p4 = item.Value
 		case tenantCode != "" && item.Scope == "tenant:"+tenantCode && item.Model == "*":
 			p1 = item.Value
-		case item.Scope == "model:"+model && item.Model == "*":
+		case (item.Scope == "model:"+model && item.Model == "*") || (item.Scope == "global" && item.Model == model):
 			p3 = item.Value
 		case item.Scope == "global" && item.Model == "*":
 			p0 = item.Value
