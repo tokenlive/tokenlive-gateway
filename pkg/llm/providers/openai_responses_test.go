@@ -325,6 +325,51 @@ func TestOpenAIResponses_Translation_Stream_ReasoningSeparation(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponses_Translation_Stream_NamespaceToolCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		chunks := []string{
+			`data: {"id":"chatcmpl-ns-stream","model":"glm-5.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ns","type":"function","function":{"name":"collaboration.spawn_agent","arguments":"{}"}}]},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-ns-stream","model":"glm-5.3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			_, _ = w.Write([]byte(chunk + "\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	ep := &core.Endpoint{RequestTypes: []core.RequestType{core.RequestTypeChatCompletion}}
+	p := NewOpenAIProvider("test-openai", server.URL, "test-key", []string{"glm-5.3"})
+	reqBody := `{"model":"glm-5.3","input":"spawn a task","stream":true}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "glm-5.3"
+	gctx.IsStream = true
+	gctx.SelectedEndpoint = ep
+
+	if err := (&openaiResponsesInvoker{}).Invoke(gctx, p); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+	for _, expected := range []string{
+		`"name":"spawn_agent"`,
+		`"namespace":"collaboration"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("missing %q in stream:\n%s", expected, body)
+		}
+	}
+}
+
 func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 	// 1. 模拟上游只提供 /chat/completions
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -367,7 +412,7 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 			t.Fatalf("expected tools length 3, got %v", req["tools"])
 		}
 
-		// 收集解析后的工具名称，验证是否只保留了 js, apply_patch 和 view_image，并且均为标准嵌套格式
+		// 收集解析后的工具名称，验证 namespace 工具会保留可逆限定名。
 		toolNames := make(map[string]bool)
 		for _, tVal := range tools {
 			toolMap, ok := tVal.(map[string]interface{})
@@ -384,8 +429,8 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 			toolNames[fnMap["name"].(string)] = true
 		}
 
-		if !toolNames["js"] {
-			t.Error("expected tool 'js' to be present")
+		if !toolNames["mcp__node_repl.js"] {
+			t.Error("expected tool 'mcp__node_repl.js' to be present")
 		}
 		if !toolNames["apply_patch"] {
 			t.Error("expected tool 'apply_patch' to be present")

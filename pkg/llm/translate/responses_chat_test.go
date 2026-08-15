@@ -94,6 +94,56 @@ func TestResponsesRequestToChat_StripsResponsesOnlyParams(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestToChat_PreservesNamespacedTools(t *testing.T) {
+	raw := []byte(`{
+		"model": "glm-5.3",
+		"input": [
+			{"type": "function_call", "call_id": "call_ns", "namespace": "collaboration", "name": "spawn_agent", "arguments": "{}"},
+			{"type": "function_call_output", "call_id": "call_ns", "output": "ok"},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+		],
+		"tools": [{
+			"name": "collaboration",
+			"type": "namespace",
+			"tools": [{
+				"type": "function",
+				"name": "spawn_agent",
+				"parameters": {"type": "object"}
+			}]
+		}]
+	}`)
+	out, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+
+	tools, _ := req["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(tools))
+	}
+	tool, _ := tools[0].(map[string]interface{})
+	fn, _ := tool["function"].(map[string]interface{})
+	if fn["name"] != "collaboration.spawn_agent" {
+		t.Fatalf("tool name = %v, want collaboration.spawn_agent", fn["name"])
+	}
+
+	msgs, _ := req["messages"].([]interface{})
+	if len(msgs) != 3 {
+		t.Fatalf("messages len = %d, want 3", len(msgs))
+	}
+	assistant, _ := msgs[0].(map[string]interface{})
+	calls, _ := assistant["tool_calls"].([]interface{})
+	call, _ := calls[0].(map[string]interface{})
+	callFn, _ := call["function"].(map[string]interface{})
+	if callFn["name"] != "collaboration.spawn_agent" {
+		t.Fatalf("history call name = %v", callFn["name"])
+	}
+}
+
 func TestResponsesRequestToChat_FunctionCallOutputArray(t *testing.T) {
 	raw := []byte(`{
 		"model": "gpt-4",
@@ -188,6 +238,37 @@ func TestChatCompletionToResponses_Tools(t *testing.T) {
 	item := out[0].(map[string]interface{})
 	if item["type"] != "function_call" || item["name"] != "fn" || item["call_id"] != "call_1" {
 		t.Errorf("item = %v", item)
+	}
+}
+
+func TestChatCompletionToResponses_NamespacedTool(t *testing.T) {
+	chat := []byte(`{
+		"id": "chatcmpl-ns",
+		"choices": [{
+			"message": {
+				"role": "assistant",
+				"content": "",
+				"tool_calls": [{
+					"id": "call_ns",
+					"type": "function",
+					"function": {"name": "collaboration.spawn_agent", "arguments": "{}"}
+				}]
+			},
+			"finish_reason": "tool_calls"
+		}]
+	}`)
+	res, err := ChatCompletionToResponses(chat, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(res.Body, &resp); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := resp["output"].([]interface{})
+	item, _ := out[0].(map[string]interface{})
+	if item["name"] != "spawn_agent" || item["namespace"] != "collaboration" {
+		t.Fatalf("item = %v", item)
 	}
 }
 

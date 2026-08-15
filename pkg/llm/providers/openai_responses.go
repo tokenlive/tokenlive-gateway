@@ -219,6 +219,7 @@ type responseOutputItemAddedFunctionCallEvent struct {
 		Status    string `json:"status"`
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
+		Namespace string `json:"namespace,omitempty"`
 	} `json:"item"`
 }
 
@@ -251,6 +252,7 @@ type responseOutputItemDoneFunctionCallEvent struct {
 		Status    string `json:"status"`
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
+		Namespace string `json:"namespace,omitempty"`
 	} `json:"item"`
 }
 
@@ -352,6 +354,20 @@ func sendResponsesReasoningDelta(gctx *core.GatewayContext, respID, reasoningID,
 	})
 }
 
+func splitChatToolNamespace(name string) string {
+	if idx := strings.LastIndex(name, "."); idx > 0 && idx < len(name)-1 {
+		return name[:idx]
+	}
+	return ""
+}
+
+func chatToolLocalName(name string) string {
+	if idx := strings.LastIndex(name, "."); idx > 0 && idx < len(name)-1 {
+		return name[idx+1:]
+	}
+	return name
+}
+
 func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error {
 	defer resp.Body.Close()
 
@@ -385,6 +401,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 	type localToolCall struct {
 		ID          string
 		Name        string
+		Namespace   string
 		Arguments   strings.Builder
 		OutputIndex int
 		Added       bool
@@ -645,6 +662,12 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 							if tc.Function.Name != "" && localTC.Name == "" {
 								localTC.Name = tc.Function.Name
 							}
+							if localTC.Namespace == "" {
+								localTC.Namespace = splitChatToolNamespace(localTC.Name)
+							}
+							if localTC.Namespace != "" {
+								localTC.Name = chatToolLocalName(localTC.Name)
+							}
 
 							// Once we have a tool name and haven't sent the added event yet, send it immediately
 							if localTC.Name != "" && !localTC.Added {
@@ -658,6 +681,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 								evTCAdded.Item.Type = "function_call"
 								evTCAdded.Item.Status = "in_progress"
 								evTCAdded.Item.Name = localTC.Name
+								evTCAdded.Item.Namespace = localTC.Namespace
 								evTCAdded.Item.Arguments = ""
 								if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", evTCAdded); err != nil {
 									return err
@@ -909,6 +933,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			evTCItemDone.Item.Type = "function_call"
 			evTCItemDone.Item.Status = "completed"
 			evTCItemDone.Item.Name = tc.Name
+			evTCItemDone.Item.Namespace = tc.Namespace
 			evTCItemDone.Item.Arguments = finalArgs
 			if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.done", evTCItemDone); err != nil {
 				return err
@@ -920,6 +945,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 				"type":      "function_call",
 				"status":    "completed",
 				"name":      tc.Name,
+				"namespace": tc.Namespace,
 				"arguments": finalArgs,
 			})
 		}

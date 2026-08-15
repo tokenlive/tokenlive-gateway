@@ -94,6 +94,9 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 					}
 					name, _ := itemMap["name"].(string)
 					args, _ := itemMap["arguments"].(string)
+					if ns, _ := itemMap["namespace"].(string); ns != "" {
+						name = ns + "." + name
+					}
 					pendingToolCalls = append(pendingToolCalls, map[string]interface{}{
 						"id":   callID,
 						"type": "function",
@@ -240,6 +243,9 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 						}
 						stdTool := BuildStandardTool(subToolMap)
 						if stdTool != nil && stdTool["type"] == "function" {
+							if ns, _ := toolMap["name"].(string); ns != "" {
+								stdTool["namespace"] = ns
+							}
 							finalTools = append(finalTools, WrapFlatToolToNestedOpenAI(stdTool))
 						}
 					}
@@ -356,12 +362,16 @@ func ChatCompletionToResponses(chatBody []byte, model string) (ChatCompletionToR
 		}
 		if len(choice.Message.ToolCalls) > 0 {
 			for _, tc := range choice.Message.ToolCalls {
+				toolName := tc.Function.Name
+				toolNamespace := splitChatToolNamespace(toolName)
+				toolName = chatToolLocalName(toolName)
 				outputList = append(outputList, map[string]interface{}{
 					"id":        tc.ID,
 					"call_id":   tc.ID,
 					"type":      "function_call",
 					"status":    "completed",
-					"name":      tc.Function.Name,
+					"name":      toolName,
+					"namespace": toolNamespace,
 					"arguments": tc.Function.Arguments,
 				})
 			}
@@ -584,6 +594,22 @@ func BuildStandardTool(toolMap map[string]interface{}) map[string]interface{} {
 	return flatTool
 }
 
+// splitChatToolNamespace extracts the original Responses namespace from a
+// Chat Completions function name. Empty means the default functions namespace.
+func splitChatToolNamespace(name string) string {
+	if idx := strings.LastIndex(name, "."); idx > 0 && idx < len(name)-1 {
+		return name[:idx]
+	}
+	return ""
+}
+
+func chatToolLocalName(name string) string {
+	if idx := strings.LastIndex(name, "."); idx > 0 && idx < len(name)-1 {
+		return name[idx+1:]
+	}
+	return name
+}
+
 // WrapFlatToolToNestedOpenAI wraps a flat function tool as nested OpenAI Chat form.
 func WrapFlatToolToNestedOpenAI(flatTool map[string]interface{}) map[string]interface{} {
 	toolType, _ := flatTool["type"].(string)
@@ -596,6 +622,12 @@ func WrapFlatToolToNestedOpenAI(flatTool map[string]interface{}) map[string]inte
 		if k != "type" {
 			innerMap[k] = v
 		}
+	}
+	if ns, ok := innerMap["namespace"].(string); ok && ns != "" {
+		if name, _ := innerMap["name"].(string); name != "" {
+			innerMap["name"] = ns + "." + name
+		}
+		delete(innerMap, "namespace")
 	}
 
 	return map[string]interface{}{
