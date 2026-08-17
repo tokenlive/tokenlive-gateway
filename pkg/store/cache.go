@@ -51,3 +51,8 @@ func (c *ExpirableCache[K, V]) Remove(key K) {
 	c.validCache.Remove(key)
 	c.invalidCache.Remove(key)
 }
+
+func (c *ExpirableCache[K, V]) Purge() {
+	c.validCache.Purge()
+	c.invalidCache.Purge()
+}

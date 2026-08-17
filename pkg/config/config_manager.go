@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
@@ -11,14 +12,22 @@ type ConfigManager struct {
 	mu            sync.RWMutex
 	yamlEndpoints map[string][]ResolvedEndpoint
 	fallbacks     map[string][]string
+	aliases       map[string]string
 	redisSrc      *RedisConfigSource
 	logger        *zap.Logger
 }
 
 func NewConfigManager(yamlCfg *GatewayConfig, redisSrc *RedisConfigSource, logger *zap.Logger) *ConfigManager {
+	var aliases map[string]string
+	var fallbacks map[string][]string
+	if yamlCfg != nil {
+		fallbacks = yamlCfg.Fallbacks
+		aliases = yamlCfg.Aliases
+	}
 	return &ConfigManager{
 		yamlEndpoints: Resolve(yamlCfg),
-		fallbacks:     yamlCfg.Fallbacks,
+		fallbacks:     fallbacks,
+		aliases:       aliases,
 		redisSrc:      redisSrc,
 		logger:        logger,
 	}
@@ -86,11 +95,95 @@ func (m *ConfigManager) StartRedisPolling(ctx context.Context) {
 	m.redisSrc.StartPolling(ctx)
 }
 
+// GetAlias resolves a model alias to target modelCode.
+// Supports exact match followed by case-insensitive fallback.
+func (m *ConfigManager) GetAlias(alias string) (string, bool) {
+	if alias == "" {
+		return "", false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.aliases) == 0 {
+		return "", false
+	}
+
+	// 1. Exact match
+	if target, ok := m.aliases[alias]; ok && target != "" {
+		return target, true
+	}
+
+	// 2. Case-insensitive match
+	for k, target := range m.aliases {
+		if strings.EqualFold(k, alias) && target != "" {
+			return target, true
+		}
+	}
+
+	return "", false
+}
+
+// GetAliasesForModel returns all alias names configured for the specified modelCode.
+func (m *ConfigManager) GetAliasesForModel(modelCode string) []string {
+	if modelCode == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []string
+	for alias, target := range m.aliases {
+		if target == modelCode || strings.EqualFold(target, modelCode) {
+			result = append(result, alias)
+		}
+	}
+	return result
+}
+
+// NormalizeModelCode checks if the given name matches a known real model name
+// with case-insensitivity (e.g. "GLM-5.3" -> "glm-5.3").
+func (m *ConfigManager) NormalizeModelCode(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// 1. Exact match in YAML endpoints
+	if _, ok := m.yamlEndpoints[name]; ok {
+		return name, true
+	}
+
+	// 2. Case-insensitive match in YAML endpoints
+	for knownModel := range m.yamlEndpoints {
+		if strings.EqualFold(knownModel, name) {
+			return knownModel, true
+		}
+	}
+
+	// 3. Check Redis known models if available
+	if m.redisSrc != nil {
+		for knownModel := range m.redisSrc.KnownModels() {
+			if strings.EqualFold(knownModel, name) {
+				return knownModel, true
+			}
+		}
+	}
+
+	return "", false
+}
+
 // UpdateYAMLConfig hot-reloads in-memory static YAML config.
 func (m *ConfigManager) UpdateYAMLConfig(yamlCfg *GatewayConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.yamlEndpoints = Resolve(yamlCfg)
-	m.fallbacks = yamlCfg.Fallbacks
+	if yamlCfg != nil {
+		m.fallbacks = yamlCfg.Fallbacks
+		m.aliases = yamlCfg.Aliases
+	} else {
+		m.fallbacks = nil
+		m.aliases = nil
+	}
 }
 

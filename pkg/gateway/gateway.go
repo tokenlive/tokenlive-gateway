@@ -104,15 +104,15 @@ func New(conf *viper.Viper, logger *log.Logger, opts *Options) (*Gateway, func()
 		}
 	}
 
-	modelService := service.NewModelService(rdb, logger, conf)
-	apiKeyService := service.NewApiKeyService(provider, logger)
-	aliasService := service.NewAliasService(rdb, logger)
-
 	configMgr, err := bootstrap.NewGatewayConfigManager(conf, logger, rdb)
 	if err != nil {
 		cleanupAll()
 		return nil, nil, err
 	}
+
+	modelService := service.NewModelService(rdb, logger, conf)
+	apiKeyService := service.NewApiKeyService(provider, logger)
+	aliasService := service.NewAliasService(rdb, logger, configMgr)
 
 	var chConn clickhouse.Conn
 	if opts.SkipClickHouse {
@@ -215,6 +215,13 @@ func (g *Gateway) UpdateYAMLConfig(gwCfg *config.GatewayConfig) {
 func (g *Gateway) PurgePolicyCache() {
 	if g != nil && g.policyService != nil {
 		g.policyService.PurgeCache()
+	}
+}
+
+// PurgeAliasCache clears the in-process alias cache.
+func (g *Gateway) PurgeAliasCache() {
+	if g != nil && g.aliasService != nil {
+		g.aliasService.PurgeCache()
 	}
 }
 

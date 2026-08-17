@@ -281,7 +281,7 @@ func NewGatewayEngine(
 	engine.SetStaticDiscovery(staticDiscovery)
 	engine.SetInvokerBuilder(invoker.NewBuilder())
 
-	aliasService := service.NewAliasService(rdb, logger)
+	aliasService := service.NewAliasService(rdb, logger, configMgr)
 	engine.SetAliasService(aliasService)
 
 	// Redis version polling for new-format config.

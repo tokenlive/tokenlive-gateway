@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"github.com/tokenlive/tokenlive-gateway/pkg/store"
 
@@ -14,27 +15,34 @@ import (
 
 // AliasService 负责将客户端请求中的 model alias 解析为真实的 model_code
 type AliasService struct {
-	rdb    *redis.Client
-	logger *log.Logger
-	cache  *store.ExpirableCache[string, string] // alias → model_code
+	rdb       *redis.Client
+	configMgr *config.ConfigManager
+	logger    *log.Logger
+	cache     *store.ExpirableCache[string, string] // alias → model_code
 }
 
 // NewAliasService 创建 AliasService 实例
-func NewAliasService(rdb *redis.Client, logger *log.Logger) *AliasService {
+func NewAliasService(rdb *redis.Client, logger *log.Logger, configMgr *config.ConfigManager) *AliasService {
 	cache := store.NewExpirableCache[string, string](
 		5000, 30*time.Second, // valid cache: 5k 条, 30s TTL
 		2000, 10*time.Second, // invalid cache: 2k 条, 10s TTL
 	)
 	return &AliasService{
-		rdb:    rdb,
-		logger: logger,
-		cache:  cache,
+		rdb:       rdb,
+		configMgr: configMgr,
+		logger:    logger,
+		cache:     cache,
 	}
 }
 
+// PurgeCache 清空所有本地别名缓存
+func (s *AliasService) PurgeCache() {
+	s.cache.Purge()
+}
+
 // Resolve 尝试将 model 解析为真实的 model_code。
+// 优先查本地 LRU 缓存，次选 Redis，若 Redis 为空或未配置则从 ConfigManager 查询（支持大小写容错）。
 // 如果 model 不是别名，返回原始 model（静默降级）。
-// 如果 Redis 不可用，返回错误（fail-close）。
 func (s *AliasService) Resolve(ctx context.Context, model string) (string, error) {
 	if model == "" {
 		return model, nil
@@ -50,44 +58,59 @@ func (s *AliasService) Resolve(ctx context.Context, model string) (string, error
 	}
 
 	// 2. 查 Redis
-	if s.rdb == nil {
-		return model, nil
-	}
-
-	key := store.RedisKeyAlias(model)
-	modelCode, err := s.rdb.Get(ctx, key).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			// Redis 中不存在此别名，写入负向缓存
-			s.cache.AddInvalid(model, "not an alias")
-			return model, nil
+	if s.rdb != nil {
+		key := store.RedisKeyAlias(model)
+		modelCode, err := s.rdb.Get(ctx, key).Result()
+		if err == nil && modelCode != "" {
+			s.cache.AddValid(model, modelCode)
+			return modelCode, nil
 		}
-		// Redis 不可用，fail-close
-		s.logger.Logger.Error("failed to query alias from redis", zap.Error(err), zap.String("key", key))
-		return "", err
+		if err != nil && !errors.Is(err, redis.Nil) {
+			s.logger.Logger.Error("failed to query alias from redis", zap.Error(err), zap.String("key", key))
+			return "", err
+		}
 	}
 
-	// 3. 命中，写入正向缓存
-	s.cache.AddValid(model, modelCode)
-	return modelCode, nil
+	// 3. 查本地 ConfigManager（单机版/嵌入式模式，或 Redis 没查到的场景）
+	if s.configMgr != nil {
+		if target, ok := s.configMgr.GetAlias(model); ok {
+			s.cache.AddValid(model, target)
+			return target, nil
+		}
+		// 4. 检查是否为已知模型的 Case-Insensitive 归一化（如 GLM-5.3 -> glm-5.3）
+		if normalized, ok := s.configMgr.NormalizeModelCode(model); ok && normalized != model {
+			s.cache.AddValid(model, normalized)
+			return normalized, nil
+		}
+	}
+
+	// 5. 不是别名，写入负向缓存
+	s.cache.AddInvalid(model, "not an alias")
+	return model, nil
 }
 
 // GetAliases 返回指定 modelCode 的所有别名列表。
-// 通过反向索引 aigw:config:model_aliases:{modelCode} 查询。
 func (s *AliasService) GetAliases(ctx context.Context, modelCode string) ([]string, error) {
-	if modelCode == "" || s.rdb == nil {
+	if modelCode == "" {
 		return nil, nil
 	}
 
-	key := store.RedisKeyModelAliases(modelCode)
-	aliases, err := s.rdb.SMembers(ctx, key).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil, nil
+	if s.rdb != nil {
+		key := store.RedisKeyModelAliases(modelCode)
+		aliases, err := s.rdb.SMembers(ctx, key).Result()
+		if err == nil {
+			return aliases, nil
 		}
-		s.logger.Logger.Error("failed to query model aliases from redis", zap.Error(err), zap.String("key", key))
-		return nil, err
+		if !errors.Is(err, redis.Nil) {
+			s.logger.Logger.Error("failed to query model aliases from redis", zap.Error(err), zap.String("key", key))
+			return nil, err
+		}
 	}
 
-	return aliases, nil
+	// Fallback to ConfigManager
+	if s.configMgr != nil {
+		return s.configMgr.GetAliasesForModel(modelCode), nil
+	}
+
+	return nil, nil
 }

@@ -47,6 +47,7 @@ type GatewayConfig struct {
 	Models    map[string]ModelConfig          `mapstructure:"models" yaml:"models" json:"models"`
 	Providers map[string]ProviderConfig       `mapstructure:"providers" yaml:"providers" json:"providers"`
 	Fallbacks map[string][]string             `mapstructure:"fallbacks" yaml:"fallbacks" json:"fallbacks"`
+	Aliases   map[string]string               `mapstructure:"aliases" yaml:"aliases" json:"aliases,omitempty"`
 	Pipelines map[string]*core.PipelineConfig `mapstructure:"pipelines" yaml:"pipelines" json:"pipelines,omitempty"`
 }
 

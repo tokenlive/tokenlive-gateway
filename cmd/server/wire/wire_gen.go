@@ -19,10 +19,6 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/server/http"
 )
 
-import (
-	_ "github.com/tokenlive/tokenlive-gateway/pkg/llm/providers"
-)
-
 // Injectors from wire.go:
 
 func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), error) {
@@ -54,7 +50,7 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 		cleanup()
 		return nil, nil, err
 	}
-	aliasService := service.NewAliasService(client, logger)
+	aliasService := service.NewAliasService(client, logger, configManager)
 	llmHandler := handler.NewLLMHandler(engine, modelService, configManager, aliasService)
 	routerDeps := router.RouterDeps{
 		Logger:        logger,
