@@ -60,19 +60,16 @@ func (p *SSEParser) parseBlock(block string) (SSEEvent, bool) {
 	var dataLines []string
 
 	for _, line := range strings.Split(block, "\n") {
-		line = strings.TrimSpace(line)
+		line = strings.TrimSuffix(line, "\r")
 		if line == "" {
 			continue
 		}
 
 		if strings.HasPrefix(line, "data:") {
-			cleanLine := line
-			for strings.HasPrefix(cleanLine, "data:") {
-				cleanLine = strings.TrimSpace(strings.TrimPrefix(cleanLine, "data:"))
-			}
-			if cleanLine != "" {
-				dataLines = append(dataLines, cleanLine)
-			}
+			cleanLine := strings.TrimPrefix(line, "data:")
+			// Standard SSE specification: strip a single leading space if present
+			cleanLine = strings.TrimPrefix(cleanLine, " ")
+			dataLines = append(dataLines, cleanLine)
 		}
 		// Ignore event:, id:, retry: fields
 	}
@@ -85,7 +82,7 @@ func (p *SSEParser) parseBlock(block string) (SSEEvent, bool) {
 	ev := SSEEvent{Data: data}
 
 	// Check for [DONE] sentinel
-	if data == "[DONE]" {
+	if strings.TrimSpace(data) == "[DONE]" {
 		ev.Done = true
 		return ev, true
 	}

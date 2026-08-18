@@ -886,19 +886,21 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 				},
 			})
 		}
-		outputs = append(outputs, map[string]interface{}{
-			"id":     msgID,
-			"type":   "message",
-			"status": "completed",
-			"role":   "assistant",
-			"content": []interface{}{
-				map[string]interface{}{
-					"type":        "output_text",
-					"text":        fullText.String(),
-					"annotations": []interface{}{},
+		if messageAdded {
+			outputs = append(outputs, map[string]interface{}{
+				"id":     msgID,
+				"type":   "message",
+				"status": "completed",
+				"role":   "assistant",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type":        "output_text",
+						"text":        fullText.String(),
+						"annotations": []interface{}{},
+					},
 				},
-			},
-		})
+			})
+		}
 
 		// Iterate tool call completion events in index order
 		var indices []int

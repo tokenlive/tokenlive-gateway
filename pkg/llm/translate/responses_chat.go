@@ -435,82 +435,77 @@ func ChatCompletionToResponses(chatBody []byte, model string) (ChatCompletionToR
 // CorrectNativeResponsesRequest sanitizes native /responses (roles/types + tools).
 // Returns body and final tools summary for logging.
 func CorrectNativeResponsesRequest(rawBody []byte) (body []byte, originalToolCount, finalToolCount int, toolSummary []string, err error) {
-	// [TEMPORARY] 暂时注释掉工具与请求体清洗干预逻辑，完全原样透传客户端 rawBody
-	return rawBody, 0, 0, nil, nil
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return nil, 0, 0, nil, fmt.Errorf("parse raw body: %w", err)
+	}
 
-	/*
-		var payload map[string]interface{}
-		if err := json.Unmarshal(rawBody, &payload); err != nil {
-			return nil, 0, 0, nil, fmt.Errorf("parse raw body: %w", err)
+	correctInputForNativeResponses(payload)
+
+	tools, ok := payload["tools"].([]interface{})
+	if !ok {
+		newBody, mErr := json.Marshal(payload)
+		if mErr != nil {
+			return nil, 0, 0, nil, fmt.Errorf("marshal corrected body: %w", mErr)
 		}
+		return newBody, 0, 0, nil, nil
+	}
 
-		correctInputForNativeResponses(payload)
-
-		tools, ok := payload["tools"].([]interface{})
+	originalToolCount = len(tools)
+	var finalTools []interface{}
+	for _, t := range tools {
+		toolMap, ok := t.(map[string]interface{})
 		if !ok {
-			newBody, mErr := json.Marshal(payload)
-			if mErr != nil {
-				return nil, 0, 0, nil, fmt.Errorf("marshal corrected body: %w", mErr)
-			}
-			return newBody, 0, 0, nil, nil
+			continue
 		}
+		toolType, _ := toolMap["type"].(string)
 
-		originalToolCount = len(tools)
-		var finalTools []interface{}
-		for _, t := range tools {
-			toolMap, ok := t.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			toolType, _ := toolMap["type"].(string)
+		if toolType == "namespace" {
+			if subTools, ok := toolMap["tools"].([]interface{}); ok {
+				for _, st := range subTools {
+					subToolMap, ok := st.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					subType, _ := subToolMap["type"].(string)
+					if subType == "namespace" {
+						continue
+					}
 
-			if toolType == "namespace" {
-				if subTools, ok := toolMap["tools"].([]interface{}); ok {
-					for _, st := range subTools {
-						subToolMap, ok := st.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						subType, _ := subToolMap["type"].(string)
-						if subType == "namespace" {
-							continue
-						}
-
-						stdTool := BuildStandardTool(subToolMap)
-						if stdTool != nil {
-							finalTools = append(finalTools, stdTool)
-						}
+					stdTool := BuildStandardTool(subToolMap)
+					if stdTool != nil {
+						finalTools = append(finalTools, stdTool)
 					}
 				}
-			} else {
-				stdTool := BuildStandardTool(toolMap)
-				if stdTool != nil {
-					finalTools = append(finalTools, stdTool)
-				}
 			}
-		}
-
-		if len(finalTools) > 0 {
-			payload["tools"] = finalTools
 		} else {
-			delete(payload, "tools")
-			delete(payload, "tool_choice")
-		}
-
-		for _, t := range finalTools {
-			if tm, ok := t.(map[string]interface{}); ok {
-				ttype, _ := tm["type"].(string)
-				tname, _ := tm["name"].(string)
-				toolSummary = append(toolSummary, fmt.Sprintf("%s:%s", ttype, tname))
+			stdTool := BuildStandardTool(toolMap)
+			if stdTool != nil {
+				finalTools = append(finalTools, stdTool)
 			}
 		}
+	}
 
-		newBody, err := json.Marshal(payload)
-		if err != nil {
-			return nil, originalToolCount, 0, nil, fmt.Errorf("marshal corrected body: %w", err)
+	if len(finalTools) > 0 {
+		payload["tools"] = finalTools
+	} else {
+		delete(payload, "tools")
+		delete(payload, "tool_choice")
+	}
+
+	for _, t := range finalTools {
+		if tm, ok := t.(map[string]interface{}); ok {
+			ttype, _ := tm["type"].(string)
+			tname, _ := tm["name"].(string)
+			toolSummary = append(toolSummary, fmt.Sprintf("%s:%s", ttype, tname))
 		}
-		return newBody, originalToolCount, len(finalTools), toolSummary, nil
-	*/
+	}
+
+	newBody, err := json.Marshal(payload)
+	if err != nil {
+		return nil, originalToolCount, 0, nil, fmt.Errorf("marshal corrected body: %w", err)
+	}
+	return newBody, originalToolCount, len(finalTools), toolSummary, nil
 }
 
 // BuildStandardTool normalizes a client tool to flat standard form.

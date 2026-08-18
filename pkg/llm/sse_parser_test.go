@@ -122,3 +122,17 @@ func TestSSEParser_CRLF(t *testing.T) {
 		t.Errorf("expected 'test', got '%s'", e2[0].Data)
 	}
 }
+
+func TestSSEParser_PreservesWhitespaceAndIndentation(t *testing.T) {
+	p := NewSSEParser()
+	// Simulate code patch diff with leading indentation and empty lines
+	input := "data:   def hello():\ndata:       print(\"world\")\ndata: \ndata: +    return True\n\n"
+	events := p.Feed([]byte(input))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	expected := "  def hello():\n      print(\"world\")\n\n+    return True"
+	if events[0].Data != expected {
+		t.Errorf("expected:\n%q\ngot:\n%q", expected, events[0].Data)
+	}
+}
