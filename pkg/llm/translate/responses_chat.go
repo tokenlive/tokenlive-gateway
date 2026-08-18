@@ -586,6 +586,25 @@ func BuildStandardTool(toolMap map[string]interface{}) map[string]interface{} {
 		}
 	}
 
+	if innerName == "apply_patch" {
+		params, _ := flatTool["parameters"].(map[string]interface{})
+		if params == nil {
+			params = make(map[string]interface{})
+			flatTool["parameters"] = params
+		}
+		props, _ := params["properties"].(map[string]interface{})
+		if len(props) == 0 {
+			params["type"] = "object"
+			params["properties"] = map[string]interface{}{
+				"patch": map[string]interface{}{
+					"type":        "string",
+					"description": "The full patch or diff content to apply to files.",
+				},
+			}
+			params["required"] = []string{"patch"}
+		}
+	}
+
 	return flatTool
 }
 
