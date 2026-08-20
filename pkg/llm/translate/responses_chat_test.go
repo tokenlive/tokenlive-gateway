@@ -320,22 +320,26 @@ func TestCorrectNativeResponsesRequest_Namespace(t *testing.T) {
 	raw := []byte(`{
 		"input": [{"role": "developer", "content": [{"type": "input_text", "text": "hi"}]}],
 		"tools": [{
+			"name": "weather_service",
 			"type": "namespace",
 			"tools": [{
 				"type": "function",
 				"name": "get_weather",
 				"parameters": {"type": "object"}
 			}]
+		}, {
+			"type": "tool_search",
+			"query": "find weather"
 		}]
 	}`)
 	body, orig, final, summary, err := CorrectNativeResponsesRequest(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if orig != 1 || final != 1 {
-		t.Errorf("counts orig=%d final=%d", orig, final)
+	if orig != 2 || final != 2 {
+		t.Fatalf("counts orig=%d final=%d, want 2", orig, final)
 	}
-	if len(summary) != 1 || summary[0] != "function:get_weather" {
+	if len(summary) != 2 || summary[0] != "namespace:weather_service(1_tools)" || summary[1] != "tool_search:" {
 		t.Errorf("summary = %v", summary)
 	}
 	var payload map[string]interface{}
@@ -349,6 +353,48 @@ func TestCorrectNativeResponsesRequest_Namespace(t *testing.T) {
 	c0 := content[0].(map[string]interface{})
 	if c0["type"] != "input_text" {
 		t.Errorf("content type = %v, want input_text", c0["type"])
+	}
+
+	tools := payload["tools"].([]interface{})
+	nsTool := tools[0].(map[string]interface{})
+	if nsTool["type"] != "namespace" || nsTool["name"] != "weather_service" {
+		t.Errorf("expected namespace tool, got: %v", nsTool)
+	}
+	subTools := nsTool["tools"].([]interface{})
+	if len(subTools) != 1 {
+		t.Fatalf("expected 1 subtool, got %d", len(subTools))
+	}
+	if subTools[0].(map[string]interface{})["name"] != "get_weather" {
+		t.Errorf("expected subtool get_weather, got %v", subTools[0])
+	}
+	if tools[1].(map[string]interface{})["type"] != "tool_search" {
+		t.Errorf("expected tool_search to be preserved when namespace exists")
+	}
+}
+
+func TestCorrectNativeResponsesRequest_IsolatedToolSearchStripped(t *testing.T) {
+	raw := []byte(`{
+		"input": [{"role": "user", "content": "hi"}],
+		"tools": [{
+			"type": "function",
+			"name": "calc",
+			"parameters": {"type": "object"}
+		}, {
+			"type": "tool_search"
+		}]
+	}`)
+	body, orig, final, _, err := CorrectNativeResponsesRequest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orig != 2 || final != 1 {
+		t.Fatalf("counts orig=%d final=%d, want orig=2 final=1", orig, final)
+	}
+	var payload map[string]interface{}
+	_ = json.Unmarshal(body, &payload)
+	tools := payload["tools"].([]interface{})
+	if len(tools) != 1 || tools[0].(map[string]interface{})["name"] != "calc" {
+		t.Errorf("expected isolated tool_search to be stripped, got: %v", tools)
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
-	"github.com/tokenlive/tokenlive-gateway/pkg/llm/translate"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/upstream"
 )
 
@@ -24,10 +23,6 @@ func (i *anthropicMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Prov
 	}
 	if mocked {
 		return nil
-	}
-
-	if newBody, err := translate.CorrectNativeMessagesRequest(gctx.RawBody); err == nil {
-		gctx.RawBody = newBody
 	}
 
 	endpoint := ap.baseURL + "/messages"

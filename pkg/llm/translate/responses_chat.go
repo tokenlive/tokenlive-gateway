@@ -16,6 +16,7 @@ var builtinToolStandardFields = map[string][]string{
 	"image_generation":     {"model", "size", "quality", "background", "output_format"},
 	"file_search":          {"vector_store_ids", "max_num_results", "filters", "ranking_options"},
 	"computer_use_preview": {"display_width", "display_height", "environment"},
+	"tool_search":          {"query", "max_num_results", "filters"},
 }
 
 // ResponsesRequestToChat translates Responses request to Chat Completions.
@@ -453,6 +454,8 @@ func CorrectNativeResponsesRequest(rawBody []byte) (body []byte, originalToolCou
 
 	originalToolCount = len(tools)
 	var finalTools []interface{}
+	hasDeferredOrNamespace := false
+
 	for _, t := range tools {
 		toolMap, ok := t.(map[string]interface{})
 		if !ok {
@@ -461,29 +464,54 @@ func CorrectNativeResponsesRequest(rawBody []byte) (body []byte, originalToolCou
 		toolType, _ := toolMap["type"].(string)
 
 		if toolType == "namespace" {
+			hasDeferredOrNamespace = true
+			nsTool := make(map[string]interface{})
+			for k, v := range toolMap {
+				if k != "tools" {
+					nsTool[k] = v
+				}
+			}
+			nsTool["type"] = "namespace"
+
+			var cleanedSubTools []interface{}
 			if subTools, ok := toolMap["tools"].([]interface{}); ok {
 				for _, st := range subTools {
 					subToolMap, ok := st.(map[string]interface{})
 					if !ok {
 						continue
 					}
-					subType, _ := subToolMap["type"].(string)
-					if subType == "namespace" {
-						continue
-					}
-
 					stdTool := BuildStandardTool(subToolMap)
 					if stdTool != nil {
-						finalTools = append(finalTools, stdTool)
+						cleanedSubTools = append(cleanedSubTools, stdTool)
 					}
 				}
 			}
+			nsTool["tools"] = cleanedSubTools
+			finalTools = append(finalTools, nsTool)
 		} else {
 			stdTool := BuildStandardTool(toolMap)
 			if stdTool != nil {
+				if dl, ok := stdTool["defer_loading"].(bool); ok && dl {
+					hasDeferredOrNamespace = true
+				}
 				finalTools = append(finalTools, stdTool)
 			}
 		}
+	}
+
+	// Defensive check: if tool_search exists but there is no namespace or deferred tool,
+	// strip isolated tool_search to avoid upstream 400 invalid_request_error: requires at least one deferred tool
+	if !hasDeferredOrNamespace {
+		filtered := make([]interface{}, 0, len(finalTools))
+		for _, t := range finalTools {
+			if tm, ok := t.(map[string]interface{}); ok {
+				if tm["type"] == "tool_search" {
+					continue
+				}
+			}
+			filtered = append(filtered, t)
+		}
+		finalTools = filtered
 	}
 
 	if len(finalTools) > 0 {
@@ -497,7 +525,15 @@ func CorrectNativeResponsesRequest(rawBody []byte) (body []byte, originalToolCou
 		if tm, ok := t.(map[string]interface{}); ok {
 			ttype, _ := tm["type"].(string)
 			tname, _ := tm["name"].(string)
-			toolSummary = append(toolSummary, fmt.Sprintf("%s:%s", ttype, tname))
+			if ttype == "namespace" {
+				subLen := 0
+				if st, ok := tm["tools"].([]interface{}); ok {
+					subLen = len(st)
+				}
+				toolSummary = append(toolSummary, fmt.Sprintf("namespace:%s(%d_tools)", tname, subLen))
+			} else {
+				toolSummary = append(toolSummary, fmt.Sprintf("%s:%s", ttype, tname))
+			}
 		}
 	}
 

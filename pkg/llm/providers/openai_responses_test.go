@@ -593,11 +593,8 @@ func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected item0 to be map")
 		}
-		if item0["role"] != "system" {
-			t.Errorf("expected role=system, got %v", item0["role"])
-		}
-		if _, exists := item0["type"]; exists {
-			t.Errorf("expected type field to be deleted from message item, but it exists")
+		if item0["role"] != "developer" {
+			t.Errorf("expected role=developer, got %v", item0["role"])
 		}
 		content0, ok := item0["content"].([]interface{})
 		if !ok || len(content0) != 1 {
@@ -620,6 +617,7 @@ func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
 		toolTypes := make(map[string]string)
 		toolNames := make(map[string]bool)
 
+		hasNamespace := false
 		hasWebSearch := false
 		for _, tVal := range tools {
 			toolMap, ok := tVal.(map[string]interface{})
@@ -633,9 +631,22 @@ func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
 				if toolMap["search_context_size"] != "high" {
 					t.Errorf("expected web_search to keep standard field search_context_size, got: %v", toolMap)
 				}
-				// 客户端私有字段应被剥离
-				if _, exists := toolMap["external_web_access"]; exists {
-					t.Errorf("expected web_search private field external_web_access to be stripped, got: %v", toolMap)
+				// 纯透传下所有字段原样保留
+				if toolMap["external_web_access"] != false {
+					t.Errorf("expected web_search field external_web_access to be preserved, got: %v", toolMap)
+				}
+			} else if tType == "namespace" {
+				hasNamespace = true
+				if toolMap["name"] != "mcp__node_repl" {
+					t.Errorf("expected namespace name mcp__node_repl, got %v", toolMap["name"])
+				}
+				subTools, ok := toolMap["tools"].([]interface{})
+				if !ok || len(subTools) != 1 {
+					t.Fatalf("expected 1 subtool inside namespace, got %v", toolMap["tools"])
+				}
+				sub0 := subTools[0].(map[string]interface{})
+				if sub0["name"] != "js" {
+					t.Errorf("expected subtool js, got %v", sub0["name"])
 				}
 			} else {
 				name, _ := toolMap["name"].(string)
@@ -644,8 +655,8 @@ func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
 			}
 		}
 
-		if !toolNames["js"] {
-			t.Error("expected tool 'js' to be present")
+		if !hasNamespace {
+			t.Error("expected namespace tool to be preserved")
 		}
 		if !toolNames["apply_patch"] {
 			t.Error("expected tool 'apply_patch' to be present")
@@ -661,9 +672,6 @@ func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
 		}
 		if toolTypes["mcp__node_repl"] != "mcp" {
 			t.Error("expected 'mcp__node_repl' tool type to be mcp")
-		}
-		if _, exists := toolTypes["namespace"]; exists {
-			t.Error("namespace tool type should have been removed")
 		}
 
 		w.Header().Set("Content-Type", "application/json")

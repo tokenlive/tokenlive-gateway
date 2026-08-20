@@ -37,19 +37,8 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 		}
 	}
 
-	// Branch A: native same-name forwarding
+	// Branch A: native same-name forwarding (pure transparent proxying)
 	if hasResponseCapability {
-		newBody, orig, final, summary, err := translate.CorrectNativeResponsesRequest(gctx.RawBody)
-		if err == nil {
-			gctx.RawBody = newBody
-			gctx.Logger(zap.L()).Debug("native responses tools conversion result summary",
-				zap.Int("original_count", orig),
-				zap.Int("final_count", final),
-				zap.Strings("final_tools_summary", summary),
-			)
-		} else {
-			gctx.Logger(zap.L()).Warn("failed to correct tools for native responses", zap.Error(err))
-		}
 		endpoint := op.baseURL + "/responses"
 		return op.doRequest(gctx, endpoint)
 	}

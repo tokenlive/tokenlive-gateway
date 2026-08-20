@@ -69,76 +69,11 @@ events:
   #   brokers: ["localhost:9092"]
 
 # LLM Gateway 配置（model-centric 格式）
-models:
-  gpt-4:
-    request_types: [ chat_completion ]
-    endpoints:
-      - provider: openai-official
-        url: http://free3.900406.xyz:8100/v1
-        real_model: gpt-4
-        priority: 1
-        weight: 100
-      - provider: openai-custom
-        url: http://free3.900406.xyz:8100/v1
-        real_model: gpt-4:free
-        priority: 1
-        weight: 100
-  gpt-3.5-turbo:
-    request_types: [ chat_completion ]
-    endpoints:
-      - provider: openai-official
-        url: http://free3.900406.xyz:8100/v1
-        real_model: gpt-3.5-turbo
-        priority: 1
-        weight: 100
-  text-embedding-3-small:
-    request_types: [ embedding ]
-    endpoints:
-      - provider: openai-official
-        url: http://free3.900406.xyz:8100/v1
-        real_model: text-embedding-3-small
-        priority: 1
-        weight: 100
-  claude-sonnet:
-    request_types: [ chat_completion ]
-    endpoints:
-      - provider: anthropic-official
-        url: https://api.anthropic.com
-        real_model: claude-3-opus-20240229
-        priority: 1
-        weight: 50
-      - provider: anthropic-proxy
-        url: http://free3.900406.xyz:8100
-        real_model: claude-3-opus-20240229
-        priority: 2
-        weight: 50
+models: {}
 
-providers:
-  openai-official:
-    protocol: openai
-    api_key: ${OPENAI_API_KEY}
-    timeout: 60s
-    max_retries: 3
-  openai-custom:
-    protocol: openai
-    api_key: ${OPENAI_API_KEY}
-    timeout: 60s
-    max_retries: 3
-  anthropic-official:
-    protocol: anthropic
-    api_key: ${ANTHROPIC_API_KEY}
-    timeout: 60s
-  anthropic-proxy:
-    protocol: anthropic
-    api_key: ${ANTHROPIC_PROXY_KEY}
-    timeout: 60s
+providers: {}
 
-fallbacks:
-  gpt-4:
-    - gpt-4:free
-    - gpt-3.5-turbo
-  claude-sonnet:
-    - gpt-4
+fallbacks: {}
 
 # 治理策略配置
 policy:
