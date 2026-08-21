@@ -21,3 +21,5 @@ config/*.local.yml
 /.codex/
 /openspec/
 /.agent/
+/.agents/
+/.zcode/
