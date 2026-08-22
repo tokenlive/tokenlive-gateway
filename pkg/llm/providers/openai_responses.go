@@ -376,6 +376,12 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 	buf := make([]byte, 4096)
 	started := false
 
+	// Set once an upstream chat-completion frame carries a non-null finish_reason.
+	// Some aggregated backends (e.g. JoyCode gen- pool) emit a spurious SSE error
+	// event after the turn is already complete; that must not abort the translated
+	// Responses stream.
+	turnCompleted := false
+
 	var fullText strings.Builder
 	var lastResponseID string
 	var lastModelName string
@@ -405,6 +411,27 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 			// 1. Sniff SSE error events from all frames
 			events := parser.Feed(buf[:n])
 			for _, ev := range events {
+				// Frames arrive in order: a finish_reason earlier in this batch must
+				// already be visible when deciding on a later error frame.
+				if !turnCompleted && strings.Contains(ev.Data, `"finish_reason"`) {
+					var frChunk struct {
+						Choices []struct {
+							FinishReason *string `json:"finish_reason"`
+						} `json:"choices"`
+					}
+					cleanData := strings.TrimSpace(ev.Data)
+					if strings.HasPrefix(cleanData, "data:") {
+						cleanData = strings.TrimSpace(strings.TrimPrefix(cleanData, "data:"))
+					}
+					if json.Unmarshal([]byte(cleanData), &frChunk) == nil {
+						for _, c := range frChunk.Choices {
+							if c.FinishReason != nil {
+								turnCompleted = true
+							}
+						}
+					}
+				}
+
 				if strings.Contains(ev.Data, `"error"`) {
 					cleanData := strings.TrimSpace(ev.Data)
 					if strings.HasPrefix(cleanData, "data:") {
@@ -432,6 +459,13 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 							} else {
 								errMsg = fmt.Sprintf("%s (cause: %s)", errMsg, errChunk.Error.Cause)
 							}
+						}
+						if turnCompleted {
+							gctx.Logger(zap.L()).Warn("ignoring upstream SSE error received after stream completion",
+								zap.String("response_id", gctx.GetTagValue("response_id")),
+								zap.String("model", gctx.Model),
+								zap.String("upstream_error", errMsg))
+							continue
 						}
 						return fmt.Errorf("upstream stream returned error event: %s", errMsg)
 					}
@@ -513,10 +547,8 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 				}
 
 				if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
-					gctx.Logger(zap.L()).Warn("[DEBUG-responses-stream] json.Unmarshal failed", zap.String("raw_data", ev.Data), zap.Error(err))
 					continue
 				}
-				gctx.Logger(zap.L()).Warn("[RAW-SSE-DATA]", zap.String("data", ev.Data))
 
 				if chunk.ID != "" {
 					lastResponseID = chunk.ID

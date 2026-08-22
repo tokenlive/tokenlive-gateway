@@ -1072,3 +1072,196 @@ func TestOpenAIResponses_Translation_WithComplexInput(t *testing.T) {
 		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestOpenAIResponses_Translation_ToolCalls_Stream_TrailingErrorSwallowed reproduces
+// the JoyCode gen- pool failure: aggregated backends emit tool_calls deltas, then
+// finish_reason, then an empty assistant delta followed by a spurious SSE error
+// event without [DONE]. The turn is already complete, so the gateway must swallow
+// the trailing error and finalize the Responses stream normally.
+func TestOpenAIResponses_Translation_ToolCalls_Stream_TrailingErrorSwallowed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		chunks := []string{
+			`data: {"id":"gen-1787412458-hhxKEVwY","object":"chat.completion.chunk","created":1741290958,"model":"kimi-k3","provider":"Modal","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"exec_command","arguments":""}}]},"finish_reason":null}]}`,
+			`data: {"id":"gen-1787412458-hhxKEVwY","object":"chat.completion.chunk","created":1741290958,"model":"kimi-k3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"ls\"}"}}]},"finish_reason":null}]}`,
+			`data: {"id":"gen-1787412458-hhxKEVwY","object":"chat.completion.chunk","created":1741290958,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			`data: {"id":"gen-1787412458-hhxKEVwY","object":"chat.completion.chunk","created":1741290958,"model":"kimi-k3","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,
+			`data: {"error":{"message":"模型服务返回异常信息，无法处理","type":"system_error"}}`,
+		}
+
+		for _, chunk := range chunks {
+			_, _ = w.Write([]byte(chunk + "\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	ep := &core.Endpoint{
+		ID:           "ep-gen-trailing-error",
+		Provider:     "openai",
+		Model:        "kimi-k3",
+		RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
+	}
+	p := NewOpenAIProvider("test-openai-gen-trailing-error", server.URL, "test-key", []string{"kimi-k3"})
+
+	reqBody := `{"model": "kimi-k3", "input": "List files", "stream": true}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "kimi-k3"
+	gctx.IsStream = true
+	gctx.SelectedEndpoint = ep
+
+	invoker := &openaiResponsesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err != nil {
+		t.Fatalf("expected trailing error after finish_reason to be swallowed, got %v", err)
+	}
+
+	respBody := w.Body.String()
+
+	expectedEvents := []string{
+		`event: response.created`,
+		`event: response.output_item.added`,
+		`"type":"function_call"`,
+		`"name":"exec_command"`,
+		`event: response.function_call.arguments.done`,
+		`"arguments":"{\"cmd\":\"ls\"}"`,
+		`event: response.output_item.done`,
+		`"status":"completed"`,
+		`event: response.done`,
+		`event: response.completed`,
+		`data: [DONE]`,
+	}
+	for _, expected := range expectedEvents {
+		if !strings.Contains(respBody, expected) {
+			t.Errorf("expected response stream to contain %q, but got:\n%s", expected, respBody)
+		}
+	}
+
+	if strings.Contains(respBody, `"status":"failed"`) || strings.Contains(respBody, "模型服务返回异常信息") {
+		t.Errorf("swallowed upstream error must not leak into client stream:\n%s", respBody)
+	}
+}
+
+// TestOpenAIResponses_Translation_ToolCalls_Stream_ErrorBeforeFinishStillFatal guards
+// the regression direction: an SSE error event arriving BEFORE finish_reason means the
+// turn is genuinely incomplete and must keep failing as before.
+func TestOpenAIResponses_Translation_ToolCalls_Stream_ErrorBeforeFinishStillFatal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		chunks := []string{
+			`data: {"id":"gen-1787412499-abcd1234","object":"chat.completion.chunk","created":1741290958,"model":"kimi-k3","provider":"Phala","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_def456","type":"function","function":{"name":"exec_command","arguments":""}}]},"finish_reason":null}]}`,
+			`data: {"error":{"message":"模型服务返回异常信息，无法处理","type":"system_error"}}`,
+		}
+
+		for _, chunk := range chunks {
+			_, _ = w.Write([]byte(chunk + "\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	ep := &core.Endpoint{
+		ID:           "ep-gen-error-before-finish",
+		Provider:     "openai",
+		Model:        "kimi-k3",
+		RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
+	}
+	p := NewOpenAIProvider("test-openai-gen-error-before-finish", server.URL, "test-key", []string{"kimi-k3"})
+
+	reqBody := `{"model": "kimi-k3", "input": "List files", "stream": true}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "kimi-k3"
+	gctx.IsStream = true
+	gctx.SelectedEndpoint = ep
+
+	invoker := &openaiResponsesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err == nil {
+		t.Fatalf("expected error before finish_reason to remain fatal, got nil")
+	}
+	if !strings.Contains(err.Error(), "upstream stream returned error event") {
+		t.Errorf("expected upstream error event to surface, got: %v", err)
+	}
+}
+
+// TestOpenAIResponses_Translation_Text_Stream_TrailingErrorAfterStopSwallowed verifies
+// the same swallowing for plain-text turns ending with finish_reason:"stop", and that
+// benign frames after finish_reason (e.g. a usage-only chunk) still flow through.
+func TestOpenAIResponses_Translation_Text_Stream_TrailingErrorAfterStopSwallowed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		chunks := []string{
+			`data: {"id":"chatcmpl-9f2a1b","object":"chat.completion.chunk","created":1741290958,"model":"kimi-k3","choices":[{"index":0,"delta":{"role":"assistant","content":"你好，世界"},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-9f2a1b","object":"chat.completion.chunk","created":1741290958,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			`data: {"id":"chatcmpl-9f2a1b","object":"chat.completion.chunk","created":1741290958,"model":"kimi-k3","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`,
+			`data: {"error":{"message":"模型服务返回异常信息，无法处理","type":"system_error"}}`,
+		}
+
+		for _, chunk := range chunks {
+			_, _ = w.Write([]byte(chunk + "\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	ep := &core.Endpoint{
+		ID:           "ep-text-trailing-error",
+		Provider:     "openai",
+		Model:        "kimi-k3",
+		RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
+	}
+	p := NewOpenAIProvider("test-openai-text-trailing-error", server.URL, "test-key", []string{"kimi-k3"})
+
+	reqBody := `{"model": "kimi-k3", "input": "Say hello", "stream": true}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "kimi-k3"
+	gctx.IsStream = true
+	gctx.SelectedEndpoint = ep
+
+	invoker := &openaiResponsesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err != nil {
+		t.Fatalf("expected trailing error after finish_reason=stop to be swallowed, got %v", err)
+	}
+
+	respBody := w.Body.String()
+	for _, expected := range []string{
+		`"text":"你好，世界"`,
+		`event: response.completed`,
+		`data: [DONE]`,
+	} {
+		if !strings.Contains(respBody, expected) {
+			t.Errorf("expected response stream to contain %q, but got:\n%s", expected, respBody)
+		}
+	}
+}
