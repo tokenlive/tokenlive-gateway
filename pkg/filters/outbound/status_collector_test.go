@@ -94,6 +94,125 @@ func TestStatusCollectorFilter_OnResponse(t *testing.T) {
 	})
 }
 
+func TestCollectEndpointPerfWriteAttributesOnlyWinningEndpoint(t *testing.T) {
+	start := time.Now().Add(-2 * time.Second)
+	gctx := &core.GatewayContext{
+		Err:          nil,
+		TTFT:         250 * time.Millisecond,
+		OutputTokens: 40,
+		StartTime:    start,
+		SelectedEndpoint: &core.Endpoint{
+			ID: "ep-2",
+		},
+		History: []core.AttemptRecord{
+			{EndpointID: "ep-1", Success: false},
+			{EndpointID: "ep-2", Success: true},
+		},
+	}
+
+	perf := collectEndpointPerfWrite(gctx)
+	if perf.EndpointID != "ep-2" {
+		t.Fatalf("expected winning endpoint ep-2, got %q", perf.EndpointID)
+	}
+	if perf.TTFTMs != 250 {
+		t.Fatalf("expected ttft 250ms, got %d", perf.TTFTMs)
+	}
+	if perf.Output != 40 {
+		t.Fatalf("expected output tokens on winning endpoint only, got %d", perf.Output)
+	}
+	if perf.DurationMs <= 0 {
+		t.Fatalf("expected positive duration, got %d", perf.DurationMs)
+	}
+}
+
+func TestStatusCollectorFilter_OnResponse_DoesNotCreditFailedRetryWithTokens(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	f := NewStatusCollectorFilter(rdb, nil, "", "", nil)
+	gctx := &core.GatewayContext{
+		Ctx:          context.Background(),
+		Request:      httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		Model:        "gpt-4",
+		Err:          nil,
+		TTFT:         180 * time.Millisecond,
+		OutputTokens: 30,
+		StartTime:    time.Now().Add(-1500 * time.Millisecond),
+		SelectedEndpoint: &core.Endpoint{
+			ID: "ep-2",
+		},
+		History: []core.AttemptRecord{
+			{EndpointID: "ep-1", Success: false},
+			{EndpointID: "ep-2", Success: true},
+		},
+	}
+
+	if err := f.OnResponse(gctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	minute := time.Now().Unix() / 60
+	if val, _ := mr.Get(fmt.Sprintf("aigw:status:endpoint:ep-1:%d:out", minute)); val != "" {
+		t.Fatalf("failed retry must not receive output tokens, got %q", val)
+	}
+	if val, _ := mr.Get(fmt.Sprintf("aigw:status:endpoint:ep-1:%d:ttft_sum", minute)); val != "" {
+		t.Fatalf("failed retry must not receive ttft, got %q", val)
+	}
+	if val, _ := mr.Get(fmt.Sprintf("aigw:status:endpoint:ep-2:%d:out", minute)); val != "30" {
+		t.Fatalf("expected winning endpoint output 30, got %q", val)
+	}
+	if val, _ := mr.Get(fmt.Sprintf("aigw:status:endpoint:ep-2:%d:ttft_sum", minute)); val != "180" {
+		t.Fatalf("expected winning endpoint ttft_sum 180, got %q", val)
+	}
+	if val, _ := mr.Get(fmt.Sprintf("aigw:status:endpoint:ep-2:%d:ttft_cnt", minute)); val != "1" {
+		t.Fatalf("expected winning endpoint ttft_cnt 1, got %q", val)
+	}
+	if val, _ := mr.Get(fmt.Sprintf("aigw:status:model:gpt-4:%d:out", minute)); val != "30" {
+		t.Fatalf("expected model output 30, got %q", val)
+	}
+	if val, _ := mr.Get(fmt.Sprintf("aigw:status:model:gpt-4:%d:ttft_sum", minute)); val != "180" {
+		t.Fatalf("expected model ttft_sum 180, got %q", val)
+	}
+}
+
+func TestRequestMetricJSONKeepsLegacyFieldsWithoutNewKeys(t *testing.T) {
+	raw, err := json.Marshal(RequestMetric{
+		Time:         1,
+		Model:        "gpt-4",
+		Success:      true,
+		InputTokens:  10,
+		OutputTokens: 20,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload["model"] != "gpt-4" {
+		t.Fatalf("expected model gpt-4, got %#v", payload["model"])
+	}
+	if _, ok := payload["endpoint_id"]; ok {
+		t.Fatalf("empty endpoint_id should be omitted, payload=%v", payload)
+	}
+	if _, ok := payload["ttft_ms"]; ok {
+		t.Fatalf("zero ttft_ms should be omitted, payload=%v", payload)
+	}
+
+	legacy := []byte(`{"time":1,"model":"gpt-4","success":true,"input_tokens":10,"output_tokens":20}`)
+	var decoded RequestMetric
+	if err := json.Unmarshal(legacy, &decoded); err != nil {
+		t.Fatalf("legacy payload must still decode: %v", err)
+	}
+	if decoded.Model != "gpt-4" || decoded.OutputTokens != 20 || decoded.EndpointID != "" {
+		t.Fatalf("unexpected legacy decode: %+v", decoded)
+	}
+}
+
 func TestStatusCollectorFilter_OnResponse_HTTP(t *testing.T) {
 	var receivedPayload struct {
 		Metrics       []RequestMetric `json:"metrics"`

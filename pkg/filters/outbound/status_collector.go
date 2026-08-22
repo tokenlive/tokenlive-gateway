@@ -28,7 +28,47 @@ type RequestMetric struct {
 	CachedTokens        int64           `json:"cached_tokens"`
 	CacheCreationTokens int64           `json:"cache_creation_tokens"`
 	Cost                float64         `json:"cost"`
+	EndpointID          string          `json:"endpoint_id,omitempty"`
+	TTFTMs              int64           `json:"ttft_ms,omitempty"`
+	DurationMs          int64           `json:"duration_ms,omitempty"`
 	Attempts            []AttemptMetric `json:"attempts"`
+}
+
+type endpointPerfWrite struct {
+	EndpointID string
+	TTFTMs     int64
+	Output     int64
+	DurationMs int64
+}
+
+func winningEndpointID(gctx *core.GatewayContext) string {
+	if gctx.SelectedEndpoint != nil && gctx.SelectedEndpoint.ID != "" {
+		return gctx.SelectedEndpoint.ID
+	}
+	for i := len(gctx.History) - 1; i >= 0; i-- {
+		if gctx.History[i].EndpointID != "" {
+			return gctx.History[i].EndpointID
+		}
+	}
+	return ""
+}
+
+func collectEndpointPerfWrite(gctx *core.GatewayContext) endpointPerfWrite {
+	write := endpointPerfWrite{EndpointID: winningEndpointID(gctx)}
+	if write.EndpointID == "" {
+		return write
+	}
+	if gctx.TTFT > 0 {
+		write.TTFTMs = gctx.TTFT.Milliseconds()
+	}
+	if gctx.Err == nil && gctx.OutputTokens > 0 && !gctx.StartTime.IsZero() {
+		dur := time.Since(gctx.StartTime).Milliseconds()
+		if dur > 0 {
+			write.Output = int64(gctx.OutputTokens)
+			write.DurationMs = dur
+		}
+	}
+	return write
 }
 
 // StatusCollectorFilter collects model success/failure status for recent status display.
@@ -83,6 +123,7 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 	cachedTokens := int64(gctx.CachedTokens)
 	cacheCreationTokens := int64(gctx.CacheCreationTokens)
 	cost := gctx.Cost
+	perf := collectEndpointPerfWrite(gctx)
 
 	// defensive truncation to ensure Redis daily metrics data integrity
 	if cachedTokens+cacheCreationTokens > inputTokens {
@@ -124,6 +165,9 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 				CachedTokens:        cachedTokens,
 				CacheCreationTokens: cacheCreationTokens,
 				Cost:                cost,
+				EndpointID:          perf.EndpointID,
+				TTFTMs:              perf.TTFTMs,
+				DurationMs:          perf.DurationMs,
 				Attempts:            attempts,
 			}
 			select {
@@ -163,6 +207,23 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 		pipe.Incr(bgCtx, globalKey)
 		pipe.Expire(bgCtx, globalKey, 2*time.Hour)
 
+		if perf.TTFTMs > 0 {
+			modelTtftSumKey := fmt.Sprintf("aigw:status:model:%s:%d:ttft_sum", model, minute)
+			modelTtftCntKey := fmt.Sprintf("aigw:status:model:%s:%d:ttft_cnt", model, minute)
+			pipe.IncrBy(bgCtx, modelTtftSumKey, perf.TTFTMs)
+			pipe.Expire(bgCtx, modelTtftSumKey, 2*time.Hour)
+			pipe.Incr(bgCtx, modelTtftCntKey)
+			pipe.Expire(bgCtx, modelTtftCntKey, 2*time.Hour)
+		}
+		if perf.Output > 0 && perf.DurationMs > 0 {
+			modelOutKey := fmt.Sprintf("aigw:status:model:%s:%d:out", model, minute)
+			modelDurKey := fmt.Sprintf("aigw:status:model:%s:%d:dur_ms", model, minute)
+			pipe.IncrBy(bgCtx, modelOutKey, perf.Output)
+			pipe.Expire(bgCtx, modelOutKey, 2*time.Hour)
+			pipe.IncrBy(bgCtx, modelDurKey, perf.DurationMs)
+			pipe.Expire(bgCtx, modelDurKey, 2*time.Hour)
+		}
+
 		// 1.2 endpoint attempt stats
 		for _, att := range epAttempts {
 			var epKey string
@@ -173,6 +234,25 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 			}
 			pipe.Incr(bgCtx, epKey)
 			pipe.Expire(bgCtx, epKey, 2*time.Hour)
+		}
+
+		if perf.EndpointID != "" {
+			if perf.TTFTMs > 0 {
+				ttftSumKey := fmt.Sprintf("aigw:status:endpoint:%s:%d:ttft_sum", perf.EndpointID, minute)
+				ttftCntKey := fmt.Sprintf("aigw:status:endpoint:%s:%d:ttft_cnt", perf.EndpointID, minute)
+				pipe.IncrBy(bgCtx, ttftSumKey, perf.TTFTMs)
+				pipe.Expire(bgCtx, ttftSumKey, 2*time.Hour)
+				pipe.Incr(bgCtx, ttftCntKey)
+				pipe.Expire(bgCtx, ttftCntKey, 2*time.Hour)
+			}
+			if perf.Output > 0 && perf.DurationMs > 0 {
+				outKey := fmt.Sprintf("aigw:status:endpoint:%s:%d:out", perf.EndpointID, minute)
+				durKey := fmt.Sprintf("aigw:status:endpoint:%s:%d:dur_ms", perf.EndpointID, minute)
+				pipe.IncrBy(bgCtx, outKey, perf.Output)
+				pipe.Expire(bgCtx, outKey, 2*time.Hour)
+				pipe.IncrBy(bgCtx, durKey, perf.DurationMs)
+				pipe.Expire(bgCtx, durKey, 2*time.Hour)
+			}
 		}
 
 		// 2. daily cumulative stats
