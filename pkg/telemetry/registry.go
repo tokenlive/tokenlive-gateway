@@ -28,6 +28,7 @@ type LabelContract struct {
 	Stream   string // "true" | "false"
 	Tenant   string // Tenant tag ("others" if whitelist off)
 	Type     string // Token type: "input" | "output" | "cached" | "cache_creation"
+	Endpoint string // Winning endpoint ID; empty when none selected
 
 	// Cached OTel attributes
 	attrs []attribute.KeyValue
@@ -64,6 +65,19 @@ func (lc *LabelContract) ToAttributesWithoutType() []attribute.KeyValue {
 		attribute.String("status", lc.Status),
 		attribute.String("stream", lc.Stream),
 		attribute.String("tenant", lc.Tenant),
+	}
+}
+
+// ToRequestTotalAttributes is the counter-only label set: shared non-token
+// labels plus endpoint (empty string when no endpoint was selected).
+func (lc *LabelContract) ToRequestTotalAttributes() []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("model", lc.Model),
+		attribute.String("provider", lc.Provider),
+		attribute.String("status", lc.Status),
+		attribute.String("stream", lc.Stream),
+		attribute.String("tenant", lc.Tenant),
+		attribute.String("endpoint", lc.Endpoint),
 	}
 }
 

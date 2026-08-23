@@ -9,11 +9,12 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 	"github.com/tokenlive/tokenlive-gateway/pkg/telemetry"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"go.opentelemetry.io/otel"
-	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
-	"go.opentelemetry.io/otel/sdk/metric"
-)
+		"github.com/prometheus/client_golang/prometheus"
+		dto "github.com/prometheus/client_model/go"
+		"go.opentelemetry.io/otel"
+		otelprom "go.opentelemetry.io/otel/exporters/prometheus"
+		"go.opentelemetry.io/otel/sdk/metric"
+	)
 
 func newTestMetricsFilterHelper(t *testing.T) (*MetricsFilter, *prometheus.Registry) {
 	reg := prometheus.NewRegistry()
@@ -149,6 +150,91 @@ func TestMetricsFilter_ZeroCostNotRecorded(t *testing.T) {
 		if mf.GetName() == "gateway_cost_total" {
 			t.Error("expected cost metric to not be recorded when cost is 0")
 			return
+		}
+	}
+}
+
+func labelValue(labels []*dto.LabelPair, name string) (string, bool) {
+	for _, label := range labels {
+		if label.GetName() == name {
+			return label.GetValue(), true
+		}
+	}
+	return "", false
+}
+
+func TestMetricsFilter_RequestTotalEndpointLabelOnly(t *testing.T) {
+	f, reg := newTestMetricsFilterHelper(t)
+
+	gctx := &core.GatewayContext{
+		Model:     "gpt-4",
+		StartTime: time.Now().Add(-200 * time.Millisecond),
+		SelectedEndpoint: &core.Endpoint{
+			ID:       "ep-42",
+			Provider: "openai",
+		},
+		IsStream:            true,
+		TTFT:                120 * time.Millisecond,
+		InputTokens:         10,
+		OutputTokens:        20,
+		CachedTokens:        2,
+		CacheCreationTokens: 1,
+		Cost:                0.03,
+	}
+	if err := f.OnResponse(gctx); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	wantEndpoint := map[string]bool{
+		"gateway_request_total": true,
+	}
+	mustNotHaveEndpoint := map[string]bool{
+		"gateway_request_duration_seconds": true,
+		"gateway_ttft_seconds":             true,
+		"gateway_tokens_total":             true,
+		"gateway_cost_total":               true,
+	}
+	seen := map[string]bool{}
+
+	for _, mf := range mfs {
+		name := mf.GetName()
+		if !wantEndpoint[name] && !mustNotHaveEndpoint[name] {
+			continue
+		}
+		if len(mf.GetMetric()) == 0 {
+			t.Fatalf("expected samples for %s", name)
+		}
+		seen[name] = true
+		for _, m := range mf.GetMetric() {
+			value, ok := labelValue(m.GetLabel(), "endpoint")
+			if wantEndpoint[name] {
+				if !ok {
+					t.Fatalf("expected %s to include endpoint label", name)
+				}
+				if value != "ep-42" {
+					t.Fatalf("expected %s endpoint=ep-42, got %q", name, value)
+				}
+				continue
+			}
+			if ok {
+				t.Fatalf("expected %s not to include endpoint label", name)
+			}
+		}
+	}
+
+	for name := range wantEndpoint {
+		if !seen[name] {
+			t.Fatalf("expected metric %s to be recorded", name)
+		}
+	}
+	for name := range mustNotHaveEndpoint {
+		if !seen[name] {
+			t.Fatalf("expected metric %s to be recorded", name)
 		}
 	}
 }

@@ -41,13 +41,14 @@ func (e *DefaultMetricsExtractor) ExtractLabels(gctx *core.GatewayContext) telem
 		}
 	}
 
-	return telemetry.LabelContract{
-		Model:    gctx.Model,
-		Provider: provider,
-		Status:   status,
-		Stream:   stream,
-		Tenant:   tenant,
-	}
+		return telemetry.LabelContract{
+			Model:    gctx.Model,
+			Provider: provider,
+			Status:   status,
+			Stream:   stream,
+			Tenant:   tenant,
+			Endpoint: winningEndpointID(gctx),
+		}
 }
 
 // ExtractTokenLabels extracts token-specific labels (includes type dimension).

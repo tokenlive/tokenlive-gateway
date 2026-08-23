@@ -65,12 +65,12 @@ func (f *MetricsFilter) OnResponse(gctx *core.GatewayContext) error {
 		return nil
 	}
 
-	// 2. request counter
-	if err := f.recordMetric(func() error {
-		f.registry.RequestTotal.Add(ctx, 1,
-			metric.WithAttributes(labels.ToAttributesWithoutType()...))
-		return nil
-	}); err != nil {
+		// 2. request counter (endpoint label is counter-only)
+		if err := f.recordMetric(func() error {
+			f.registry.RequestTotal.Add(ctx, 1,
+				metric.WithAttributes(labels.ToRequestTotalAttributes()...))
+			return nil
+		}); err != nil {
 		return nil
 	}
 
