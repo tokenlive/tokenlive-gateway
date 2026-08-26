@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tokenlive-gateway Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+    .container { max-width: 1240px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+    svg { width: 100%; min-width: 1100px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: rgba(15, 23, 42, 0.5); border-radius: 0.75rem; border: 1px solid #1e293b; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+    .toolbar { display: flex; gap: 0.5rem; margin-left: auto; flex-shrink: 0; align-items: center; }
+    .toolbar-toggle {
+      background: transparent; border: none; color: #475569; cursor: pointer;
+      font-size: 1.25rem; line-height: 1; padding: 0.25rem 0.5rem; border-radius: 0.375rem;
+      transition: color 0.2s, background 0.2s;
+    }
+    .toolbar-toggle:hover { color: #94a3b8; background: rgba(30, 41, 59, 0.5); }
+    .toolbar-actions { display: none; gap: 0.5rem; }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button {
+      background: rgba(30, 41, 59, 0.8); border: 1px solid #334155; color: #94a3b8;
+      padding: 0.375rem 0.75rem; border-radius: 0.375rem; font-family: inherit;
+      font-size: 0.75rem; cursor: pointer; transition: all 0.2s; white-space: nowrap;
+    }
+    .toolbar-actions button:hover { background: rgba(51, 65, 85, 0.8); color: white; border-color: #475569; }
+    @media print {
+      body { background: #020617; padding: 1rem; }
+      .toolbar { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>tokenlive-gateway Architecture</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">Gin shell + Engine pipeline + ClusterInvoker orchestration · A high-performance, OpenAI-compatible, multi-upstream LLM API gateway</p>
+    </div>
+
+    <!-- Main Diagram -->
+    <div class="diagram-container">
+      <svg viewBox="0 0 1240 950">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ============ Edges (drawn first, rendered behind boxes) ============ -->
+        <!-- A1 Clients -> Gin -->
+        <line x1="130" y1="134" x2="130" y2="208" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <!-- A2 Gin -> Engine -->
+        <line x1="232" y1="268" x2="288" y2="185" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <!-- A3 Config -> Gin -->
+        <line x1="130" y1="380" x2="130" y2="328" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+        <!-- A4 Config -> Engine -->
+        <line x1="232" y1="470" x2="268" y2="470" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+        <!-- A5 Main flow inside engine -->
+        <line x1="465" y1="110" x2="465" y2="122" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="465" y1="244" x2="465" y2="260" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="465" y1="572" x2="465" y2="588" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <!-- A6 ProviderInvoker -> Adapter -->
+        <line x1="628" y1="540" x2="918" y2="345" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <!-- A7 Adapter -> Upstreams -->
+        <line x1="1065" y1="282" x2="1065" y2="244" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <!-- A8 Outbound -> Events & Compensation -->
+        <line x1="642" y1="652" x2="918" y2="642" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+        <!-- A9 access_log -> ClickHouse -->
+        <line x1="642" y1="718" x2="700" y2="778" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+        <!-- A10 Redis -> Engine state read/write (routed around the outbound box) -->
+        <polyline points="340,778 252,664 294,574" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+        <!-- A12 Outbound -> Observability -->
+        <line x1="642" y1="612" x2="918" y2="488" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+        <!-- A13 Compensation replay -> ClickHouse -->
+        <line x1="1005" y1="700" x2="805" y2="778" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+
+        <!-- ============ Region boundaries ============ -->
+        <!-- Engine region -->
+        <rect x="270" y="40" width="610" height="700" rx="12" fill="transparent" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="282" y="58" fill="#34d399" font-size="10" font-weight="600">Engine (pkg/core) · Pipeline orchestration core · Atomic hot reload via Init / UpdateConfig</text>
+        <!-- Config & policy region -->
+        <rect x="30" y="374" width="200" height="202" rx="10" fill="transparent" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="42" y="392" fill="#fbbf24" font-size="10" font-weight="600">Config &amp; Policy</text>
+        <!-- ClusterInvoker sub-region -->
+        <rect x="290" y="262" width="350" height="310" rx="10" fill="transparent" stroke="#34d399" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="302" y="278" fill="#34d399" font-size="9" font-weight="600">ClusterInvoker — retryable orchestration (retry + hedging + cross-model fallback)</text>
+
+        <!-- ============ Left column: Clients / Gin / Config ============ -->
+        <rect x="30" y="70" width="200" height="64" rx="6" fill="#0f172a"/>
+        <rect x="30" y="70" width="200" height="64" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="130" y="92" fill="white" font-size="11" font-weight="600" text-anchor="middle">Clients / AI Apps</text>
+        <text x="130" y="110" fill="#94a3b8" font-size="9" text-anchor="middle">OpenAI SDK · any caller</text>
+        <text x="130" y="124" fill="#94a3b8" font-size="8" text-anchor="middle">streaming SSE / non-streaming</text>
+
+        <rect x="30" y="210" width="200" height="116" rx="6" fill="#0f172a"/>
+        <rect x="30" y="210" width="200" height="116" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="130" y="232" fill="white" font-size="11" font-weight="600" text-anchor="middle">HTTP Shell (Gin)</text>
+        <text x="130" y="250" fill="#94a3b8" font-size="8" text-anchor="middle">LLMHandler · API key auth</text>
+        <text x="130" y="262" fill="#94a3b8" font-size="8" text-anchor="middle">routes /v1/* · /v1beta/* (Gemini)</text>
+        <text x="130" y="274" fill="#94a3b8" font-size="8" text-anchor="middle">/metrics · /health · Swagger · CORS</text>
+        <text x="130" y="286" fill="#22d3ee" font-size="8" text-anchor="middle">pkg/gateway embeds into a host process</text>
+
+        <rect x="42" y="404" width="176" height="60" rx="6" fill="#0f172a"/>
+        <rect x="42" y="404" width="176" height="60" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="130" y="426" fill="white" font-size="11" font-weight="600" text-anchor="middle">ConfigManager</text>
+        <text x="130" y="440" fill="#94a3b8" font-size="8" text-anchor="middle">YAML + Redis / HTTP poller</text>
+        <text x="130" y="452" fill="#94a3b8" font-size="8" text-anchor="middle">hot reload Engine.UpdateConfig</text>
+
+        <rect x="42" y="476" width="176" height="44" rx="6" fill="#0f172a"/>
+        <rect x="42" y="476" width="176" height="44" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="130" y="496" fill="white" font-size="10" font-weight="600" text-anchor="middle">PolicyProvider</text>
+        <text x="130" y="510" fill="#94a3b8" font-size="8" text-anchor="middle">resolved by tenant · user · model</text>
+
+        <rect x="42" y="530" width="176" height="36" rx="6" fill="#0f172a"/>
+        <rect x="42" y="530" width="176" height="36" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="130" y="546" fill="white" font-size="10" font-weight="600" text-anchor="middle">ApiKey / Alias Services</text>
+        <text x="130" y="558" fill="#94a3b8" font-size="8" text-anchor="middle">auth · model aliases · in-proc cache</text>
+
+        <!-- ============ Engine internals ============ -->
+        <rect x="290" y="70" width="350" height="40" rx="6" fill="#0f172a"/>
+        <rect x="290" y="70" width="350" height="40" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="465" y="95" fill="white" font-size="9" text-anchor="middle">parse request → resolve alias → match Pipeline × Policy</text>
+
+        <rect x="290" y="124" width="350" height="120" rx="6" fill="#0f172a"/>
+        <rect x="290" y="124" width="350" height="120" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="465" y="144" fill="white" font-size="11" font-weight="600" text-anchor="middle">InboundFilter chain (runs once)</text>
+        <text x="465" y="162" fill="#94a3b8" font-size="8" text-anchor="middle">auth · credits_check</text>
+        <text x="465" y="178" fill="#94a3b8" font-size="8" text-anchor="middle">limit (token / request / cost)</text>
+        <text x="465" y="194" fill="#94a3b8" font-size="8" text-anchor="middle">session_reader · tagging</text>
+        <text x="465" y="210" fill="#94a3b8" font-size="8" text-anchor="middle">validate</text>
+        <text x="465" y="230" fill="#34d399" font-size="8" text-anchor="middle">pkg/filters/inbound</text>
+
+        <!-- ClusterInvoker sub-components -->
+        <rect x="302" y="288" width="326" height="56" rx="6" fill="#0f172a"/>
+        <rect x="302" y="288" width="326" height="56" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="465" y="308" fill="white" font-size="10" font-weight="600" text-anchor="middle">Discovery</text>
+        <text x="465" y="322" fill="#94a3b8" font-size="8" text-anchor="middle">static · kubernetes · composite · dynamic</text>
+        <text x="465" y="334" fill="#94a3b8" font-size="8" text-anchor="middle">active + adaptive health checks</text>
+
+        <rect x="302" y="356" width="326" height="64" rx="6" fill="#0f172a"/>
+        <rect x="302" y="356" width="326" height="64" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="465" y="376" fill="white" font-size="10" font-weight="600" text-anchor="middle">Router chain (list-in / list-out filters)</text>
+        <text x="465" y="392" fill="#94a3b8" font-size="8" text-anchor="middle">capability · circuit_breaker · priority</text>
+        <text x="465" y="406" fill="#94a3b8" font-size="8" text-anchor="middle">tag · tenant_endpoint</text>
+
+        <rect x="302" y="432" width="326" height="68" rx="6" fill="#0f172a"/>
+        <rect x="302" y="432" width="326" height="68" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="465" y="452" fill="white" font-size="10" font-weight="600" text-anchor="middle">LoadBalancer (10 strategies)</text>
+        <text x="465" y="468" fill="#94a3b8" font-size="8" text-anchor="middle">round_robin · weighted · random · cost · composite</text>
+        <text x="465" y="482" fill="#94a3b8" font-size="8" text-anchor="middle">least_conn · least_latency · sticky · endpoint_affinity</text>
+        <text x="465" y="494" fill="#34d399" font-size="7" text-anchor="middle">latency penalty on failure keeps dead endpoints off least_latency</text>
+
+        <rect x="302" y="512" width="326" height="56" rx="6" fill="#0f172a"/>
+        <rect x="302" y="512" width="326" height="56" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="465" y="532" fill="white" font-size="10" font-weight="600" text-anchor="middle">ProviderInvoker (leaf call)</text>
+        <text x="465" y="546" fill="#94a3b8" font-size="8" text-anchor="middle">SSE interception · TTFT / token extraction · half-open permits</text>
+        <text x="465" y="558" fill="#94a3b8" font-size="8" text-anchor="middle">exclude-and-reselect on failure · no retry after first byte</text>
+
+        <!-- Engine right inner column -->
+        <rect x="660" y="126" width="200" height="80" rx="6" fill="#0f172a"/>
+        <rect x="660" y="126" width="200" height="80" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="760" y="146" fill="white" font-size="11" font-weight="600" text-anchor="middle">Circuit Breaker Manager</text>
+        <text x="760" y="164" fill="#94a3b8" font-size="8" text-anchor="middle">service-level + instance-level</text>
+        <text x="760" y="178" fill="#94a3b8" font-size="8" text-anchor="middle">half-open permits · slow-call detection (TTFT/RTT)</text>
+        <text x="760" y="192" fill="#94a3b8" font-size="8" text-anchor="middle">background probing · state metrics export</text>
+
+        <rect x="660" y="246" width="200" height="80" rx="6" fill="#0f172a"/>
+        <rect x="660" y="246" width="200" height="80" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="760" y="266" fill="white" font-size="11" font-weight="600" text-anchor="middle">Policy engine (pkg/policy)</text>
+        <text x="760" y="284" fill="#94a3b8" font-size="8" text-anchor="middle">limits · timeouts · retry · circuit breaking</text>
+        <text x="760" y="298" fill="#94a3b8" font-size="8" text-anchor="middle">load balancing · error mapping · tagging</text>
+        <text x="760" y="312" fill="#94a3b8" font-size="8" text-anchor="middle">runtime invoker switch / dynamic fallback</text>
+
+        <rect x="290" y="590" width="350" height="138" rx="6" fill="#0f172a"/>
+        <rect x="290" y="590" width="350" height="138" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="465" y="610" fill="white" font-size="11" font-weight="600" text-anchor="middle">OutboundFilter chain (runs once)</text>
+        <text x="465" y="628" fill="#94a3b8" font-size="8" text-anchor="middle">token_settlement · metrics</text>
+        <text x="465" y="644" fill="#94a3b8" font-size="8" text-anchor="middle">status_collector · sticky_session</text>
+        <text x="465" y="660" fill="#94a3b8" font-size="8" text-anchor="middle">access_log · event_publisher</text>
+        <text x="465" y="680" fill="#fb7185" font-size="8" text-anchor="middle">critical filter failure → Redis compensation queue replay</text>
+        <text x="465" y="700" fill="#34d399" font-size="8" text-anchor="middle">pkg/filters/outbound</text>
+
+        <!-- ============ Right column ============ -->
+        <rect x="920" y="70" width="290" height="172" rx="6" fill="#0f172a"/>
+        <rect x="920" y="70" width="290" height="172" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="1065" y="94" fill="white" font-size="12" font-weight="600" text-anchor="middle">Upstream LLM Platforms</text>
+        <text x="1065" y="116" fill="#94a3b8" font-size="9" text-anchor="middle">OpenAI (Chat / Responses / Embeddings)</text>
+        <text x="1065" y="134" fill="#94a3b8" font-size="9" text-anchor="middle">Anthropic (Messages / Responses)</text>
+        <text x="1065" y="152" fill="#94a3b8" font-size="9" text-anchor="middle">Gemini (native /v1beta protocol)</text>
+        <text x="1065" y="170" fill="#94a3b8" font-size="9" text-anchor="middle">Ollama · DeepSeek · Qwen …</text>
+        <text x="1065" y="214" fill="#64748b" font-size="8" text-anchor="middle">any OpenAI-compatible service can be onboarded</text>
+
+        <rect x="920" y="282" width="290" height="118" rx="6" fill="#0f172a"/>
+        <rect x="920" y="282" width="290" height="118" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="1065" y="306" fill="white" font-size="11" font-weight="600" text-anchor="middle">Provider Adapter Layer (pkg/llm)</text>
+        <text x="1065" y="326" fill="#94a3b8" font-size="8" text-anchor="middle">init() factory registration · request/response translation</text>
+        <text x="1065" y="342" fill="#94a3b8" font-size="8" text-anchor="middle">SSE parse / intercept writer · TTFT &amp; token extraction</text>
+        <text x="1065" y="358" fill="#94a3b8" font-size="8" text-anchor="middle">transparent proxying · idle timeout · error normalization</text>
+        <text x="1065" y="380" fill="#34d399" font-size="8" text-anchor="middle">OpenAI-compatible / Anthropic native / Gemini native</text>
+
+        <rect x="920" y="440" width="290" height="104" rx="6" fill="#0f172a"/>
+        <rect x="920" y="440" width="290" height="104" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="1065" y="464" fill="white" font-size="12" font-weight="600" text-anchor="middle">Observability</text>
+        <text x="1065" y="486" fill="#94a3b8" font-size="9" text-anchor="middle">Prometheus /metrics registry</text>
+        <text x="1065" y="502" fill="#94a3b8" font-size="9" text-anchor="middle">Zap structured access logs</text>
+        <text x="1065" y="518" fill="#94a3b8" font-size="9" text-anchor="middle">OpenTelemetry tracing</text>
+
+        <rect x="920" y="584" width="290" height="116" rx="6" fill="#0f172a"/>
+        <rect x="920" y="584" width="290" height="116" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="1065" y="608" fill="white" font-size="12" font-weight="600" text-anchor="middle">Events &amp; Compensation</text>
+        <text x="1065" y="630" fill="#94a3b8" font-size="9" text-anchor="middle">event publisher: Kafka / Redis / HTTP (async batch)</text>
+        <text x="1065" y="646" fill="#94a3b8" font-size="9" text-anchor="middle">compensation queue (Redis) + background worker</text>
+        <text x="1065" y="662" fill="#94a3b8" font-size="9" text-anchor="middle">replays failed critical Outbound filters</text>
+        <text x="1065" y="684" fill="#64748b" font-size="8" text-anchor="middle">pkg/events · pkg/compensation</text>
+
+        <!-- ============ Bottom data layer ============ -->
+        <rect x="290" y="780" width="270" height="96" rx="6" fill="#0f172a"/>
+        <rect x="290" y="780" width="270" height="96" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="425" y="804" fill="white" font-size="12" font-weight="600" text-anchor="middle">Redis</text>
+        <text x="425" y="826" fill="#94a3b8" font-size="8" text-anchor="middle">StateStore: rate-limit tokens · latency / TTFT stats</text>
+        <text x="425" y="840" fill="#94a3b8" font-size="8" text-anchor="middle">session routing · breaker state (in-memory fallback)</text>
+        <text x="425" y="854" fill="#94a3b8" font-size="8" text-anchor="middle">compensation queue · dynamic config · API key / alias cache</text>
+
+        <rect x="600" y="780" width="270" height="96" rx="6" fill="#0f172a"/>
+        <rect x="600" y="780" width="270" height="96" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="735" y="804" fill="white" font-size="12" font-weight="600" text-anchor="middle">ClickHouse</text>
+        <text x="735" y="826" fill="#94a3b8" font-size="8" text-anchor="middle">async batched access-log writes</text>
+        <text x="735" y="840" fill="#94a3b8" font-size="8" text-anchor="middle">batch failures replayed via Redis compensation queue</text>
+        <text x="735" y="854" fill="#94a3b8" font-size="8" text-anchor="middle">usage stats / billing analytics</text>
+
+        <rect x="920" y="780" width="290" height="96" rx="6" fill="#0f172a"/>
+        <rect x="920" y="780" width="290" height="96" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="1065" y="804" fill="white" font-size="12" font-weight="600" text-anchor="middle">Deployment Modes</text>
+        <text x="1065" y="826" fill="#94a3b8" font-size="8" text-anchor="middle">standalone cmd/server · one-shot via make bootstrap</text>
+        <text x="1065" y="840" fill="#94a3b8" font-size="8" text-anchor="middle">cmd/task cron jobs · cmd/migration data migration</text>
+        <text x="1065" y="854" fill="#94a3b8" font-size="8" text-anchor="middle">library embedding: pkg/gateway (tokenlive-standalone)</text>
+
+        <!-- ============ Edge labels (drawn after boxes so they stay visible) ============ -->
+        <text x="142" y="176" fill="#94a3b8" font-size="9">HTTP(S)</text>
+        <text x="142" y="354" fill="#fbbf24" font-size="8">auth · alias</text>
+        <text x="233" y="462" fill="#fbbf24" font-size="8">config/policy injection</text>
+        <text x="755" y="430" fill="#34d399" font-size="8">translated HTTP call</text>
+        <text x="760" y="634" fill="#fb923c" font-size="8">events / failure compensation</text>
+        <text x="903" y="748" fill="#fb923c" font-size="8">replay</text>
+        <text x="585" y="762" fill="#a78bfa" font-size="8">batched access logs</text>
+        <text x="150" y="692" fill="#a78bfa" font-size="8">state read/write</text>
+        <text x="150" y="704" fill="#a78bfa" font-size="7">(limits / latency / session / breaker)</text>
+        <text x="832" y="546" fill="#fbbf24" font-size="8">metrics / logs</text>
+
+        <!-- ============ Legend ============ -->
+        <rect x="30" y="906" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="52" y="914" fill="#94a3b8" font-size="8">Frontend / Ingress</text>
+        <rect x="150" y="906" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="172" y="914" fill="#94a3b8" font-size="8">Processing Core</text>
+        <rect x="270" y="906" width="16" height="10" rx="2" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+        <text x="292" y="914" fill="#94a3b8" font-size="8">External</text>
+        <rect x="370" y="906" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="392" y="914" fill="#94a3b8" font-size="8">Data Stores</text>
+        <rect x="480" y="906" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="502" y="914" fill="#94a3b8" font-size="8">Config / Observability</text>
+        <rect x="620" y="906" width="16" height="10" rx="2" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1"/>
+        <text x="642" y="914" fill="#94a3b8" font-size="8">Events / Messaging</text>
+        <rect x="770" y="906" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="792" y="914" fill="#94a3b8" font-size="8">Security / Breaker</text>
+        <line x1="900" y1="911" x2="932" y2="911" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="938" y="914" fill="#94a3b8" font-size="8">main call path</text>
+        <line x1="1030" y1="911" x2="1062" y2="911" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrowhead)"/>
+        <text x="1068" y="914" fill="#94a3b8" font-size="8">async / state flow</text>
+      </svg>
+    </div>
+
+    <!-- Info Cards -->
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot cyan"></div>
+          <h3>Request Pipeline</h3>
+        </div>
+        <ul>
+          <li>• A thin Gin shell forwards to Engine.HandleRequest; /v1 (Chat · Responses · Messages · Embeddings) + /v1beta (native Gemini)</li>
+          <li>• Inbound / Outbound filters run exactly once per request; retries happen only inside the Invoker</li>
+          <li>• Full-path SSE parsing and interception for precise TTFT and token accounting</li>
+          <li>• On Inbound rejection, only InboundSafe Outbound filters execute</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>Governance &amp; Reliability</h3>
+        </div>
+        <ul>
+          <li>• Policies resolved per tenant / user / model; runtime invoker switching and dynamic fallback</li>
+          <li>• Pure filter Router chain: capability / circuit breaker / priority / tag / tenant endpoint, plus 10 LB strategies</li>
+          <li>• Dual-level (service + instance) circuit breakers, half-open permits, slow calls (TTFT/RTT) count as failures</li>
+          <li>• Cross-model fallback + hedging; no retry once the first stream byte is sent</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>Data &amp; Operations</h3>
+        </div>
+        <ul>
+          <li>• Redis StateStore (auto-degrades to in-memory) + compensation queue worker as backstop</li>
+          <li>• Access logs batched asynchronously into ClickHouse; business events published to Kafka / Redis / HTTP</li>
+          <li>• Multi-source config hot reload: YAML / Redis / HTTP poller / embedded provider</li>
+          <li>• Prometheus metrics + Zap logs + OpenTelemetry tracing</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <p class="footer">
+      tokenlive-gateway • LLM API Gateway • architecture snapshot 2026-08
+    </p>
+  </div>
+
+  <script>
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPNG(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const link = document.createElement('a');
+        link.download = 'diagram.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPDF(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const orientation = canvas.width > canvas.height ? 'landscape' : 'portrait';
+        const pdf = new jsPDF({ orientation, unit: 'px', format: [canvas.width, canvas.height], hotfixes: ['px_scaling'] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('diagram.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+  </script>
+</body>
+</html>
