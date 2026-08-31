@@ -1,7 +1,9 @@
 package providers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1072,6 +1074,104 @@ func TestOpenAIResponses_Translation_WithComplexInput(t *testing.T) {
 		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelAfterFinish(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("POST", "/v1/responses", nil).WithContext(ctx)
+	cancel()
+
+	stream := strings.Join([]string{
+		`data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"apply_patch","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"patch\":\"*** Begin Patch\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	}, "\n\n") + "\n\n"
+
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.Model = "gpt-5.6-sol"
+	gctx.IsStream = true
+
+	resp := &http.Response{Body: &readOnceErrorCloser{data: []byte(stream), err: context.Canceled}}
+	err := handleResponsesStream(gctx, resp)
+	if err != nil {
+		t.Fatalf("expected completed tool call followed by client cancellation to succeed, got %v", err)
+	}
+
+	respBody := w.Body.String()
+	for _, expected := range []string{
+		`event: response.function_call.arguments.done`,
+		`"arguments":"{\"patch\":\"*** Begin Patch\"}"`,
+		`event: response.output_item.done`,
+		`event: response.completed`,
+		`data: [DONE]`,
+	} {
+		if !strings.Contains(respBody, expected) {
+			t.Errorf("expected response stream to contain %q, but got:\n%s", expected, respBody)
+		}
+	}
+	if gctx.GetTagValue("response_completed_sent") != "true" {
+		t.Error("expected response_completed_sent tag to be set")
+	}
+}
+
+func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelBeforeFinishStillFatal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("POST", "/v1/responses", nil).WithContext(ctx)
+	cancel()
+
+	stream := `data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"apply_patch","arguments":"{\"patch\":"}}]},"finish_reason":null}]}\n\n`
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.Model = "gpt-5.6-sol"
+	gctx.IsStream = true
+
+	resp := &http.Response{Body: &readOnceErrorCloser{data: []byte(stream), err: context.Canceled}}
+	err := handleResponsesStream(gctx, resp)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected incomplete tool call cancellation to remain fatal, got %v", err)
+	}
+	if strings.Contains(w.Body.String(), `event: response.completed`) {
+		t.Fatalf("incomplete stream must not be finalized as completed:\n%s", w.Body.String())
+	}
+}
+
+func TestOpenAIResponses_Translation_ToolCalls_Stream_UpstreamErrorAfterFinishStillFatal(t *testing.T) {
+	req := httptest.NewRequest("POST", "/v1/responses", nil)
+	stream := `data: {"id":"gen-upstream-error","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n`
+	upstreamErr := errors.New("upstream socket reset")
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.Model = "gpt-5.6-sol"
+	gctx.IsStream = true
+
+	resp := &http.Response{Body: &readOnceErrorCloser{data: []byte(stream), err: upstreamErr}}
+	err := handleResponsesStream(gctx, resp)
+	if !errors.Is(err, upstreamErr) {
+		t.Fatalf("expected genuine upstream read error to remain fatal, got %v", err)
+	}
+}
+
+type readOnceErrorCloser struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (r *readOnceErrorCloser) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, r.err
+	}
+	r.done = true
+	return copy(p, r.data), r.err
+}
+
+func (r *readOnceErrorCloser) Close() error { return nil }
 
 // TestOpenAIResponses_Translation_ToolCalls_Stream_TrailingErrorSwallowed reproduces
 // the JoyCode gen- pool failure: aggregated backends emit tool_calls deltas, then

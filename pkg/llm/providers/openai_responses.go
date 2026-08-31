@@ -1,7 +1,9 @@
 package providers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -741,6 +743,9 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 				if !headersSent {
 					return fmt.Errorf("upstream stream closed before sending any data (EOF)")
 				}
+				break
+			}
+			if turnCompleted && errors.Is(err, context.Canceled) && gctx.Request != nil && gctx.Request.Context().Err() != nil {
 				break
 			}
 			return fmt.Errorf("read upstream stream: %w", err)
