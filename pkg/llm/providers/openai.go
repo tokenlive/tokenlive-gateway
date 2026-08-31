@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -292,6 +293,9 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 					return fmt.Errorf("upstream stream closed before sending any data (EOF)")
 				}
 				break
+			}
+			if errors.Is(err, context.Canceled) && gctx.Request != nil && gctx.Request.Context().Err() != nil {
+				return fmt.Errorf("%w: %v", core.ErrClientDisconnected, err)
 			}
 			return fmt.Errorf("read upstream stream: %w", err)
 		}

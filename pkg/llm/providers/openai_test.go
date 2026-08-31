@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -194,6 +195,58 @@ func TestHandleOpenAIStream_SplitNormalFramesAreForwardedUnchanged(t *testing.T)
 	}
 	if gctx.InputTokens != 5 || gctx.OutputTokens != 2 {
 		t.Fatalf("expected usage 5/2, got %d/%d", gctx.InputTokens, gctx.OutputTokens)
+	}
+}
+
+func TestHandleOpenAIStream_ClientDisconnectIsClassified(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+	cancel()
+
+	rec := httptest.NewRecorder()
+	gctx := core.AcquireContext(rec, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.Model = "gpt-5.6-sol"
+	gctx.IsStream = true
+	gctx.StartTime = time.Now()
+
+	resp := &http.Response{
+		Body: &readOnceErrorCloser{
+			data: []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"),
+			err:  context.Canceled,
+		},
+	}
+
+	err := handleOpenAIStream(gctx, resp)
+	if !errors.Is(err, core.ErrClientDisconnected) {
+		t.Fatalf("expected client disconnect classification, got %v", err)
+	}
+}
+
+func TestHandleOpenAIStream_UpstreamCancellationRemainsFailure(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	rec := httptest.NewRecorder()
+	gctx := core.AcquireContext(rec, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.Model = "gpt-5.6-sol"
+	gctx.IsStream = true
+	gctx.StartTime = time.Now()
+
+	resp := &http.Response{
+		Body: &readOnceErrorCloser{
+			data: []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"),
+			err:  context.Canceled,
+		},
+	}
+
+	err := handleOpenAIStream(gctx, resp)
+	if err == nil {
+		t.Fatal("expected upstream cancellation to remain an error")
+	}
+	if errors.Is(err, core.ErrClientDisconnected) {
+		t.Fatalf("upstream cancellation must not be classified as client disconnect: %v", err)
 	}
 }
 
