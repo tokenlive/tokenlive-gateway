@@ -1116,7 +1116,7 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelAfterFinish(t 
 	}
 }
 
-func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelBeforeFinishStillFatal(t *testing.T) {
+func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelBeforeFinishIsClassified(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest("POST", "/v1/responses", nil).WithContext(ctx)
 	cancel()
@@ -1131,8 +1131,8 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelBeforeFinishSt
 
 	resp := &http.Response{Body: &readOnceErrorCloser{data: []byte(stream), err: context.Canceled}}
 	err := handleResponsesStream(gctx, resp)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected incomplete tool call cancellation to remain fatal, got %v", err)
+	if !errors.Is(err, core.ErrClientDisconnected) {
+		t.Fatalf("expected client disconnect classification, got %v", err)
 	}
 	if strings.Contains(w.Body.String(), `event: response.completed`) {
 		t.Fatalf("incomplete stream must not be finalized as completed:\n%s", w.Body.String())

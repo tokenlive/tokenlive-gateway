@@ -3,6 +3,7 @@ package outbound
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,6 +64,33 @@ func TestEventPublishFilter_OnResponse(t *testing.T) {
 
 		if len(pub.published) != 0 {
 			t.Errorf("expected 0 published events, got %d", len(pub.published))
+		}
+	})
+
+	t.Run("No invocation failure event when client disconnects", func(t *testing.T) {
+		pub := &mockPublisher{}
+		f := NewEventPublishFilter(pub, nil)
+		gctx := &core.GatewayContext{
+			Ctx:          context.Background(),
+			Request:      httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+			Model:        "gpt-5.6-sol",
+			Err:          fmt.Errorf("%w: context canceled", core.ErrClientDisconnected),
+			AttemptCount: 1,
+			History: []core.AttemptRecord{
+				{EndpointID: "ep-joycode", Success: true},
+			},
+			SelectedEndpoint: &core.Endpoint{
+				ID:       "ep-joycode",
+				Provider: "JoyCode",
+				Model:    "gpt-5.6-sol",
+			},
+		}
+
+		if err := f.OnResponse(gctx); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(pub.published) != 0 {
+			t.Fatalf("expected no event for client disconnect, got %+v", pub.published)
 		}
 	})
 

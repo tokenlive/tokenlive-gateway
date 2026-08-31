@@ -3,6 +3,7 @@ package outbound
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -21,123 +22,140 @@ func TestDefaultMetricsExtractor_ExtractLabels(t *testing.T) {
 		gctx     *core.GatewayContext
 		expected telemetry.LabelContract
 	}{
-			{
-				name: "成功请求_流式_有endpoint",
-				gctx: &core.GatewayContext{
-					Model:            "gpt-4",
-					IsStream:         true,
-					SelectedEndpoint: &core.Endpoint{ID: "ep-openai", Provider: "openai"},
-					Policy:           &policy.Policy{EnableMetricsReporting: true},
-					Tenant:           "vip-tenant",
-				},
-				expected: telemetry.LabelContract{
-					Model:    "gpt-4",
-					Provider: "openai",
-					Status:   "success",
-					Stream:   "true",
-					Tenant:   "vip-tenant",
-					Endpoint: "ep-openai",
-				},
+		{
+			name: "成功请求_流式_有endpoint",
+			gctx: &core.GatewayContext{
+				Model:            "gpt-4",
+				IsStream:         true,
+				SelectedEndpoint: &core.Endpoint{ID: "ep-openai", Provider: "openai"},
+				Policy:           &policy.Policy{EnableMetricsReporting: true},
+				Tenant:           "vip-tenant",
 			},
-			{
-				name: "错误请求_非流式",
-				gctx: &core.GatewayContext{
-					Model:            "claude-3",
-					IsStream:         false,
-					Err:              errors.New("timeout"),
-					SelectedEndpoint: &core.Endpoint{ID: "ep-anthropic", Provider: "anthropic"},
-					Policy:           &policy.Policy{EnableMetricsReporting: false},
-				},
-				expected: telemetry.LabelContract{
-					Model:    "claude-3",
-					Provider: "anthropic",
-					Status:   "error",
-					Stream:   "false",
-					Tenant:   "others",
-					Endpoint: "ep-anthropic",
-				},
+			expected: telemetry.LabelContract{
+				Model:    "gpt-4",
+				Provider: "openai",
+				Status:   "success",
+				Stream:   "true",
+				Tenant:   "vip-tenant",
+				Endpoint: "ep-openai",
 			},
-			{
-				name: "endpoint为nil",
-				gctx: &core.GatewayContext{
-					Model:            "gpt-4",
-					SelectedEndpoint: nil,
-					Policy:           &policy.Policy{EnableMetricsReporting: false},
-				},
-				expected: telemetry.LabelContract{
-					Model:    "gpt-4",
-					Provider: "",
-					Status:   "success",
-					Stream:   "false",
-					Tenant:   "others",
-					Endpoint: "",
-				},
+		},
+		{
+			name: "错误请求_非流式",
+			gctx: &core.GatewayContext{
+				Model:            "claude-3",
+				IsStream:         false,
+				Err:              errors.New("timeout"),
+				SelectedEndpoint: &core.Endpoint{ID: "ep-anthropic", Provider: "anthropic"},
+				Policy:           &policy.Policy{EnableMetricsReporting: false},
 			},
-			{
-				name: "SelectedEndpoint为空时回退History",
-				gctx: &core.GatewayContext{
-					Model:            "gpt-4",
-					SelectedEndpoint: nil,
-					History: []core.AttemptRecord{
-						{EndpointID: ""},
-						{EndpointID: "ep-last"},
-					},
-					Policy: &policy.Policy{EnableMetricsReporting: false},
-				},
-				expected: telemetry.LabelContract{
-					Model:    "gpt-4",
-					Provider: "",
-					Status:   "success",
-					Stream:   "false",
-					Tenant:   "others",
-					Endpoint: "ep-last",
-				},
+			expected: telemetry.LabelContract{
+				Model:    "claude-3",
+				Provider: "anthropic",
+				Status:   "error",
+				Stream:   "false",
+				Tenant:   "others",
+				Endpoint: "ep-anthropic",
 			},
-			{
-				name: "Policy为nil_默认租户",
-				gctx: &core.GatewayContext{
-					Model:            "gpt-4",
-					SelectedEndpoint: &core.Endpoint{ID: "ep-openai", Provider: "openai"},
-					Policy:           nil,
-				},
-				expected: telemetry.LabelContract{
-					Model:    "gpt-4",
-					Provider: "openai",
-					Status:   "success",
-					Stream:   "false",
-					Tenant:   "others",
-					Endpoint: "ep-openai",
-				},
+		},
+		{
+			name: "客户端取消请求",
+			gctx: &core.GatewayContext{
+				Model:            "gpt-5.6-sol",
+				IsStream:         true,
+				Err:              fmt.Errorf("%w: context canceled", core.ErrClientDisconnected),
+				SelectedEndpoint: &core.Endpoint{ID: "ep-joycode", Provider: "JoyCode"},
 			},
-			{
-				name: "租户为空字符串_染色未开启",
-				gctx: &core.GatewayContext{
-					Model:            "gpt-4",
-					SelectedEndpoint: &core.Endpoint{ID: "ep-openai", Provider: "openai"},
-					Policy:           &policy.Policy{EnableMetricsReporting: true},
-					Tenant:           "",
-				},
-				expected: telemetry.LabelContract{
-					Model:    "gpt-4",
-					Provider: "openai",
-					Status:   "success",
-					Stream:   "false",
-					Tenant:   "others",
-					Endpoint: "ep-openai",
-				},
+			expected: telemetry.LabelContract{
+				Model:    "gpt-5.6-sol",
+				Provider: "JoyCode",
+				Status:   "canceled",
+				Stream:   "true",
+				Tenant:   "others",
+				Endpoint: "ep-joycode",
 			},
+		},
+		{
+			name: "endpoint为nil",
+			gctx: &core.GatewayContext{
+				Model:            "gpt-4",
+				SelectedEndpoint: nil,
+				Policy:           &policy.Policy{EnableMetricsReporting: false},
+			},
+			expected: telemetry.LabelContract{
+				Model:    "gpt-4",
+				Provider: "",
+				Status:   "success",
+				Stream:   "false",
+				Tenant:   "others",
+				Endpoint: "",
+			},
+		},
+		{
+			name: "SelectedEndpoint为空时回退History",
+			gctx: &core.GatewayContext{
+				Model:            "gpt-4",
+				SelectedEndpoint: nil,
+				History: []core.AttemptRecord{
+					{EndpointID: ""},
+					{EndpointID: "ep-last"},
+				},
+				Policy: &policy.Policy{EnableMetricsReporting: false},
+			},
+			expected: telemetry.LabelContract{
+				Model:    "gpt-4",
+				Provider: "",
+				Status:   "success",
+				Stream:   "false",
+				Tenant:   "others",
+				Endpoint: "ep-last",
+			},
+		},
+		{
+			name: "Policy为nil_默认租户",
+			gctx: &core.GatewayContext{
+				Model:            "gpt-4",
+				SelectedEndpoint: &core.Endpoint{ID: "ep-openai", Provider: "openai"},
+				Policy:           nil,
+			},
+			expected: telemetry.LabelContract{
+				Model:    "gpt-4",
+				Provider: "openai",
+				Status:   "success",
+				Stream:   "false",
+				Tenant:   "others",
+				Endpoint: "ep-openai",
+			},
+		},
+		{
+			name: "租户为空字符串_染色未开启",
+			gctx: &core.GatewayContext{
+				Model:            "gpt-4",
+				SelectedEndpoint: &core.Endpoint{ID: "ep-openai", Provider: "openai"},
+				Policy:           &policy.Policy{EnableMetricsReporting: true},
+				Tenant:           "",
+			},
+			expected: telemetry.LabelContract{
+				Model:    "gpt-4",
+				Provider: "openai",
+				Status:   "success",
+				Stream:   "false",
+				Tenant:   "others",
+				Endpoint: "ep-openai",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractor.ExtractLabels(tt.gctx)
 			// 只比较字段，不比较内部缓存
-				assert.Equal(t, tt.expected.Model, got.Model)
-				assert.Equal(t, tt.expected.Provider, got.Provider)
-				assert.Equal(t, tt.expected.Status, got.Status)
-				assert.Equal(t, tt.expected.Stream, got.Stream)
-				assert.Equal(t, tt.expected.Tenant, got.Tenant)
-				assert.Equal(t, tt.expected.Endpoint, got.Endpoint)
+			assert.Equal(t, tt.expected.Model, got.Model)
+			assert.Equal(t, tt.expected.Provider, got.Provider)
+			assert.Equal(t, tt.expected.Status, got.Status)
+			assert.Equal(t, tt.expected.Stream, got.Stream)
+			assert.Equal(t, tt.expected.Tenant, got.Tenant)
+			assert.Equal(t, tt.expected.Endpoint, got.Endpoint)
 		})
 	}
 }
@@ -187,80 +205,80 @@ func TestLabelContract_ToAttributes(t *testing.T) {
 		assert.Equal(t, attrs, attrs2)
 	})
 
-		t.Run("Token标签_包含type", func(t *testing.T) {
-			lc := telemetry.LabelContract{
-				Model:    "gpt-4",
-				Provider: "openai",
-				Status:   "success",
-				Stream:   "true",
-				Tenant:   "vip",
-				Type:     "input",
-			}
+	t.Run("Token标签_包含type", func(t *testing.T) {
+		lc := telemetry.LabelContract{
+			Model:    "gpt-4",
+			Provider: "openai",
+			Status:   "success",
+			Stream:   "true",
+			Tenant:   "vip",
+			Type:     "input",
+		}
 
-			attrs := lc.ToAttributes()
-			assert.Len(t, attrs, 6) // 多了 type 标签
-		})
+		attrs := lc.ToAttributes()
+		assert.Len(t, attrs, 6) // 多了 type 标签
+	})
 
-		t.Run("WithoutType不含endpoint", func(t *testing.T) {
-			lc := telemetry.LabelContract{
-				Model:    "gpt-4",
-				Provider: "openai",
-				Status:   "success",
-				Stream:   "true",
-				Tenant:   "vip",
-				Endpoint: "ep-1",
-			}
+	t.Run("WithoutType不含endpoint", func(t *testing.T) {
+		lc := telemetry.LabelContract{
+			Model:    "gpt-4",
+			Provider: "openai",
+			Status:   "success",
+			Stream:   "true",
+			Tenant:   "vip",
+			Endpoint: "ep-1",
+		}
 
-			attrs := lc.ToAttributesWithoutType()
-			assert.Len(t, attrs, 5)
-			for _, attr := range attrs {
-				assert.NotEqual(t, "endpoint", string(attr.Key))
-			}
-		})
+		attrs := lc.ToAttributesWithoutType()
+		assert.Len(t, attrs, 5)
+		for _, attr := range attrs {
+			assert.NotEqual(t, "endpoint", string(attr.Key))
+		}
+	})
 
-		t.Run("RequestTotal包含endpoint空字符串", func(t *testing.T) {
-			lc := telemetry.LabelContract{
-				Model:    "gpt-4",
-				Provider: "openai",
-				Status:   "success",
-				Stream:   "true",
-				Tenant:   "vip",
-			}
+	t.Run("RequestTotal包含endpoint空字符串", func(t *testing.T) {
+		lc := telemetry.LabelContract{
+			Model:    "gpt-4",
+			Provider: "openai",
+			Status:   "success",
+			Stream:   "true",
+			Tenant:   "vip",
+		}
 
-			attrs := lc.ToRequestTotalAttributes()
-			assert.Len(t, attrs, 6)
-			found := false
-			for _, attr := range attrs {
-				if string(attr.Key) == "endpoint" {
-					found = true
-					assert.Equal(t, "", attr.Value.AsString())
-				}
+		attrs := lc.ToRequestTotalAttributes()
+		assert.Len(t, attrs, 6)
+		found := false
+		for _, attr := range attrs {
+			if string(attr.Key) == "endpoint" {
+				found = true
+				assert.Equal(t, "", attr.Value.AsString())
 			}
-			assert.True(t, found)
-		})
+		}
+		assert.True(t, found)
+	})
 
-		t.Run("RequestTotal包含endpoint ID", func(t *testing.T) {
-			lc := telemetry.LabelContract{
-				Model:    "gpt-4",
-				Provider: "openai",
-				Status:   "success",
-				Stream:   "true",
-				Tenant:   "vip",
-				Endpoint: "ep-42",
-			}
+	t.Run("RequestTotal包含endpoint ID", func(t *testing.T) {
+		lc := telemetry.LabelContract{
+			Model:    "gpt-4",
+			Provider: "openai",
+			Status:   "success",
+			Stream:   "true",
+			Tenant:   "vip",
+			Endpoint: "ep-42",
+		}
 
-			attrs := lc.ToRequestTotalAttributes()
-			assert.Len(t, attrs, 6)
-			found := false
-			for _, attr := range attrs {
-				if string(attr.Key) == "endpoint" {
-					found = true
-					assert.Equal(t, "ep-42", attr.Value.AsString())
-				}
+		attrs := lc.ToRequestTotalAttributes()
+		assert.Len(t, attrs, 6)
+		found := false
+		for _, attr := range attrs {
+			if string(attr.Key) == "endpoint" {
+				found = true
+				assert.Equal(t, "ep-42", attr.Value.AsString())
 			}
-			assert.True(t, found)
-		})
-	}
+		}
+		assert.True(t, found)
+	})
+}
 
 func TestMetricsFilter_BestEffort_ErrorHandling(t *testing.T) {
 	t.Run("registry为nil_优雅降级", func(t *testing.T) {

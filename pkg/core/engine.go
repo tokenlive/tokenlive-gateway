@@ -355,6 +355,13 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The downstream client has already gone away. This is neither an upstream
+	// failure nor a response we can still deliver, so stop without synthesizing
+	// an error frame.
+	if errors.Is(gctx.Err, ErrClientDisconnected) {
+		return
+	}
+
 	// 6. Write response
 	// Detect streams that started (TTFT>0) but never emitted a protocol completion frame.
 	// Responses uses response_completed_sent; Messages uses message_stop_sent.
@@ -546,4 +553,3 @@ func isAffinityNoDegrade(gctx *GatewayContext) bool {
 	}
 	return false
 }
-

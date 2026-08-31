@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -113,6 +114,9 @@ func (f *StatusCollectorFilter) InboundSafe()                        {}
 
 func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 	if gctx.Model == "" {
+		return nil
+	}
+	if errors.Is(gctx.Err, core.ErrClientDisconnected) {
 		return nil
 	}
 

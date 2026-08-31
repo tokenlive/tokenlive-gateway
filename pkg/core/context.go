@@ -15,6 +15,10 @@ import (
 // ErrGatewayFirstByteTimeout indicates an active disconnect caused by gateway timeout policy (connect timeout + first-byte timeout).
 var ErrGatewayFirstByteTimeout = errors.New("gateway policy timeout: first byte timeout (connect timeout + ttft timeout exceeded)")
 
+// ErrClientDisconnected indicates that the downstream client canceled the request.
+// It is not an upstream provider failure and must not affect retry or circuit-breaker health.
+var ErrClientDisconnected = errors.New("client disconnected")
+
 // GatewayContext is the request context threaded through the entire pipeline.
 // Does not implement context.Context (strong-typed fields preferred).
 type GatewayContext struct {
@@ -77,15 +81,15 @@ type GatewayContext struct {
 // perAttemptTagKeys lists dynamic tag keys cleared on each retry.
 // Register new per-attempt tags here to prevent stale value leakage on retry.
 var perAttemptTagKeys = []string{
-		"response_id",
-		"response_model",
-		"response_completed_sent",
-		"message_stop_sent",
-		"upstream_finish_reason",
-		"anthropic_stop_reason",
-		"stream_saw_done",
-		"transmitted_chars",
-	}
+	"response_id",
+	"response_model",
+	"response_completed_sent",
+	"message_stop_sent",
+	"upstream_finish_reason",
+	"anthropic_stop_reason",
+	"stream_saw_done",
+	"transmitted_chars",
+}
 
 // ResetAttempt clears per-attempt fields and token stats to prevent stale values on retry.
 func (c *GatewayContext) ResetAttempt() {

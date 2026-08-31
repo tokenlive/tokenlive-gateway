@@ -44,6 +44,9 @@ func (f *EventPublishFilter) OnResponse(gctx *core.GatewayContext) error {
 	if f.publisher == nil {
 		return nil
 	}
+	if errors.Is(gctx.Err, core.ErrClientDisconnected) {
+		return nil
+	}
 
 	evts := f.analyzeEvents(gctx)
 	if len(evts) == 0 {

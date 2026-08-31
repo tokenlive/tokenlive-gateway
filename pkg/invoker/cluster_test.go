@@ -3,6 +3,7 @@ package invoker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -240,6 +241,85 @@ func TestClusterInvoker_Retry(t *testing.T) {
 		t.Errorf("expected first attempt error to be recorded, got %q", firstAttempt.Error)
 	}
 }
+
+func TestClusterInvoker_ClientDisconnectDoesNotRetryOrPenalizeEndpoint(t *testing.T) {
+	ep := &core.Endpoint{ID: "ep-client-cancel", Provider: "openai", Model: "gpt-4"}
+	provider := &fixedErrorProvider{
+		name: "openai",
+		err:  fmt.Errorf("%w: context canceled", core.ErrClientDisconnected),
+	}
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{ep}}
+	lb := &mockLoadBalancer{provider: provider}
+	retry := &policy.RetryPolicy{
+		Retry:         2,
+		BackoffType:   "fixed",
+		BaseMs:        1,
+		ErrorMessages: []string{"client disconnected"},
+	}
+	logger, _ := zap.NewDevelopment()
+	stateStore := newMockStateStore()
+	cbManager := core.NewCircuitBreakerManager()
+	ci := NewClusterInvoker(
+		discovery,
+		[]core.Router{&passThroughRouter{}},
+		map[string]core.LoadBalancer{"round_robin": lb},
+		retry,
+		cbManager,
+		stateStore,
+		logger,
+		nil,
+	)
+
+	gctx := newTestGatewayContext()
+	defer core.ReleaseContext(gctx)
+	gctx.Policy = &policy.Policy{
+		CircuitBreakPolicies: []*policy.CircuitBreakPolicy{
+			{
+				Level:                     "ENDPOINT",
+				SlidingWindowType:         "count",
+				SlidingWindowSize:         1,
+				MinCallsThreshold:         1,
+				FailureRateThreshold:      1,
+				WaitDurationInOpenState:   60000,
+				ErrorMessages:             []string{"client disconnected"},
+				SlowCallRateThreshold:     1,
+				SlowCallDurationThreshold: 60000,
+			},
+		},
+	}
+
+	err := ci.Invoke(gctx)
+	if !errors.Is(err, core.ErrClientDisconnected) {
+		t.Fatalf("expected client disconnect, got %v", err)
+	}
+	if provider.callCount != 1 {
+		t.Fatalf("expected no retry after client disconnect, got %d calls", provider.callCount)
+	}
+	if cbManager.GetState(ep.ID) != core.CircuitClosed {
+		t.Fatal("client disconnect must not open the endpoint circuit breaker")
+	}
+	if _, ok := stateStore.latency[ep.ID]; ok {
+		t.Fatal("client disconnect must not record a failure latency penalty")
+	}
+}
+
+type fixedErrorProvider struct {
+	name      string
+	err       error
+	callCount int
+}
+
+func (p *fixedErrorProvider) Name() string            { return p.name }
+func (p *fixedErrorProvider) Type() core.ProviderType { return core.ProviderOpenAI }
+func (p *fixedErrorProvider) RequestTypes() []core.RequestType {
+	return []core.RequestType{core.RequestTypeChatCompletion}
+}
+func (p *fixedErrorProvider) Invoke(*core.GatewayContext) error {
+	p.callCount++
+	return p.err
+}
+func (p *fixedErrorProvider) HealthCheck(context.Context) error { return nil }
+func (p *fixedErrorProvider) ValidateConfig() error             { return nil }
 
 func TestRetryPolicy_ShouldRetryWithReason(t *testing.T) {
 	retry := &policy.RetryPolicy{
@@ -828,7 +908,7 @@ func TestClusterInvoker_FatalErrAbortsRetry(t *testing.T) {
 		[]core.Router{},
 		map[string]core.LoadBalancer{"round_robin": &testRoundRobin{}},
 		&policy.RetryPolicy{
-			Retry: 3,
+			Retry:      3,
 			ErrorCodes: []string{"500"},
 		},
 		cbManager,
@@ -853,5 +933,3 @@ func TestClusterInvoker_FatalErrAbortsRetry(t *testing.T) {
 		t.Errorf("expected 0 attempts, got %d", gctx.AttemptCount)
 	}
 }
-
-

@@ -1,6 +1,7 @@
 package outbound
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,32 @@ func TestAccessLogFilterBuildsPortalIdentityFields(t *testing.T) {
 	}
 	if item.APIKeyHash != "hash_1" {
 		t.Fatalf("APIKeyHash = %q, want hash_1", item.APIKeyHash)
+	}
+}
+
+func TestAccessLogFilter_ClientDisconnectUsesInfoAndStatus499(t *testing.T) {
+	coreObs, logs := observer.New(zap.InfoLevel)
+	f := NewAccessLogFilter(zap.New(coreObs), nil, nil, nil, nil)
+	gctx := &core.GatewayContext{
+		Model:     "gpt-5.6-sol",
+		StartTime: time.Now().Add(-100 * time.Millisecond),
+		Err:       fmt.Errorf("%w: context canceled", core.ErrClientDisconnected),
+	}
+
+	if err := f.OnResponse(gctx); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if logs.FilterMessage("request canceled by client").Len() != 1 {
+		t.Fatalf("expected one client cancellation info log, got %+v", logs.All())
+	}
+	if logs.FilterLevelExact(zap.ErrorLevel).Len() != 0 {
+		t.Fatalf("client cancellation must not be logged as an error: %+v", logs.All())
+	}
+
+	item := f.buildAccessLogItem(gctx)
+	if item.StatusCode != 499 {
+		t.Fatalf("expected client cancellation status 499, got %d", item.StatusCode)
 	}
 }
 

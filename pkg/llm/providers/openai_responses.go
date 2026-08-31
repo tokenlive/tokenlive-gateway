@@ -745,8 +745,11 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 				}
 				break
 			}
-			if turnCompleted && errors.Is(err, context.Canceled) && gctx.Request != nil && gctx.Request.Context().Err() != nil {
-				break
+			if errors.Is(err, context.Canceled) && gctx.Request != nil && gctx.Request.Context().Err() != nil {
+				if turnCompleted {
+					break
+				}
+				return fmt.Errorf("%w: %v", core.ErrClientDisconnected, err)
 			}
 			return fmt.Errorf("read upstream stream: %w", err)
 		}

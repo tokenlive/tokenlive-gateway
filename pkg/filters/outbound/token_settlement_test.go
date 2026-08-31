@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -184,9 +185,9 @@ func TestTokenSettlementFilter_CompletionEstimation(t *testing.T) {
 func TestTokenSettlementFilter_OnResponse_WithCachedTokens(t *testing.T) {
 	p := &policy.Policy{
 		Billing: &policy.BillingPolicy{
-			InputPrice:         2.0,   // 元/百万 Tokens
+			InputPrice:         2.0, // 元/百万 Tokens
 			OutputPrice:        4.0,
-			CachedPrice:        0.2,   // 90% off
+			CachedPrice:        0.2, // 90% off
 			CacheCreationPrice: 2.5,
 		},
 		LimitPolicies: []*policy.LimitPolicy{
@@ -243,7 +244,7 @@ func TestTokenSettlementFilter_OnResponse_WithCachedTokens(t *testing.T) {
 func TestTokenSettlementFilter_OnResponse_WithExcessiveCachedTokens(t *testing.T) {
 	p := &policy.Policy{
 		Billing: &policy.BillingPolicy{
-			InputPrice:         2.0,  // 元/百万 Tokens
+			InputPrice:         2.0, // 元/百万 Tokens
 			OutputPrice:        4.0,
 			CachedPrice:        0.2,
 			CacheCreationPrice: 2.5,
@@ -303,10 +304,11 @@ func TestTokenSettlementFilter_OnResponse_WithExcessiveCachedTokens(t *testing.T
 // 做 nonCached = InputTokens - Cached - CacheCreation，导致负数或被错误截断。
 // 修复后：提取阶段已将 InputTokens 归一化为「总输入」，故此处模拟归一化后的 gctx，
 // 验证四段计费正确且不为负。
-//   input_tokens(未命中)=500, cache_read=1000, cache_creation=200
-//   提取后 InputTokens = 500 + 1000 + 200 = 1700 (总输入)
-//   nonCached = 1700 - 1000 - 200 = 500
-//   Cost = (500*2.0 + 1000*0.2 + 200*2.5 + 100*4.0) / 1_000_000
+//
+//	input_tokens(未命中)=500, cache_read=1000, cache_creation=200
+//	提取后 InputTokens = 500 + 1000 + 200 = 1700 (总输入)
+//	nonCached = 1700 - 1000 - 200 = 500
+//	Cost = (500*2.0 + 1000*0.2 + 200*2.5 + 100*4.0) / 1_000_000
 func TestTokenSettlementFilter_AnthropicCacheBilling_Regression(t *testing.T) {
 	p := &policy.Policy{
 		Billing: &policy.BillingPolicy{
@@ -346,12 +348,49 @@ func TestTokenSettlementFilter_AnthropicCacheBilling_Regression(t *testing.T) {
 type mockCreditsDeductor struct {
 	deducted int64
 	calls    int
+	ctxErr   error
 }
 
 func (m *mockCreditsDeductor) DeductCredits(ctx context.Context, apiKey string, credits int64) (int64, error) {
 	m.deducted += credits
 	m.calls++
+	m.ctxErr = ctx.Err()
 	return 10000000 - credits, nil
+}
+
+func TestTokenSettlementFilter_ClientDisconnectStillSettlesKnownUsage(t *testing.T) {
+	deductor := &mockCreditsDeductor{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	gctx := &core.GatewayContext{
+		Ctx:          ctx,
+		UserID:       "user-canceled",
+		APIKey:       "key-canceled",
+		Model:        "gpt-5.6-sol",
+		Err:          fmt.Errorf("%w: context canceled", core.ErrClientDisconnected),
+		InputTokens:  1000,
+		OutputTokens: 100,
+		Policy: &policy.Policy{
+			Billing: &policy.BillingPolicy{
+				InputPrice:  2,
+				OutputPrice: 4,
+			},
+		},
+	}
+	f := NewTokenSettlementFilter(&mockSettlementStore{}, deductor, nil)
+
+	if err := f.OnResponse(gctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deductor.calls != 1 {
+		t.Fatalf("expected known usage to be deducted once, got %d", deductor.calls)
+	}
+	if deductor.ctxErr != nil {
+		t.Fatalf("expected settlement context to survive client cancellation, got %v", deductor.ctxErr)
+	}
+	if gctx.Cost == 0 {
+		t.Fatal("expected known usage cost to be retained")
+	}
 }
 
 // TestTokenSettlementFilter_CreditsBilling_Regression 验证积分扣减行为
@@ -391,15 +430,15 @@ func TestTokenSettlementFilter_CreditsBilling_Regression(t *testing.T) {
 	qdB := &mockCreditsDeductor{}
 	fB := NewTokenSettlementFilter(&mockSettlementStore{}, qdB, nil)
 	gctxB := &core.GatewayContext{
-		Ctx:           context.Background(),
-		Request:       httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		UserID:        "user-b",
-		APIKey:        "key-b",
-		Model:         "gpt-4",
-		Policy:        p,
-		InputTokens:   1000,
-		OutputTokens:  100,
-		CachedTokens:  1000,
+		Ctx:          context.Background(),
+		Request:      httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		UserID:       "user-b",
+		APIKey:       "key-b",
+		Model:        "gpt-4",
+		Policy:       p,
+		InputTokens:  1000,
+		OutputTokens: 100,
+		CachedTokens: 1000,
 	}
 	if err := fB.OnResponse(gctxB); err != nil {
 		t.Fatalf("user B: expected no error, got %v", err)
@@ -563,7 +602,7 @@ func TestTokenSettlementFilter_OnResponse_PriceInheritanceAndOverride(t *testing
 	t.Run("Inherit from model level billing policy", func(t *testing.T) {
 		p := &policy.Policy{
 			Billing: &policy.BillingPolicy{
-				InputPrice:         5.0,  // 元/百万 Tokens
+				InputPrice:         5.0, // 元/百万 Tokens
 				OutputPrice:        8.0,
 				CachedPrice:        1.0,
 				CacheCreationPrice: 6.0,
@@ -597,7 +636,7 @@ func TestTokenSettlementFilter_OnResponse_PriceInheritanceAndOverride(t *testing
 	t.Run("Override by Endpoint level configuration (Full)", func(t *testing.T) {
 		p := &policy.Policy{
 			Billing: &policy.BillingPolicy{
-				InputPrice:         5.0,  // 元/百万 Tokens
+				InputPrice:         5.0, // 元/百万 Tokens
 				OutputPrice:        8.0,
 				CachedPrice:        1.0,
 				CacheCreationPrice: 6.0,
@@ -641,7 +680,7 @@ func TestTokenSettlementFilter_OnResponse_PriceInheritanceAndOverride(t *testing
 	t.Run("Override by Endpoint level configuration (Partial/Inheritance)", func(t *testing.T) {
 		p := &policy.Policy{
 			Billing: &policy.BillingPolicy{
-				InputPrice:         5.0,  // 元/百万 Tokens
+				InputPrice:         5.0, // 元/百万 Tokens
 				OutputPrice:        8.0,
 				CachedPrice:        1.0,
 				CacheCreationPrice: 6.0,

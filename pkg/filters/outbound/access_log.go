@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -156,7 +157,10 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 	if sd := gctx.GetTagValue("stream_saw_done"); sd != "" {
 		fields = append(fields, zap.String("stream_saw_done", sd))
 	}
-	if gctx.Err != nil {
+	if errors.Is(gctx.Err, core.ErrClientDisconnected) {
+		fields = append(fields, zap.String("cancel_reason", gctx.Err.Error()))
+		gctx.Logger(f.logger).Info("request canceled by client", fields...)
+	} else if gctx.Err != nil {
 		fields = append(fields, zap.Error(gctx.Err))
 		gctx.Logger(f.logger).Error("request completed with error", fields...)
 	} else {
@@ -190,7 +194,10 @@ func (f *AccessLogFilter) buildAccessLogItem(gctx *core.GatewayContext) AccessLo
 
 	errMsg := ""
 	statusCode := int16(200)
-	if gctx.Err != nil {
+	if errors.Is(gctx.Err, core.ErrClientDisconnected) {
+		errMsg = gctx.Err.Error()
+		statusCode = int16(499)
+	} else if gctx.Err != nil {
 		errMsg = gctx.Err.Error()
 		statusCode = int16(500)
 	}

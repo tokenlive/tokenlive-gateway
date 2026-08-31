@@ -2,6 +2,7 @@ package invoker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -425,10 +426,11 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		}
 
 		err = invoker.Invoke(gctx)
-		if err != nil && gctx.UpstreamError == nil {
+		clientDisconnected := errors.Is(err, core.ErrClientDisconnected)
+		if err != nil && !clientDisconnected && gctx.UpstreamError == nil {
 			gctx.UpstreamError = err
 		}
-		gctx.RecordAttempt(err == nil)
+		gctx.RecordAttempt(err == nil || clientDisconnected)
 
 		lastInvoker = gctx.SelectedInvoker
 		lastEndpoint = gctx.SelectedEndpoint
@@ -437,6 +439,14 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		lastBody = gctx.UpstreamBody
 		lastUpstreamErr = gctx.UpstreamError
 		hasPhysicalCall = true
+
+		if clientDisconnected {
+			gctx.Logger(ci.logger).Info("client disconnected during endpoint invocation",
+				zap.String("endpoint", gctx.SelectedEndpoint.ID),
+				zap.Int("attempt", attempt),
+			)
+			return err
+		}
 
 		if err == nil {
 			isSlowCall := false

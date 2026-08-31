@@ -1440,6 +1440,39 @@ func TestEngine_HandleRequest_Responses(t *testing.T) {
 	assert.Equal(t, `{"responses": "ok"}`, rec.Body.String())
 }
 
+func TestEngine_HandleRequest_ClientDisconnectDoesNotWriteUpstreamError(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	provider := &mockResponsesProvider{
+		name:      "openai",
+		invokeErr: fmt.Errorf("%w: context canceled", ErrClientDisconnected),
+	}
+	ep := &Endpoint{
+		ID:           "ep-responses",
+		Provider:     "openai",
+		Model:        "gpt-4",
+		RequestTypes: []RequestType{RequestTypeResponses},
+	}
+	pipeline := &Pipeline{
+		Name:         "responses",
+		RequestTypes: []RequestType{RequestTypeResponses},
+		Invoker: &mockResponsesInvoker{
+			provider: provider,
+			endpoint: ep,
+		},
+	}
+	engine := newTestEngine(map[string]*Pipeline{"responses": pipeline})
+	engine.logger = logger
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4","stream":true}`))
+	rec := httptest.NewRecorder()
+
+	engine.HandleRequest(rec, req)
+
+	if rec.Body.Len() != 0 {
+		t.Fatalf("client disconnect must not write an error response: %q", rec.Body.String())
+	}
+}
+
 // ===== TestEngine_HandleRequest_Messages_Translation =====
 
 type mockOpenAIMessagesProvider struct {

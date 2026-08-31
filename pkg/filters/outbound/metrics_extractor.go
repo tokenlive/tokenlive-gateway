@@ -1,6 +1,8 @@
 package outbound
 
 import (
+	"errors"
+
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/telemetry"
 )
@@ -17,7 +19,9 @@ type DefaultMetricsExtractor struct{}
 func (e *DefaultMetricsExtractor) ExtractLabels(gctx *core.GatewayContext) telemetry.LabelContract {
 	// 1. status label
 	status := "success"
-	if gctx.Err != nil {
+	if errors.Is(gctx.Err, core.ErrClientDisconnected) {
+		status = "canceled"
+	} else if gctx.Err != nil {
 		status = "error"
 	}
 
@@ -41,14 +45,14 @@ func (e *DefaultMetricsExtractor) ExtractLabels(gctx *core.GatewayContext) telem
 		}
 	}
 
-		return telemetry.LabelContract{
-			Model:    gctx.Model,
-			Provider: provider,
-			Status:   status,
-			Stream:   stream,
-			Tenant:   tenant,
-			Endpoint: winningEndpointID(gctx),
-		}
+	return telemetry.LabelContract{
+		Model:    gctx.Model,
+		Provider: provider,
+		Status:   status,
+		Stream:   stream,
+		Tenant:   tenant,
+		Endpoint: winningEndpointID(gctx),
+	}
 }
 
 // ExtractTokenLabels extracts token-specific labels (includes type dimension).

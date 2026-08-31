@@ -94,6 +94,32 @@ func TestStatusCollectorFilter_OnResponse(t *testing.T) {
 	})
 }
 
+func TestStatusCollectorFilter_ClientDisconnectDoesNotAffectAvailability(t *testing.T) {
+	metricCh := make(chan RequestMetric, 1)
+	f := &StatusCollectorFilter{metricCh: metricCh}
+	gctx := &core.GatewayContext{
+		Ctx:          context.Background(),
+		Request:      httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		Model:        "gpt-5.6-sol",
+		Err:          fmt.Errorf("%w: context canceled", core.ErrClientDisconnected),
+		InputTokens:  100,
+		OutputTokens: 20,
+		History: []core.AttemptRecord{
+			{EndpointID: "ep-joycode", Success: true},
+		},
+	}
+
+	if err := f.OnResponse(gctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case metric := <-metricCh:
+		t.Fatalf("client disconnect must not emit availability metrics, got %+v", metric)
+	default:
+	}
+}
+
 func TestCollectEndpointPerfWriteAttributesOnlyWinningEndpoint(t *testing.T) {
 	start := time.Now().Add(-2 * time.Second)
 	gctx := &core.GatewayContext{

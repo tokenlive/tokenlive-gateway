@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
@@ -39,14 +40,22 @@ func (f *TokenSettlementFilter) Criticality() core.FilterCriticality { return co
 func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 	// Resolve rates once for quota and cost settlement
 	inputPrice, outputPrice, cachedPrice, cacheCreationPrice := resolvePrices(gctx)
+	clientDisconnected := errors.Is(gctx.Err, core.ErrClientDisconnected)
+	settleUsage := gctx.Err == nil || clientDisconnected
+	settlementCtx := gctx.Ctx
+	if settlementCtx == nil {
+		settlementCtx = context.Background()
+	} else if clientDisconnected {
+		settlementCtx = context.WithoutCancel(settlementCtx)
+	}
 
-	// Credits: personal users (UserID != "") on successful requests only
-	if gctx.UserID != "" && gctx.Err == nil && f.creditsDeductor != nil {
+	// Credits: settle successful requests and client-aborted streams with known usage.
+	if gctx.UserID != "" && settleUsage && f.creditsDeductor != nil {
 		costYuan := computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice)
 		creditsToDeduct := int64(costYuan*1_000_000.0 + 0.5) // round to micro-yuan
 
 		if creditsToDeduct > 0 {
-			newCredits, err := f.creditsDeductor.DeductCredits(gctx.Ctx, gctx.APIKey, creditsToDeduct)
+			newCredits, err := f.creditsDeductor.DeductCredits(settlementCtx, gctx.APIKey, creditsToDeduct)
 			if err != nil {
 				// Return error to trigger compensation
 				if f.logger != nil {
@@ -128,7 +137,7 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 		}()
 	}
 
-	if gctx.Err == nil {
+	if settleUsage {
 		gctx.Cost = computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice)
 	}
 
