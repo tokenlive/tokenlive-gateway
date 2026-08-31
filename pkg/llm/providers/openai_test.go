@@ -3,8 +3,10 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +100,176 @@ func TestOpenAIProvider_ChatCompletion_Stream(t *testing.T) {
 		t.Error("expected TTFT > 0 for stream")
 	}
 }
+
+func TestHandleOpenAIStream_SplitErrorFrameIsNotForwarded(t *testing.T) {
+	const upstreamError = `{"error":{"cause":"","code":504,"message":"模型返回异常，无具体用量信息","status":"INVALID_RESPONSE"},"requestId":"repro-request","result":null}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"kimi-k3","messages":[],"stream":true}`,
+	))
+	gctx := core.AcquireContext(rec, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeChatCompletion
+	gctx.Model = "kimi-k3"
+	gctx.IsStream = true
+	gctx.StartTime = time.Now()
+
+	resp := &http.Response{
+		Body: &chunkedStreamReadCloser{chunks: [][]byte{
+			[]byte("data: " + upstreamError + "\n"),
+			[]byte("\n"),
+		}},
+	}
+
+	err := handleOpenAIStream(gctx, resp)
+	if err == nil || !strings.Contains(err.Error(), "upstream stream returned error event") {
+		t.Fatalf("expected detected upstream error, got %v", err)
+	}
+	if gctx.TTFT != 0 {
+		t.Fatalf("error frame must be intercepted before starting the client stream, got TTFT %s", gctx.TTFT)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("error frame must not be forwarded to the client, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleOpenAIStream_CROnlyErrorFrameIsNotForwarded(t *testing.T) {
+	const upstreamError = `{"error":{"message":"upstream failed","type":"upstream_error"}}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	gctx := core.AcquireContext(rec, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeChatCompletion
+	gctx.IsStream = true
+	gctx.StartTime = time.Now()
+
+	resp := &http.Response{
+		Body: &chunkedStreamReadCloser{chunks: [][]byte{
+			[]byte("data: " + upstreamError + "\r"),
+			[]byte("\r"),
+		}},
+	}
+
+	err := handleOpenAIStream(gctx, resp)
+	if err == nil || !strings.Contains(err.Error(), "upstream stream returned error event") {
+		t.Fatalf("expected detected upstream error, got %v", err)
+	}
+	if gctx.TTFT != 0 || rec.Body.Len() != 0 {
+		t.Fatalf("CR-only error frame leaked: TTFT=%s body=%q", gctx.TTFT, rec.Body.String())
+	}
+}
+
+func TestHandleOpenAIStream_SplitNormalFramesAreForwardedUnchanged(t *testing.T) {
+	const firstFrame = "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\r\n\r\n"
+	const usageFrame = "data: {\"id\":\"chatcmpl-1\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n"
+	const doneFrame = "data: [DONE]\n\n"
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	gctx := core.AcquireContext(rec, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeChatCompletion
+	gctx.Model = "gpt-4"
+	gctx.IsStream = true
+	gctx.StartTime = time.Now()
+
+	resp := &http.Response{
+		Body: &chunkedStreamReadCloser{chunks: [][]byte{
+			[]byte(strings.TrimSuffix(firstFrame, "\r\n")),
+			[]byte("\r\n"),
+			[]byte(usageFrame + doneFrame),
+		}},
+	}
+
+	if err := handleOpenAIStream(gctx, resp); err != nil {
+		t.Fatalf("expected normal split stream to succeed, got %v", err)
+	}
+	if got, want := rec.Body.String(), firstFrame+usageFrame+doneFrame; got != want {
+		t.Fatalf("stream bytes changed:\nwant %q\ngot  %q", want, got)
+	}
+	if gctx.TTFT <= 0 {
+		t.Fatal("expected normal stream to record TTFT")
+	}
+	if gctx.InputTokens != 5 || gctx.OutputTokens != 2 {
+		t.Fatalf("expected usage 5/2, got %d/%d", gctx.InputTokens, gctx.OutputTokens)
+	}
+}
+
+func TestHandleOpenAIStream_TruncatedCompletionAtEOFStaysIncomplete(t *testing.T) {
+	const createdFrame = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\",\"model\":\"gpt-4\"}}\n\n"
+	const truncatedCompletedFrame = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n"
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	gctx := core.AcquireContext(rec, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.Model = "gpt-4"
+	gctx.IsStream = true
+	gctx.StartTime = time.Now()
+
+	resp := &http.Response{
+		Body: &chunkedStreamReadCloser{chunks: [][]byte{
+			[]byte(createdFrame),
+			[]byte(truncatedCompletedFrame),
+		}},
+	}
+
+	err := handleOpenAIStream(gctx, resp)
+	if err == nil || !strings.Contains(err.Error(), "incomplete SSE frame") {
+		t.Fatalf("expected incomplete SSE frame error, got %v", err)
+	}
+	if got := rec.Body.String(); got != createdFrame {
+		t.Fatalf("truncated frame must not be forwarded:\nwant %q\ngot  %q", createdFrame, got)
+	}
+	if gctx.GetTagValue("response_completed_sent") != "" {
+		t.Fatal("truncated response.completed must not mark the response complete")
+	}
+}
+
+func TestHandleOpenAIStream_OversizedFrameIsRejectedBeforeForwarding(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	gctx := core.AcquireContext(rec, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeChatCompletion
+	gctx.Model = "gpt-4"
+	gctx.IsStream = true
+	gctx.StartTime = time.Now()
+
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader("data: " + strings.Repeat("x", (1<<20)+1))),
+	}
+
+	err := handleOpenAIStream(gctx, resp)
+	if err == nil || !strings.Contains(err.Error(), "SSE frame exceeds") {
+		t.Fatalf("expected oversized SSE frame error, got %v", err)
+	}
+	if gctx.TTFT != 0 {
+		t.Fatalf("oversized frame must be rejected before starting the client stream, got TTFT %s", gctx.TTFT)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("oversized frame must not be forwarded, got %d bytes", rec.Body.Len())
+	}
+}
+
+type chunkedStreamReadCloser struct {
+	chunks [][]byte
+	index  int
+}
+
+func (r *chunkedStreamReadCloser) Read(p []byte) (int, error) {
+	if r.index >= len(r.chunks) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.chunks[r.index])
+	r.index++
+	return n, nil
+}
+
+func (r *chunkedStreamReadCloser) Close() error { return nil }
 
 func TestOpenAIProvider_Embedding(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

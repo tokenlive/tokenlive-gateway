@@ -18,7 +18,8 @@ type SSEEvent struct {
 // Feed() may be called with partial data; it buffers incomplete lines
 // and returns fully parsed events.
 type SSEParser struct {
-	buf strings.Builder
+	buf           strings.Builder
+	skipLeadingLF bool
 }
 
 // NewSSEParser creates a new SSEParser
@@ -28,11 +29,23 @@ func NewSSEParser() *SSEParser {
 
 // Feed processes incoming bytes and returns any complete SSE events found.
 func (p *SSEParser) Feed(data []byte) []SSEEvent {
-	p.buf.Write(data)
+	if p.skipLeadingLF && len(data) > 0 {
+		if data[0] == '\n' {
+			data = data[1:]
+		}
+		p.skipLeadingLF = false
+	}
 
 	var events []SSEEvent
-	// Normalize \r\n to \n for CRLF cross-packet compatibility
-	fullText := strings.ReplaceAll(p.buf.String(), "\r\n", "\n")
+	// Normalize CRLF and CR line endings to LF. A trailing CR is already a
+	// complete SSE line ending, but the next feed may start with its LF pair.
+	if len(data) > 0 && data[len(data)-1] == '\r' {
+		p.skipLeadingLF = true
+	}
+	normalized := strings.ReplaceAll(string(data), "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	p.buf.WriteString(normalized)
+	fullText := p.buf.String()
 
 	// Process complete blocks (delimited by \n\n)
 	for {

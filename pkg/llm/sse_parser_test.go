@@ -123,6 +123,23 @@ func TestSSEParser_CRLF(t *testing.T) {
 	}
 }
 
+func TestSSEParser_CRLFPairSplitAcrossFeedsDoesNotEndEvent(t *testing.T) {
+	p := NewSSEParser()
+
+	events := p.Feed([]byte("data: one\r"))
+	if len(events) != 0 {
+		t.Fatalf("expected no event from partial CRLF line ending, got %d", len(events))
+	}
+
+	events = p.Feed([]byte("\ndata: two\r\n\r\n"))
+	if len(events) != 1 {
+		t.Fatalf("expected one multiline event, got %d: %#v", len(events), events)
+	}
+	if events[0].Data != "one\ntwo" {
+		t.Fatalf("expected joined multiline data, got %q", events[0].Data)
+	}
+}
+
 func TestSSEParser_PreservesWhitespaceAndIndentation(t *testing.T) {
 	p := NewSSEParser()
 	// Simulate code patch diff with leading indentation and empty lines

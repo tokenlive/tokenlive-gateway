@@ -46,6 +46,27 @@ Check TTL status of all `aigw:*` keys:
 
 Current config (from `config/local.yml`):
 
+## Debugging via VPS (deploy.sh)
+
+When investigating bugs, if the project root contains a `deploy.sh` with VPS login information (SSH host, port, user), **prioritize using that information to SSH into the VPS** to check service logs, status, and runtime state before other analysis. Do not stop at local code reading when live production evidence is available.
+
+**Do not hardcode the connection info.** The host may be an IP or a domain and can change — always read `SSH_HOST` / `SSH_PORT` / `SSH_USER` from `deploy.sh` at the time of use:
+
+```bash
+# Extract connection info dynamically
+SSH_HOST=$(grep '^SSH_HOST=' deploy.sh | cut -d'"' -f2)
+SSH_PORT=$(grep '^SSH_PORT=' deploy.sh | cut -d= -f2)
+SSH_USER=$(grep '^SSH_USER=' deploy.sh | cut -d'"' -f2)
+
+# Gateway logs
+ssh -o ControlMaster=no -o ConnectTimeout=10 -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "journalctl -u tokenlive-gateway -n 200 --no-pager"
+# Admin logs: same with -u tokenlive-admin
+# Service status
+ssh -o ControlMaster=no -o ConnectTimeout=10 -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "systemctl status tokenlive-gateway tokenlive-admin --no-pager"
+```
+
+SSH uses key auth (no password). Remote deploy dirs: `~/tokenlive-gateway`, `~/tokenlive-admin` (config at `~/tokenlive-gateway/config/prod.yml`).
+
 ## Build & Development Commands
 
 ```bash

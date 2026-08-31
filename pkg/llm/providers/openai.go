@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -163,11 +164,23 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 	buf := make([]byte, 4096)
 	headersSent := false
 	parser := llm.NewSSEParser()
+	pending := make([]byte, 0, len(buf))
 	for {
 		n, err := resp.Body.Read(buf)
+		previousPendingLen := len(pending)
 		if n > 0 {
+			pending = append(pending, buf[:n]...)
+		}
+
+		completeLen := completeSSEPrefixLen(pending, max(0, previousPendingLen-3))
+		if completeLen == 0 && len(pending) > maxOpenAISSEFrameBytes {
+			return fmt.Errorf("upstream SSE frame exceeds %d bytes", maxOpenAISSEFrameBytes)
+		}
+		rawFrames := pending[:completeLen]
+
+		if len(rawFrames) > 0 {
 			// 1. Sniff SSE error events from all frames
-			events := parser.Feed(buf[:n])
+			events := parser.Feed(rawFrames)
 			for _, ev := range events {
 				if gctx.RequestType == core.RequestTypeResponses && gctx.GetTagValue("response_id") == "" {
 					var respChunk struct {
@@ -230,62 +243,15 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 					}
 				}
 
-				if strings.Contains(ev.Data, `"error"`) {
-					cleanData := strings.TrimSpace(ev.Data)
-					if strings.HasPrefix(cleanData, "data:") {
-						cleanData = strings.TrimSpace(strings.TrimPrefix(cleanData, "data:"))
-					}
-
-					var errChunk struct {
-						Error *struct {
-							Message string `json:"message"`
-							Type    string `json:"type"`
-							Code    any    `json:"code"`
-							Cause   string `json:"cause"`
-						} `json:"error"`
-					}
-					if json.Unmarshal([]byte(cleanData), &errChunk) == nil && errChunk.Error != nil && (errChunk.Error.Message != "" || errChunk.Error.Type != "") {
-						errMsg := errChunk.Error.Message
-						if errChunk.Error.Cause != "" {
-							var innerErr struct {
-								Error struct {
-									Message string `json:"message"`
-								} `json:"error"`
-							}
-							if json.Unmarshal([]byte(errChunk.Error.Cause), &innerErr) == nil && innerErr.Error.Message != "" {
-								errMsg = fmt.Sprintf("%s (cause: %s)", errMsg, innerErr.Error.Message)
-							} else {
-								errMsg = fmt.Sprintf("%s (cause: %s)", errMsg, errChunk.Error.Cause)
-							}
-						}
-						return fmt.Errorf("upstream stream returned error event: %s", errMsg)
-					}
+				if streamErr := openAIStreamEventError(ev.Data); streamErr != nil {
+					return streamErr
 				}
 			}
 
 			if !headersSent {
 				// 2. Sniff first frame raw data for plain JSON error
-				trimmed := strings.TrimSpace(string(buf[:n]))
-				if strings.HasPrefix(trimmed, "{") {
-					var errJSON struct {
-						Error struct {
-							Message string `json:"message"`
-							Type    string `json:"type"`
-							Code    any    `json:"code"`
-						} `json:"error"`
-						Message string `json:"message"`
-					}
-					if jsonErr := json.Unmarshal([]byte(trimmed), &errJSON); jsonErr == nil {
-						errMsg := errJSON.Error.Message
-						if errMsg == "" {
-							errMsg = errJSON.Message
-						}
-						if errMsg == "" {
-							errMsg = trimmed
-						}
-						return fmt.Errorf("upstream returned JSON error: %s", errMsg)
-					}
-					return fmt.Errorf("upstream stream returned JSON error body: %s", trimmed)
+				if jsonErr := openAIJSONStreamError(rawFrames); jsonErr != nil {
+					return jsonErr
 				}
 
 				// Normal data — send headers and start writing
@@ -296,13 +262,32 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 				headersSent = true
 			}
 
-			if _, werr := writer.Write(buf[:n]); werr != nil {
+			if _, werr := writer.Write(rawFrames); werr != nil {
 				return werr
 			}
 			writer.Flush()
+
+			copy(pending, pending[completeLen:])
+			pending = pending[:len(pending)-completeLen]
+			if len(pending) > maxOpenAISSEFrameBytes {
+				return fmt.Errorf("upstream SSE frame exceeds %d bytes", maxOpenAISSEFrameBytes)
+			}
 		}
 		if err != nil {
 			if err == io.EOF {
+				if len(bytes.TrimSpace(pending)) > 0 {
+					if jsonErr := openAIJSONStreamError(pending); jsonErr != nil {
+						return jsonErr
+					}
+					tailParser := llm.NewSSEParser()
+					tailEvents := tailParser.Feed(append(append([]byte(nil), pending...), '\n', '\n'))
+					for _, ev := range tailEvents {
+						if streamErr := openAIStreamEventError(ev.Data); streamErr != nil {
+							return streamErr
+						}
+					}
+					return fmt.Errorf("upstream stream closed with incomplete SSE frame")
+				}
 				if !headersSent {
 					return fmt.Errorf("upstream stream closed before sending any data (EOF)")
 				}
@@ -320,6 +305,105 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 	}
 
 	return nil
+}
+
+const maxOpenAISSEFrameBytes = 1 << 20
+
+func completeSSEPrefixLen(data []byte, start int) int {
+	if start < 0 {
+		start = 0
+	}
+
+	completeLen := 0
+	for i := start; i < len(data); i++ {
+		end := 0
+		switch data[i] {
+		case '\n':
+			if i+1 < len(data) && data[i+1] == '\n' {
+				end = i + 2
+			} else if i+2 < len(data) && data[i+1] == '\r' && data[i+2] == '\n' {
+				end = i + 3
+			}
+		case '\r':
+			if i+1 < len(data) && data[i+1] == '\r' {
+				end = i + 2
+			} else if i+2 < len(data) && data[i+1] == '\n' && data[i+2] == '\n' {
+				end = i + 3
+			} else if i+3 < len(data) && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n' {
+				end = i + 4
+			}
+		}
+		if end > 0 {
+			completeLen = end
+			i = end - 1
+		}
+	}
+	return completeLen
+}
+
+func openAIStreamEventError(data string) error {
+	if !strings.Contains(data, `"error"`) {
+		return nil
+	}
+
+	cleanData := strings.TrimSpace(data)
+	if strings.HasPrefix(cleanData, "data:") {
+		cleanData = strings.TrimSpace(strings.TrimPrefix(cleanData, "data:"))
+	}
+
+	var errChunk struct {
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    any    `json:"code"`
+			Cause   string `json:"cause"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(cleanData), &errChunk) != nil || errChunk.Error == nil || (errChunk.Error.Message == "" && errChunk.Error.Type == "") {
+		return nil
+	}
+
+	errMsg := errChunk.Error.Message
+	if errChunk.Error.Cause != "" {
+		var innerErr struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(errChunk.Error.Cause), &innerErr) == nil && innerErr.Error.Message != "" {
+			errMsg = fmt.Sprintf("%s (cause: %s)", errMsg, innerErr.Error.Message)
+		} else {
+			errMsg = fmt.Sprintf("%s (cause: %s)", errMsg, errChunk.Error.Cause)
+		}
+	}
+	return fmt.Errorf("upstream stream returned error event: %s", errMsg)
+}
+
+func openAIJSONStreamError(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil
+	}
+
+	var errJSON struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    any    `json:"code"`
+		} `json:"error"`
+		Message string `json:"message"`
+	}
+	if jsonErr := json.Unmarshal([]byte(trimmed), &errJSON); jsonErr == nil {
+		errMsg := errJSON.Error.Message
+		if errMsg == "" {
+			errMsg = errJSON.Message
+		}
+		if errMsg == "" {
+			errMsg = trimmed
+		}
+		return fmt.Errorf("upstream returned JSON error: %s", errMsg)
+	}
+	return fmt.Errorf("upstream stream returned JSON error body: %s", trimmed)
 }
 
 // handleOpenAINonStream handles non-streaming responses, parsing JSON and extracting usage info.
