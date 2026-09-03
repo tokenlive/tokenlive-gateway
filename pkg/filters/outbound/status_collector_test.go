@@ -94,9 +94,10 @@ func TestStatusCollectorFilter_OnResponse(t *testing.T) {
 	})
 }
 
-func TestStatusCollectorFilter_ClientDisconnectDoesNotAffectAvailability(t *testing.T) {
+func TestStatusCollectorFilter_ClientDisconnectAfterSuccessfulAttemptCountsAsSuccess(t *testing.T) {
 	metricCh := make(chan RequestMetric, 1)
 	f := &StatusCollectorFilter{metricCh: metricCh}
+	f.SetIncludeClientDisconnect(true)
 	gctx := &core.GatewayContext{
 		Ctx:          context.Background(),
 		Request:      httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
@@ -122,8 +123,8 @@ func TestStatusCollectorFilter_ClientDisconnectDoesNotAffectAvailability(t *test
 
 	select {
 	case metric := <-metricCh:
-		if !metric.AvailabilityExcluded {
-			t.Fatalf("client disconnect must be excluded from availability, got %+v", metric)
+		if !metric.Success {
+			t.Fatalf("client disconnect after a successful upstream attempt must count as success, got %+v", metric)
 		}
 		if metric.InputTokens != 100 || metric.OutputTokens != 20 || metric.Cost != 0.25 {
 			t.Fatalf("client disconnect usage must still be reported, got %+v", metric)
@@ -133,6 +134,27 @@ func TestStatusCollectorFilter_ClientDisconnectDoesNotAffectAvailability(t *test
 		}
 	default:
 		t.Fatal("client disconnect usage must still emit a metric")
+	}
+}
+
+func TestStatusCollectorFilter_ClientDisconnectRemainsExcludedByDefault(t *testing.T) {
+	metricCh := make(chan RequestMetric, 1)
+	f := &StatusCollectorFilter{metricCh: metricCh}
+	gctx := &core.GatewayContext{
+		Ctx:     context.Background(),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		Model:   "gpt-5.6-sol",
+		Err:     fmt.Errorf("%w: context canceled", core.ErrClientDisconnected),
+	}
+
+	if err := f.OnResponse(gctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case metric := <-metricCh:
+		t.Fatalf("default gateway mode must keep excluding client disconnect metrics, got %+v", metric)
+	default:
 	}
 }
 

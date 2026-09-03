@@ -359,7 +359,9 @@ func NewGatewayEngine(
 	))
 	engine.RegisterFilter("access_log", outbound.NewAccessLogFilter(logger.Logger, rdb, compQueue, chConn, v))
 
-	engine.RegisterFilter("status_collector", outbound.NewStatusCollectorFilter(rdb, engine.CircuitBreakerManager(), adminURL, syncToken, logger.Logger))
+	statusCollector := outbound.NewStatusCollectorFilter(rdb, engine.CircuitBreakerManager(), adminURL, syncToken, logger.Logger)
+	statusCollector.SetIncludeClientDisconnect(configSource == "embedded" && stateStoreMode == "memory")
+	engine.RegisterFilter("status_collector", statusCollector)
 
 	// Register Event Publisher filter.
 	var eventsCfg events.PublisherConfig

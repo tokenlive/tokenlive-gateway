@@ -21,20 +21,19 @@ type AttemptMetric struct {
 }
 
 type RequestMetric struct {
-	Time                 int64           `json:"time"` // Unix timestamp
-	Model                string          `json:"model"`
-	Provider             string          `json:"provider,omitempty"`
-	Success              bool            `json:"success"`
-	AvailabilityExcluded bool            `json:"availability_excluded,omitempty"`
-	InputTokens          int64           `json:"input_tokens"`
-	OutputTokens         int64           `json:"output_tokens"`
-	CachedTokens         int64           `json:"cached_tokens"`
-	CacheCreationTokens  int64           `json:"cache_creation_tokens"`
-	Cost                 float64         `json:"cost"`
-	EndpointID           string          `json:"endpoint_id,omitempty"`
-	TTFTMs               int64           `json:"ttft_ms,omitempty"`
-	DurationMs           int64           `json:"duration_ms,omitempty"`
-	Attempts             []AttemptMetric `json:"attempts"`
+	Time                int64           `json:"time"` // Unix timestamp
+	Model               string          `json:"model"`
+	Provider            string          `json:"provider,omitempty"`
+	Success             bool            `json:"success"`
+	InputTokens         int64           `json:"input_tokens"`
+	OutputTokens        int64           `json:"output_tokens"`
+	CachedTokens        int64           `json:"cached_tokens"`
+	CacheCreationTokens int64           `json:"cache_creation_tokens"`
+	Cost                float64         `json:"cost"`
+	EndpointID          string          `json:"endpoint_id,omitempty"`
+	TTFTMs              int64           `json:"ttft_ms,omitempty"`
+	DurationMs          int64           `json:"duration_ms,omitempty"`
+	Attempts            []AttemptMetric `json:"attempts"`
 }
 
 type endpointPerfWrite struct {
@@ -87,6 +86,8 @@ type StatusCollectorFilter struct {
 	metricCh chan RequestMetric
 	ctx      context.Context
 	cancel   context.CancelFunc
+
+	includeClientDisconnect bool
 }
 
 // NewStatusCollectorFilter creates a StatusCollectorFilter.
@@ -109,6 +110,12 @@ func NewStatusCollectorFilter(rdb *redis.Client, cbManager *core.CircuitBreakerM
 	return f
 }
 
+// SetIncludeClientDisconnect controls whether downstream disconnects with a
+// successful upstream attempt are included in the in-memory dashboard.
+func (f *StatusCollectorFilter) SetIncludeClientDisconnect(enabled bool) {
+	f.includeClientDisconnect = enabled
+}
+
 func (f *StatusCollectorFilter) Name() string                        { return "status_collector" }
 func (f *StatusCollectorFilter) Order() int                          { return 31 }
 func (f *StatusCollectorFilter) Criticality() core.FilterCriticality { return core.BestEffort }
@@ -119,7 +126,7 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 		return nil
 	}
 	clientDisconnected := errors.Is(gctx.Err, core.ErrClientDisconnected)
-	if clientDisconnected && f.rdb != nil {
+	if clientDisconnected && !f.includeClientDisconnect {
 		return nil
 	}
 
@@ -136,7 +143,7 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 			}
 		}
 	}
-	hasErr := gctx.Err != nil
+	hasErr := gctx.Err != nil && !clientDisconnected
 	inputTokens := int64(gctx.InputTokens)
 	outputTokens := int64(gctx.OutputTokens)
 	cachedTokens := int64(gctx.CachedTokens)
@@ -176,20 +183,19 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 				})
 			}
 			m := RequestMetric{
-				Time:                 time.Now().Unix(),
-				Model:                model,
-				Provider:             provider,
-				Success:              !hasErr,
-				AvailabilityExcluded: clientDisconnected,
-				InputTokens:          inputTokens,
-				OutputTokens:         outputTokens,
-				CachedTokens:         cachedTokens,
-				CacheCreationTokens:  cacheCreationTokens,
-				Cost:                 cost,
-				EndpointID:           perf.EndpointID,
-				TTFTMs:               perf.TTFTMs,
-				DurationMs:           perf.DurationMs,
-				Attempts:             attempts,
+				Time:                time.Now().Unix(),
+				Model:               model,
+				Provider:            provider,
+				Success:             !hasErr,
+				InputTokens:         inputTokens,
+				OutputTokens:        outputTokens,
+				CachedTokens:        cachedTokens,
+				CacheCreationTokens: cacheCreationTokens,
+				Cost:                cost,
+				EndpointID:          perf.EndpointID,
+				TTFTMs:              perf.TTFTMs,
+				DurationMs:          perf.DurationMs,
+				Attempts:            attempts,
 			}
 			select {
 			case f.metricCh <- m:
