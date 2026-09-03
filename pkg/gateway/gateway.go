@@ -234,6 +234,9 @@ func (g *Gateway) ApplyGatewayConfig(gwCfg *config.GatewayConfig) error {
 	if gwCfg == nil {
 		return fmt.Errorf("gateway: config is nil")
 	}
+	if len(gwCfg.Pipelines) == 0 && g.v != nil {
+		_ = g.v.UnmarshalKey("pipelines", &gwCfg.Pipelines)
+	}
 	engineConfig, providerImpls, _, _ := bootstrap.BuildFromRelationalConfig(gwCfg, g.enableAuth)
 	if err := g.Engine.UpdateConfig(engineConfig); err != nil {
 		return fmt.Errorf("engine update config: %w", err)
