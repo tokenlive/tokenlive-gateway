@@ -120,6 +120,33 @@ func TestStatusCollectorFilter_ClientDisconnectDoesNotAffectAvailability(t *test
 	}
 }
 
+func TestStatusCollectorFilter_OnResponseIncludesProviderInMemoryMetric(t *testing.T) {
+	metricCh := make(chan RequestMetric, 1)
+	f := &StatusCollectorFilter{metricCh: metricCh}
+	gctx := &core.GatewayContext{
+		Ctx:     context.Background(),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		Model:   "gpt-4",
+		SelectedEndpoint: &core.Endpoint{
+			ID:       "ep-1",
+			Provider: "openai",
+		},
+	}
+
+	if err := f.OnResponse(gctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case metric := <-metricCh:
+		if metric.Provider != "openai" {
+			t.Fatalf("expected provider openai, got %q", metric.Provider)
+		}
+	default:
+		t.Fatal("expected a metric to be queued")
+	}
+}
+
 func TestCollectEndpointPerfWriteAttributesOnlyWinningEndpoint(t *testing.T) {
 	start := time.Now().Add(-2 * time.Second)
 	gctx := &core.GatewayContext{

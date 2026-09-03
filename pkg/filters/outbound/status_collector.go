@@ -23,6 +23,7 @@ type AttemptMetric struct {
 type RequestMetric struct {
 	Time                int64           `json:"time"` // Unix timestamp
 	Model               string          `json:"model"`
+	Provider            string          `json:"provider,omitempty"`
 	Success             bool            `json:"success"`
 	InputTokens         int64           `json:"input_tokens"`
 	OutputTokens        int64           `json:"output_tokens"`
@@ -121,6 +122,18 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 	}
 
 	model := gctx.Model
+	provider := ""
+	if gctx.SelectedEndpoint != nil {
+		provider = gctx.SelectedEndpoint.Provider
+	}
+	if provider == "" {
+		for i := len(gctx.History) - 1; i >= 0; i-- {
+			if gctx.History[i].Provider != "" {
+				provider = gctx.History[i].Provider
+				break
+			}
+		}
+	}
 	hasErr := gctx.Err != nil
 	inputTokens := int64(gctx.InputTokens)
 	outputTokens := int64(gctx.OutputTokens)
@@ -163,6 +176,7 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 			m := RequestMetric{
 				Time:                time.Now().Unix(),
 				Model:               model,
+				Provider:            provider,
 				Success:             !hasErr,
 				InputTokens:         inputTokens,
 				OutputTokens:        outputTokens,
