@@ -21,19 +21,20 @@ type AttemptMetric struct {
 }
 
 type RequestMetric struct {
-	Time                int64           `json:"time"` // Unix timestamp
-	Model               string          `json:"model"`
-	Provider            string          `json:"provider,omitempty"`
-	Success             bool            `json:"success"`
-	InputTokens         int64           `json:"input_tokens"`
-	OutputTokens        int64           `json:"output_tokens"`
-	CachedTokens        int64           `json:"cached_tokens"`
-	CacheCreationTokens int64           `json:"cache_creation_tokens"`
-	Cost                float64         `json:"cost"`
-	EndpointID          string          `json:"endpoint_id,omitempty"`
-	TTFTMs              int64           `json:"ttft_ms,omitempty"`
-	DurationMs          int64           `json:"duration_ms,omitempty"`
-	Attempts            []AttemptMetric `json:"attempts"`
+	Time                 int64           `json:"time"` // Unix timestamp
+	Model                string          `json:"model"`
+	Provider             string          `json:"provider,omitempty"`
+	Success              bool            `json:"success"`
+	AvailabilityExcluded bool            `json:"availability_excluded,omitempty"`
+	InputTokens          int64           `json:"input_tokens"`
+	OutputTokens         int64           `json:"output_tokens"`
+	CachedTokens         int64           `json:"cached_tokens"`
+	CacheCreationTokens  int64           `json:"cache_creation_tokens"`
+	Cost                 float64         `json:"cost"`
+	EndpointID           string          `json:"endpoint_id,omitempty"`
+	TTFTMs               int64           `json:"ttft_ms,omitempty"`
+	DurationMs           int64           `json:"duration_ms,omitempty"`
+	Attempts             []AttemptMetric `json:"attempts"`
 }
 
 type endpointPerfWrite struct {
@@ -63,7 +64,7 @@ func collectEndpointPerfWrite(gctx *core.GatewayContext) endpointPerfWrite {
 	if gctx.TTFT > 0 {
 		write.TTFTMs = gctx.TTFT.Milliseconds()
 	}
-	if gctx.Err == nil && gctx.OutputTokens > 0 && !gctx.StartTime.IsZero() {
+	if (gctx.Err == nil || errors.Is(gctx.Err, core.ErrClientDisconnected)) && gctx.OutputTokens > 0 && !gctx.StartTime.IsZero() {
 		dur := time.Since(gctx.StartTime).Milliseconds()
 		if dur > 0 {
 			write.Output = int64(gctx.OutputTokens)
@@ -117,7 +118,8 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 	if gctx.Model == "" {
 		return nil
 	}
-	if errors.Is(gctx.Err, core.ErrClientDisconnected) {
+	clientDisconnected := errors.Is(gctx.Err, core.ErrClientDisconnected)
+	if clientDisconnected && f.rdb != nil {
 		return nil
 	}
 
@@ -174,19 +176,20 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 				})
 			}
 			m := RequestMetric{
-				Time:                time.Now().Unix(),
-				Model:               model,
-				Provider:            provider,
-				Success:             !hasErr,
-				InputTokens:         inputTokens,
-				OutputTokens:        outputTokens,
-				CachedTokens:        cachedTokens,
-				CacheCreationTokens: cacheCreationTokens,
-				Cost:                cost,
-				EndpointID:          perf.EndpointID,
-				TTFTMs:              perf.TTFTMs,
-				DurationMs:          perf.DurationMs,
-				Attempts:            attempts,
+				Time:                 time.Now().Unix(),
+				Model:                model,
+				Provider:             provider,
+				Success:              !hasErr,
+				AvailabilityExcluded: clientDisconnected,
+				InputTokens:          inputTokens,
+				OutputTokens:         outputTokens,
+				CachedTokens:         cachedTokens,
+				CacheCreationTokens:  cacheCreationTokens,
+				Cost:                 cost,
+				EndpointID:           perf.EndpointID,
+				TTFTMs:               perf.TTFTMs,
+				DurationMs:           perf.DurationMs,
+				Attempts:             attempts,
 			}
 			select {
 			case f.metricCh <- m:

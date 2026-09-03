@@ -104,8 +104,15 @@ func TestStatusCollectorFilter_ClientDisconnectDoesNotAffectAvailability(t *test
 		Err:          fmt.Errorf("%w: context canceled", core.ErrClientDisconnected),
 		InputTokens:  100,
 		OutputTokens: 20,
+		Cost:         0.25,
+		TTFT:         250 * time.Millisecond,
+		StartTime:    time.Now().Add(-2 * time.Second),
+		SelectedEndpoint: &core.Endpoint{
+			ID:       "ep-joycode",
+			Provider: "JoyCode",
+		},
 		History: []core.AttemptRecord{
-			{EndpointID: "ep-joycode", Success: true},
+			{EndpointID: "ep-joycode", Provider: "JoyCode", Success: true},
 		},
 	}
 
@@ -115,8 +122,17 @@ func TestStatusCollectorFilter_ClientDisconnectDoesNotAffectAvailability(t *test
 
 	select {
 	case metric := <-metricCh:
-		t.Fatalf("client disconnect must not emit availability metrics, got %+v", metric)
+		if !metric.AvailabilityExcluded {
+			t.Fatalf("client disconnect must be excluded from availability, got %+v", metric)
+		}
+		if metric.InputTokens != 100 || metric.OutputTokens != 20 || metric.Cost != 0.25 {
+			t.Fatalf("client disconnect usage must still be reported, got %+v", metric)
+		}
+		if metric.TTFTMs != 250 || metric.DurationMs <= 0 {
+			t.Fatalf("client disconnect performance must still be reported, got %+v", metric)
+		}
 	default:
+		t.Fatal("client disconnect usage must still emit a metric")
 	}
 }
 
