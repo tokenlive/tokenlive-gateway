@@ -120,27 +120,33 @@ type endpointCheckState struct {
 // StartHealthCheck starts coarse-grained and fine-grained health check goroutines.
 func (sd *StaticDiscovery) StartHealthCheck(
 	ctx context.Context,
-	providers map[string]Provider,
+	providers func() map[string]Provider,
 	cbManager *CircuitBreakerManager,
 	logger *zap.Logger,
 	interval time.Duration,
 	enableActive bool,
 ) {
-	// 1. Start coarse-grained Provider health check
-	if len(providers) > 0 {
-		go func() {
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					sd.runHealthChecks(ctx, providers, logger)
-				}
-			}
-		}()
+	if providers == nil {
+		providers = func() map[string]Provider { return nil }
 	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+
+	// 1. Start coarse-grained Provider health check. Re-read providers each tick so
+	// hot reload (SetProviders) does not leave a stale map such as openai-local.
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sd.runHealthChecks(ctx, providers(), logger)
+			}
+		}
+	}()
 
 	// 2. Start fine-grained adaptive Endpoint health check
 	if enableActive {

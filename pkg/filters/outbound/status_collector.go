@@ -88,6 +88,19 @@ type StatusCollectorFilter struct {
 	cancel   context.CancelFunc
 
 	includeClientDisconnect bool
+	sink                    MetricsSink
+}
+
+// MetricsBatch is one flush of request metrics plus current open breakers.
+type MetricsBatch struct {
+	Metrics       []RequestMetric `json:"metrics"`
+	OpenEndpoints []string        `json:"open_endpoints"`
+	OpenServices  []string        `json:"open_services"`
+}
+
+// MetricsSink receives dashboard metrics without looping back over HTTP.
+type MetricsSink interface {
+	ReportMetrics(batch MetricsBatch)
 }
 
 // NewStatusCollectorFilter creates a StatusCollectorFilter.
@@ -114,6 +127,11 @@ func NewStatusCollectorFilter(rdb *redis.Client, cbManager *core.CircuitBreakerM
 // successful upstream attempt are included in the in-memory dashboard.
 func (f *StatusCollectorFilter) SetIncludeClientDisconnect(enabled bool) {
 	f.includeClientDisconnect = enabled
+}
+
+// SetMetricsSink reports flushes in-process instead of POSTing admin_url.
+func (f *StatusCollectorFilter) SetMetricsSink(sink MetricsSink) {
+	f.sink = sink
 }
 
 func (f *StatusCollectorFilter) Name() string                        { return "status_collector" }
@@ -346,14 +364,14 @@ func (f *StatusCollectorFilter) flush(batch []RequestMetric) {
 		openEndpoints, openServices = f.cbManager.GetOpenBreakers()
 	}
 
-	payload := struct {
-		Metrics       []RequestMetric `json:"metrics"`
-		OpenEndpoints []string        `json:"open_endpoints"`
-		OpenServices  []string        `json:"open_services"`
-	}{
+	payload := MetricsBatch{
 		Metrics:       batch,
 		OpenEndpoints: openEndpoints,
 		OpenServices:  openServices,
+	}
+	if f.sink != nil {
+		f.sink.ReportMetrics(payload)
+		return
 	}
 
 	jsonData, err := json.Marshal(payload)

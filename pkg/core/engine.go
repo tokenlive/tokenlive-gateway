@@ -111,7 +111,15 @@ func (e *Engine) SetCompQueue(q compensation.Queue) {
 
 // SetProviders injects Provider implementations (optional, used for HealthCheck).
 func (e *Engine) SetProviders(providers map[string]Provider) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.providers = providers
+}
+
+func (e *Engine) getProviders() map[string]Provider {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.providers
 }
 
 // SetStaticDiscovery injects static discovery (optional, used for HealthCheck status updates).
@@ -159,7 +167,7 @@ func (e *Engine) StartHealthCheck(ctx context.Context, interval time.Duration, e
 	if e.staticDiscovery == nil {
 		return
 	}
-	e.staticDiscovery.StartHealthCheck(ctx, e.providers, e.cbManager, e.logger, interval, enableActive)
+	e.staticDiscovery.StartHealthCheck(ctx, e.getProviders, e.cbManager, e.logger, interval, enableActive)
 }
 
 // StartCircuitBreakerProbe starts background circuit breaker state probing, periodically evaluating Open breakers and updating Redis cache.

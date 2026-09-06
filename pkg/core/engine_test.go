@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1357,6 +1358,53 @@ func TestEngine_EndpointHealthCheck(t *testing.T) {
 	finalHitCount := hitCount
 	mu.Unlock()
 	assert.True(t, finalHitCount >= 3, "expected at least 3 health check hits")
+}
+
+type countingHealthProvider struct {
+	name string
+	n    atomic.Int32
+}
+
+func (p *countingHealthProvider) Name() string       { return p.name }
+func (p *countingHealthProvider) Type() ProviderType { return ProviderOpenAI }
+func (p *countingHealthProvider) RequestTypes() []RequestType {
+	return []RequestType{RequestTypeChatCompletion}
+}
+func (p *countingHealthProvider) Invoke(gctx *GatewayContext) error { return nil }
+func (p *countingHealthProvider) HealthCheck(ctx context.Context) error {
+	p.n.Add(1)
+	return nil
+}
+func (p *countingHealthProvider) ValidateConfig() error { return nil }
+
+func TestEngine_HealthCheckUsesLatestProviders(t *testing.T) {
+	logger := zap.NewNop()
+	sd := NewStaticDiscovery()
+	engine := NewEngine(&EngineConfig{}, sd, newMockStateStore(), nil, logger)
+	engine.SetStaticDiscovery(sd)
+	t.Cleanup(func() { _ = engine.Close() })
+
+	stale := &countingHealthProvider{name: "openai-local"}
+	engine.SetProviders(map[string]Provider{"openai-local": stale})
+	engine.StartHealthCheck(engine.Context(), 15*time.Millisecond, false)
+
+	current := &countingHealthProvider{name: "joycode"}
+	engine.SetProviders(map[string]Provider{"joycode": current})
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if current.n.Load() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if stale.n.Load() != 0 {
+		t.Fatalf("stale provider still health-checked: %d", stale.n.Load())
+	}
+	if current.n.Load() == 0 {
+		t.Fatal("current provider was never health-checked")
+	}
 }
 
 // ===== TestEngine_HandleRequest_Responses =====

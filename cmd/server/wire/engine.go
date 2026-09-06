@@ -40,6 +40,6 @@ func NewGatewayEngine(
 	chConn clickhouse.Conn,
 	provider config.GatewayProvider,
 ) (*core.Engine, func(), error) {
-	engine, _, cleanup, err := bootstrap.NewGatewayEngine(v, logger, modelService, apiKeyService, configMgr, rdb, chConn, provider)
+	engine, _, cleanup, err := bootstrap.NewGatewayEngine(v, logger, modelService, apiKeyService, configMgr, rdb, chConn, provider, nil)
 	return engine, cleanup, err
 }

@@ -143,6 +143,7 @@ func NewGatewayEngine(
 	rdb *redis.Client,
 	chConn clickhouse.Conn,
 	provider config.GatewayProvider,
+	metricsSink outbound.MetricsSink,
 ) (*core.Engine, *service.PolicyService, func(), error) {
 
 	otelCleanup, otelErr := telemetry.InitOTelMetrics(v, logger.Logger)
@@ -361,6 +362,9 @@ func NewGatewayEngine(
 
 	statusCollector := outbound.NewStatusCollectorFilter(rdb, engine.CircuitBreakerManager(), adminURL, syncToken, logger.Logger)
 	statusCollector.SetIncludeClientDisconnect(configSource == "embedded" && stateStoreMode == "memory")
+	if metricsSink != nil {
+		statusCollector.SetMetricsSink(metricsSink)
+	}
 	engine.RegisterFilter("status_collector", statusCollector)
 
 	// Register Event Publisher filter.

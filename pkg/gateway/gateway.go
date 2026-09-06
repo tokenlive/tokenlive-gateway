@@ -14,6 +14,7 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/internal/service"
 	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
+	"github.com/tokenlive/tokenlive-gateway/pkg/filters/outbound"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -35,12 +36,12 @@ type Gateway struct {
 	logger *log.Logger
 	rdb    *redis.Client
 
-	modelService   *service.ModelService
-	apiKeyService  *service.ApiKeyService
-	policyService  *service.PolicyService
-	aliasService   *service.AliasService
-	llmHandler     *handler.LLMHandler
-	enableAuth     bool
+	modelService  *service.ModelService
+	apiKeyService *service.ApiKeyService
+	policyService *service.PolicyService
+	aliasService  *service.AliasService
+	llmHandler    *handler.LLMHandler
+	enableAuth    bool
 }
 
 // Options configures optional dependencies for New.
@@ -55,6 +56,9 @@ type Options struct {
 	// ClickHouse, if set (including explicit nil via SkipClickHouse), overrides conf-based CH.
 	ClickHouse     clickhouse.Conn
 	SkipClickHouse bool
+
+	// MetricsSink, if set, reports dashboard metrics in-process instead of POSTing admin_url.
+	MetricsSink outbound.MetricsSink
 }
 
 // New builds a Gateway from viper config without starting HTTP or job servers.
@@ -132,7 +136,7 @@ func New(conf *viper.Viper, logger *log.Logger, opts *Options) (*Gateway, func()
 	}
 
 	engine, policySvc, engCleanup, err := bootstrap.NewGatewayEngine(
-		conf, logger, modelService, apiKeyService, configMgr, rdb, chConn, provider,
+		conf, logger, modelService, apiKeyService, configMgr, rdb, chConn, provider, opts.MetricsSink,
 	)
 	if err != nil {
 		cleanupAll()

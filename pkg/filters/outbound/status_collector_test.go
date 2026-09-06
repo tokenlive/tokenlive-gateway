@@ -365,3 +365,43 @@ func TestStatusCollectorFilter_OnResponse_HTTP(t *testing.T) {
 		t.Errorf("unexpected metrics payload: %+v", receivedPayload)
 	}
 }
+
+type recordingMetricsSink struct {
+	batches []MetricsBatch
+}
+
+func (s *recordingMetricsSink) ReportMetrics(batch MetricsBatch) {
+	s.batches = append(s.batches, batch)
+}
+
+func TestStatusCollectorFilter_FlushUsesInProcessSink(t *testing.T) {
+	httpHits := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+
+	sink := &recordingMetricsSink{}
+	f := NewStatusCollectorFilter(nil, nil, ts.URL, "test-token", zap.NewNop())
+	f.SetMetricsSink(sink)
+	t.Cleanup(func() {
+		if f.cancel != nil {
+			f.cancel()
+		}
+	})
+
+	f.flush([]RequestMetric{{
+		Time:        time.Now().Unix(),
+		Model:       "gpt-4",
+		Success:     true,
+		InputTokens: 10,
+	}})
+
+	if httpHits != 0 {
+		t.Fatalf("in-process sink still posted HTTP metrics: %d", httpHits)
+	}
+	if len(sink.batches) != 1 || len(sink.batches[0].Metrics) != 1 || sink.batches[0].Metrics[0].Model != "gpt-4" {
+		t.Fatalf("unexpected sink batches: %+v", sink.batches)
+	}
+}
