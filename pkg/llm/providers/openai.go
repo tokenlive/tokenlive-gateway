@@ -295,6 +295,9 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 				break
 			}
 			if errors.Is(err, context.Canceled) && gctx.Request != nil && gctx.Request.Context().Err() != nil {
+				if gctx.GetTagValue("response_completed_sent") == "true" {
+					break
+				}
 				return fmt.Errorf("%w: %v", core.ErrClientDisconnected, err)
 			}
 			return fmt.Errorf("read upstream stream: %w", err)

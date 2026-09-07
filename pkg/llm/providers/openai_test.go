@@ -224,6 +224,38 @@ func TestHandleOpenAIStream_ClientDisconnectIsClassified(t *testing.T) {
 	}
 }
 
+func TestHandleOpenAIStream_ClientDisconnectAfterCompletedEventSucceeds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+	cancel()
+
+	rec := httptest.NewRecorder()
+	gctx := core.AcquireContext(rec, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.Model = "gpt-5.6-sol"
+	gctx.IsStream = true
+	gctx.StartTime = time.Now()
+
+	const completedFrame = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":15,\"output_tokens\":11}}}\n\n"
+	resp := &http.Response{
+		Body: &readOnceErrorCloser{
+			data: []byte(completedFrame),
+			err:  context.Canceled,
+		},
+	}
+
+	if err := handleOpenAIStream(gctx, resp); err != nil {
+		t.Fatalf("completed response followed by client cancellation must succeed, got %v", err)
+	}
+	if gctx.GetTagValue("response_completed_sent") != "true" {
+		t.Fatal("expected completed response tag")
+	}
+	if gctx.InputTokens != 15 || gctx.OutputTokens != 11 {
+		t.Fatalf("expected usage 15/11, got %d/%d", gctx.InputTokens, gctx.OutputTokens)
+	}
+}
+
 func TestHandleOpenAIStream_UpstreamCancellationRemainsFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	rec := httptest.NewRecorder()

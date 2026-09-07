@@ -158,6 +158,47 @@ func TestStatusCollectorFilter_ClientDisconnectRemainsExcludedByDefault(t *testi
 	}
 }
 
+func TestStatusCollectorFilter_CompletedClientDisconnectWritesModelAndEndpointStatusByDefault(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	f := NewStatusCollectorFilter(rdb, nil, "", "", nil)
+	gctx := &core.GatewayContext{
+		Ctx:          context.Background(),
+		Request:      httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		Model:        "gpt-5.6-sol",
+		Err:          fmt.Errorf("%w: context canceled", core.ErrClientDisconnected),
+		InputTokens:  100,
+		OutputTokens: 20,
+		Tags: map[string]string{
+			"response_completed_sent": "true",
+		},
+		SelectedEndpoint: &core.Endpoint{
+			ID:       "ep-joycode",
+			Provider: "JoyCode",
+		},
+		History: []core.AttemptRecord{
+			{EndpointID: "ep-joycode", Provider: "JoyCode", Success: true},
+		},
+	}
+
+	if err := f.OnResponse(gctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	minute := time.Now().Unix() / 60
+	modelKey := fmt.Sprintf("aigw:status:model:gpt-5.6-sol:%d:s", minute)
+	if val, _ := mr.Get(modelKey); val != "1" {
+		t.Fatalf("completed client disconnect must write model success status, got %q", val)
+	}
+	endpointKey := fmt.Sprintf("aigw:status:endpoint:ep-joycode:%d:s", minute)
+	if val, _ := mr.Get(endpointKey); val != "1" {
+		t.Fatalf("completed client disconnect must write endpoint success status, got %q", val)
+	}
+}
+
 func TestStatusCollectorFilter_OnResponseIncludesProviderInMemoryMetric(t *testing.T) {
 	metricCh := make(chan RequestMetric, 1)
 	f := &StatusCollectorFilter{metricCh: metricCh}

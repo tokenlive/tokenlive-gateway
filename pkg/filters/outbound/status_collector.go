@@ -144,7 +144,8 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 		return nil
 	}
 	clientDisconnected := errors.Is(gctx.Err, core.ErrClientDisconnected)
-	if clientDisconnected && !f.includeClientDisconnect {
+	responseCompleted := gctx.GetTagValue("response_completed_sent") == "true"
+	if clientDisconnected && !f.includeClientDisconnect && !responseCompleted {
 		return nil
 	}
 
