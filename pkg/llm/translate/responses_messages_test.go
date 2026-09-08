@@ -245,6 +245,71 @@ func TestResponsesRequestToMessages_ToolsAndChoice(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestToMessages_PreservesNamespacedTools(t *testing.T) {
+	raw := []byte(`{
+			"model": "m",
+			"input": [
+				{"type": "function_call", "call_id": "call_ns", "namespace": "collaboration", "name": "spawn_agent", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_ns", "output": "ok"},
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+			],
+			"tools": [{
+				"name": "collaboration",
+				"type": "namespace",
+				"tools": [{
+					"type": "function",
+					"name": "spawn_agent",
+					"description": "Start a child agent",
+					"parameters": {"type": "object"}
+				}]
+			}, {"type": "web_search"}]
+		}`)
+	res, err := ResponsesRequestToMessages(raw, "m")
+	if err != nil {
+		t.Fatalf("ResponsesRequestToMessages: %v", err)
+	}
+	req := toMap(t, res.Body)
+
+	tools := req["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("tools len = %d, want 1 flattened function (builtin dropped)", len(tools))
+	}
+	tool := tools[0].(map[string]interface{})
+	if tool["name"] != "collaboration.spawn_agent" {
+		t.Fatalf("tool name = %v, want collaboration.spawn_agent", tool["name"])
+	}
+	if tool["description"] != "Start a child agent" {
+		t.Errorf("description = %v", tool["description"])
+	}
+
+	msgs := req["messages"].([]interface{})
+	assistant := msgs[1].(map[string]interface{})
+	blocks := assistant["content"].([]interface{})
+	var toolUse map[string]interface{}
+	for _, b := range blocks {
+		bm := b.(map[string]interface{})
+		if bm["type"] == "tool_use" {
+			toolUse = bm
+		}
+	}
+	if toolUse == nil {
+		t.Fatalf("no tool_use in %v", blocks)
+	}
+	if toolUse["name"] != "collaboration.spawn_agent" {
+		t.Errorf("tool_use name = %v", toolUse["name"])
+	}
+
+	found := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "built-in tool") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected builtin-drop warning, got %v", res.Warnings)
+	}
+}
+
 func TestResponsesRequestToMessages_ParallelToolCallsFalse(t *testing.T) {
 	raw := []byte(`{"model": "m", "input": "hi", "tool_choice": "auto", "parallel_tool_calls": false}`)
 	res, err := ResponsesRequestToMessages(raw, "m")
@@ -404,6 +469,9 @@ func TestMessagesResponseToResponses_Blocks(t *testing.T) {
 	if fc["type"] != "function_call" || fc["call_id"] != "toolu_01ABC" || fc["name"] != "get_weather" {
 		t.Errorf("function_call = %v", fc)
 	}
+	if _, ok := fc["namespace"]; ok {
+		t.Errorf("un-namespaced tool should not emit namespace: %v", fc)
+	}
 	if fc["arguments"] != `{"city":"BJ"}` {
 		t.Errorf("arguments = %v", fc["arguments"])
 	}
@@ -426,6 +494,28 @@ func TestMessagesResponseToResponses_Blocks(t *testing.T) {
 	}
 	if res.CachedTokens != 5 || res.CacheCreationTokens != 3 {
 		t.Errorf("cache tokens = %d/%d", res.CachedTokens, res.CacheCreationTokens)
+	}
+}
+
+func TestMessagesResponseToResponses_SplitsNamespacedTool(t *testing.T) {
+	anthropic := []byte(`{
+			"id": "msg_01NS",
+			"type": "message",
+			"role": "assistant",
+			"content": [
+				{"type": "tool_use", "id": "toolu_01NS", "name": "collaboration.spawn_agent", "input": {}}
+			],
+			"stop_reason": "tool_use",
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`)
+	res, err := MessagesResponseToResponses(anthropic, "m")
+	if err != nil {
+		t.Fatalf("MessagesResponseToResponses: %v", err)
+	}
+	resp := toMap(t, res.Body)
+	fc := resp["output"].([]interface{})[0].(map[string]interface{})
+	if fc["name"] != "spawn_agent" || fc["namespace"] != "collaboration" {
+		t.Fatalf("function_call = %v", fc)
 	}
 }
 

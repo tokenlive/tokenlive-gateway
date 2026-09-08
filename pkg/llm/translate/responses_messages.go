@@ -273,6 +273,9 @@ func responsesInputToMessages(input interface{}) (messages []map[string]interfac
 				warnings = append(warnings, "function_call item without name dropped")
 				continue
 			}
+			if ns, _ := itemMap["namespace"].(string); ns != "" {
+				name = ns + "." + name
+			}
 			var inputObj interface{}
 			if args, _ := itemMap["arguments"].(string); args != "" {
 				_ = json.Unmarshal([]byte(args), &inputObj)
@@ -405,7 +408,8 @@ func extractResponsesText(v interface{}) string {
 }
 
 // responsesToolsToMessages converts Responses function tools to Anthropic tools.
-// Built-in tools (web_search, code_interpreter, …) are dropped.
+// Namespace tools are flattened to collaboration.spawn_agent-style names, matching
+// Responses→Chat. Built-in tools (web_search, code_interpreter, …) are dropped.
 func responsesToolsToMessages(toolsVal interface{}) (tools []interface{}, warning string) {
 	toolsArr, ok := toolsVal.([]interface{})
 	if !ok {
@@ -417,6 +421,20 @@ func responsesToolsToMessages(toolsVal interface{}) (tools []interface{}, warnin
 		if !ok {
 			continue
 		}
+		if toolType, _ := tMap["type"].(string); toolType == "namespace" {
+			ns, _ := tMap["name"].(string)
+			subTools, _ := tMap["tools"].([]interface{})
+			for _, st := range subTools {
+				subMap, ok := st.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if tool := standardFunctionToAnthropicTool(BuildStandardTool(subMap), ns); tool != nil {
+					tools = append(tools, tool)
+				}
+			}
+			continue
+		}
 		std := BuildStandardTool(tMap)
 		if std == nil {
 			continue
@@ -425,22 +443,43 @@ func responsesToolsToMessages(toolsVal interface{}) (tools []interface{}, warnin
 			dropped++
 			continue
 		}
-		name, _ := std["name"].(string)
-		tool := map[string]interface{}{"name": name}
-		if desc, ok := std["description"].(string); ok && desc != "" {
-			tool["description"] = desc
+		if tool := standardFunctionToAnthropicTool(std, ""); tool != nil {
+			tools = append(tools, tool)
 		}
-		if params, ok := std["parameters"].(map[string]interface{}); ok {
-			tool["input_schema"] = params
-		} else {
-			tool["input_schema"] = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
-		}
-		tools = append(tools, tool)
 	}
 	if dropped > 0 {
 		warning = fmt.Sprintf("%d built-in tool(s) dropped: not supported on anthropic upstream", dropped)
 	}
 	return tools, warning
+}
+
+func standardFunctionToAnthropicTool(std map[string]interface{}, namespace string) map[string]interface{} {
+	if std == nil {
+		return nil
+	}
+	if stdType, _ := std["type"].(string); stdType != "function" {
+		return nil
+	}
+	name, _ := std["name"].(string)
+	if name == "" {
+		return nil
+	}
+	if namespace == "" {
+		namespace, _ = std["namespace"].(string)
+	}
+	if namespace != "" {
+		name = namespace + "." + name
+	}
+	tool := map[string]interface{}{"name": name}
+	if desc, ok := std["description"].(string); ok && desc != "" {
+		tool["description"] = desc
+	}
+	if params, ok := std["parameters"].(map[string]interface{}); ok {
+		tool["input_schema"] = params
+	} else {
+		tool["input_schema"] = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+	}
+	return tool
 }
 
 // responsesToolChoiceToMessages maps Responses tool_choice to Anthropic tool_choice.
@@ -460,6 +499,9 @@ func responsesToolChoiceToMessages(tcVal interface{}, parallelVal interface{}, t
 	case map[string]interface{}:
 		if t, _ := v["type"].(string); t == "function" {
 			if name, _ := v["name"].(string); name != "" {
+				if ns, _ := v["namespace"].(string); ns != "" {
+					name = ns + "." + name
+				}
 				toolChoice = map[string]interface{}{"type": "tool", "name": name}
 			}
 		} else if t != "" {
@@ -555,14 +597,18 @@ func MessagesResponseToResponses(anthropicBody []byte, model string) (MessagesTo
 				} else {
 					arguments = "{}"
 				}
-				output = append(output, map[string]interface{}{
+				item := map[string]interface{}{
 					"id":        fmt.Sprintf("fc_%s", stripToolUsePrefix(toolID)),
 					"call_id":   toolID,
 					"type":      "function_call",
 					"status":    "completed",
-					"name":      name,
+					"name":      chatToolLocalName(name),
 					"arguments": arguments,
-				})
+				}
+				if ns := splitChatToolNamespace(name); ns != "" {
+					item["namespace"] = ns
+				}
+				output = append(output, item)
 			}
 		}
 	}

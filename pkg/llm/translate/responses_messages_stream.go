@@ -34,13 +34,13 @@ type MessagesToResponsesStream struct {
 	createdAt int64
 	started   bool
 
-	items       map[int]*responsesStreamItem // anthropic block index -> item
-	nextOutput  int
-	completed   []map[string]interface{} // finished output items, in order
-	stopReason  string
-	usageInput  int
-	usageOutput int
-	usageCached int
+	items              map[int]*responsesStreamItem // anthropic block index -> item
+	nextOutput         int
+	completed          []map[string]interface{} // finished output items, in order
+	stopReason         string
+	usageInput         int
+	usageOutput        int
+	usageCached        int
 	usageCacheCreation int
 }
 
@@ -289,8 +289,11 @@ func (s *MessagesToResponsesStream) emitItemAdded(item *responsesStreamItem) []R
 			"call_id":   item.callID,
 			"type":      "function_call",
 			"status":    "in_progress",
-			"name":      item.name,
+			"name":      chatToolLocalName(item.name),
 			"arguments": "",
+		}
+		if ns := splitChatToolNamespace(item.name); ns != "" {
+			itemPayload["namespace"] = ns
 		}
 	}
 	events = append(events, s.event("response.output_item.added", map[string]interface{}{
@@ -414,8 +417,11 @@ func (s *MessagesToResponsesStream) closeItem(item *responsesStreamItem) []Respo
 			"call_id":   item.callID,
 			"type":      "function_call",
 			"status":    "completed",
-			"name":      item.name,
+			"name":      chatToolLocalName(item.name),
 			"arguments": item.text,
+		}
+		if ns := splitChatToolNamespace(item.name); ns != "" {
+			doneItem["namespace"] = ns
 		}
 		events = append(events, s.itemDoneEvent(item, doneItem))
 	}

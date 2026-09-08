@@ -153,6 +153,9 @@ func TestMessagesToResponsesStream_ToolCallFlow(t *testing.T) {
 	if added["type"] != "function_call" || added["call_id"] != "toolu_01Y" || added["name"] != "get_weather" {
 		t.Errorf("item added = %v", added)
 	}
+	if _, ok := added["namespace"]; ok {
+		t.Errorf("un-namespaced tool should not emit namespace: %v", added)
+	}
 	argsDone := events[5]
 	if argsDone["arguments"] != `{"city":"BJ"}` {
 		t.Errorf("arguments = %v", argsDone["arguments"])
@@ -160,6 +163,28 @@ func TestMessagesToResponsesStream_ToolCallFlow(t *testing.T) {
 	itemDone := events[6]["item"].(map[string]interface{})
 	if itemDone["status"] != "completed" || itemDone["arguments"] != `{"city":"BJ"}` {
 		t.Errorf("item done = %v", itemDone)
+	}
+}
+
+func TestMessagesToResponsesStream_SplitsNamespacedTool(t *testing.T) {
+	s := NewMessagesToResponsesStream("m")
+	frames := []string{
+		`{"type":"message_start","message":{"id":"msg_X","usage":{"input_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01NS","name":"collaboration.spawn_agent","input":{}}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}`,
+		`{"type":"message_stop"}`,
+	}
+	events, _ := feedResponses(t, s, frames)
+	var added map[string]interface{}
+	for _, ev := range events {
+		if ev["type"] == "response.output_item.added" {
+			added, _ = ev["item"].(map[string]interface{})
+			break
+		}
+	}
+	if added["name"] != "spawn_agent" || added["namespace"] != "collaboration" {
+		t.Fatalf("item added = %v", added)
 	}
 }
 
