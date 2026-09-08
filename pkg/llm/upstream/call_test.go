@@ -282,6 +282,53 @@ func TestCall_Stream_MissingContentType_PartialReadError(t *testing.T) {
 	}
 }
 
+func TestCall_Stream_RequestBodyTooLargeReturns413(t *testing.T) {
+	const upstreamBody = `{"code":"1","echo":"content length exceeded 5242880 bytes"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain;charset=utf-8")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer server.Close()
+
+	gctx := newGctx(true)
+	resp, err := Call(gctx, Request{
+		Client: server.Client(),
+		URL:    server.URL,
+		Header: make(http.Header),
+		Stream: Handoff,
+	})
+	if err == nil {
+		t.Fatal("expected request-too-large error")
+	}
+	if resp != nil {
+		t.Fatal("expected nil response")
+	}
+
+	type codeGetter interface {
+		Code() int
+	}
+	codedErr, ok := err.(codeGetter)
+	if !ok {
+		t.Fatalf("error %T does not expose an HTTP status code", err)
+	}
+	if got := codedErr.Code(); got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("error code = %d, want %d", got, http.StatusRequestEntityTooLarge)
+	}
+	type retryability interface {
+		Retryable() bool
+	}
+	classifiedErr, ok := err.(retryability)
+	if !ok {
+		t.Fatalf("error %T does not expose retryability", err)
+	}
+	if classifiedErr.Retryable() {
+		t.Fatal("request-too-large error must not be retryable")
+	}
+	if got := string(gctx.UpstreamBody); got != upstreamBody {
+		t.Fatalf("UpstreamBody = %q, want %q", got, upstreamBody)
+	}
+}
+
 func TestCall_Stream_MissingContentType_ValidPreambleAndLargeFirstLine(t *testing.T) {
 	tests := []struct {
 		name string

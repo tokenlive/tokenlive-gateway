@@ -40,6 +40,15 @@ type Request struct {
 	Stream StreamDisposition
 }
 
+type httpStatusError struct {
+	code    int
+	message string
+}
+
+func (e *httpStatusError) Error() string   { return e.message }
+func (e *httpStatusError) Code() int       { return e.code }
+func (e *httpStatusError) Retryable() bool { return false }
+
 // Call POSTs upstream until a successful *http.Response.
 // On success sets gctx.UpstreamResponse; body Close cancels attempt context.
 // status>=400: read body into gctx.UpstreamBody and return error.
@@ -179,6 +188,16 @@ func Call(gctx *core.GatewayContext, req Request) (*http.Response, error) {
 				timer.Stop()
 				singleCancel(nil)
 				gctx.UpstreamBody = body
+				if isRequestBodyTooLargeResponse(body) {
+					return nil, &httpStatusError{
+						code: http.StatusRequestEntityTooLarge,
+						message: fmt.Sprintf(
+							"upstream stream request returned non-stream content-type: %s, body: %s",
+							contentType,
+							string(body),
+						),
+					}
+				}
 				if probeErr != nil && probeErr != io.EOF {
 					return nil, fmt.Errorf("upstream stream request returned non-stream content-type: %s, body: %s: %w", contentType, string(body), probeErr)
 				}
@@ -199,6 +218,12 @@ func Call(gctx *core.GatewayContext, req Request) (*http.Response, error) {
 		},
 	}
 	return resp, nil
+}
+
+func isRequestBodyTooLargeResponse(body []byte) bool {
+	message := strings.ToLower(string(body))
+	return strings.Contains(message, "content length exceeded") &&
+		strings.Contains(message, "bytes")
 }
 
 type cancelReadCloser struct {

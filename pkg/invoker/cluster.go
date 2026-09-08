@@ -498,8 +498,12 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			zap.Error(err),
 		)
 
-		// Always record failure for the breaker, even if we will not retry
-		ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, err)
+		if isExplicitlyNonRetryable(err) {
+			return err
+		}
+
+			// Remaining invocation errors count against endpoint health.
+			ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, err)
 
 		// Synthetic latency so failed endpoints are not preferred by least_latency
 		ci.recordFailurePenalty(gctx)
@@ -561,6 +565,15 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 	}
 
 	return lastErr
+}
+
+func isExplicitlyNonRetryable(err error) bool {
+	type retryability interface {
+		Retryable() bool
+	}
+
+	var classified retryability
+	return errors.As(err, &classified) && !classified.Retryable()
 }
 
 func getStatusCode(resp *http.Response) int {

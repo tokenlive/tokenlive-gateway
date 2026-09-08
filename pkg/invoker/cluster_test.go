@@ -309,6 +309,13 @@ type fixedErrorProvider struct {
 	callCount int
 }
 
+type nonRetryableTestError struct {
+	message string
+}
+
+func (e *nonRetryableTestError) Error() string   { return e.message }
+func (e *nonRetryableTestError) Retryable() bool { return false }
+
 func (p *fixedErrorProvider) Name() string            { return p.name }
 func (p *fixedErrorProvider) Type() core.ProviderType { return core.ProviderOpenAI }
 func (p *fixedErrorProvider) RequestTypes() []core.RequestType {
@@ -320,6 +327,38 @@ func (p *fixedErrorProvider) Invoke(*core.GatewayContext) error {
 }
 func (p *fixedErrorProvider) HealthCheck(context.Context) error { return nil }
 func (p *fixedErrorProvider) ValidateConfig() error             { return nil }
+
+func TestClusterInvoker_DoesNotRetryNonRetryableError(t *testing.T) {
+	ep := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4"}
+	provider := &fixedErrorProvider{
+		name: "openai",
+		err:  &nonRetryableTestError{message: "request too large"},
+	}
+	excludeFailedEndpoint := false
+	retry := &policy.RetryPolicy{
+		Retry:                 2,
+		BackoffType:           "fixed",
+		BaseMs:                1,
+		ErrorMessages:         []string{"too large"},
+		ExcludeFailedEndpoint: &excludeFailedEndpoint,
+	}
+
+	ci := newTestClusterInvoker(
+		&mockDiscovery{endpoints: []*core.Endpoint{ep}},
+		&mockLoadBalancer{provider: provider},
+		retry,
+	)
+	gctx := newTestGatewayContext()
+	defer core.ReleaseContext(gctx)
+
+	err := ci.Invoke(gctx)
+	if err == nil {
+		t.Fatal("expected non-retryable error")
+	}
+	if provider.callCount != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.callCount)
+	}
+}
 
 func TestRetryPolicy_ShouldRetryWithReason(t *testing.T) {
 	retry := &policy.RetryPolicy{
