@@ -1,6 +1,6 @@
 module github.com/tokenlive/tokenlive-gateway
 
-go 1.25.0
+go 1.27.1
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0

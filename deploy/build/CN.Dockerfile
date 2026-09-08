@@ -1,5 +1,5 @@
 ARG REGISTRY=docker.io
-FROM --platform=$BUILDPLATFORM ${REGISTRY}/golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM ${REGISTRY}/golang:1.27.1-alpine AS builder
 RUN set -eux && sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
 
 ARG APP_RELATIVE_PATH
