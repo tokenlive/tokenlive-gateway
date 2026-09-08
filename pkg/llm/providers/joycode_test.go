@@ -143,12 +143,27 @@ func TestJoycodeResponsesUnwrapReader(t *testing.T) {
 	if got != want {
 		t.Fatalf("unwrap mismatch:\ngot:  %q\nwant: %q", got, want)
 	}
-	if err := r.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+		if err := r.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
 	}
-}
 
-func TestJoyCodeResponses_ClaudeNonStreamUsesMessagesToResponses(t *testing.T) {
+	func TestJoycodeResponsesUnwrapReader_PassthroughStandardSSE(t *testing.T) {
+		input := "event: message_start\n" +
+			`data: {"type":"message_start"}` + "\n\n" +
+			`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}` + "\n\n" +
+			`data: {"type":"message_stop"}` + "\n\n"
+		r := newJoycodeResponsesUnwrapReader(io.NopCloser(strings.NewReader(input)))
+		out, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if got := string(out); got != input {
+			t.Fatalf("standard SSE must pass through unchanged:\ngot:  %q\nwant: %q", got, input)
+		}
+	}
+
+	func TestJoyCodeResponses_ClaudeNonStreamUsesMessagesToResponses(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"msg_2","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`)
@@ -216,12 +231,55 @@ func TestJoyCodeResponses_ClaudeStreamUsesMessagesToResponses(t *testing.T) {
 	if strings.Contains(body, `"object":"chat.completion.chunk"`) {
 		t.Fatalf("Claude Responses leaked Chat events: %s", body)
 	}
-	if !strings.Contains(body, "event: response.completed") {
-		t.Fatalf("missing Responses completion: %s", body)
+		if !strings.Contains(body, "event: response.completed") {
+			t.Fatalf("missing Responses completion: %s", body)
+		}
 	}
-}
 
-func TestJoyCodeResponses_SelectsFunctionIDFromEndpointCapability(t *testing.T) {
+	func TestJoyCodeResponses_ClaudeStreamUnwrapsDoubleWrappedSSE(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			frames := []string{
+				`{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":2}}}`,
+				`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+				`{"type":"content_block_stop","index":0}`,
+				`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+				`{"type":"message_stop"}`,
+			}
+			for _, frame := range frames {
+				_, _ = fmt.Fprintf(w, "data: event: message\n\ndata: data: %s\n\n", frame)
+			}
+		}))
+		defer server.Close()
+
+		p := NewJoyCodeProvider("joycode", server.URL, "key", nil)
+		reqBody := `{"model":"claude-test","input":"hello","stream":true}`
+		w := httptest.NewRecorder()
+		gctx := core.AcquireContext(w, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody)))
+		defer core.ReleaseContext(gctx)
+		gctx.RequestType, gctx.RawBody, gctx.Model, gctx.IsStream = core.RequestTypeResponses, []byte(reqBody), "claude-test", true
+		gctx.SelectedEndpoint = &core.Endpoint{RequestTypes: []core.RequestType{core.RequestTypeMessages}}
+
+		if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
+			t.Fatalf("Invoke: %v", err)
+		}
+		body := w.Body.String()
+		if strings.Contains(body, "data: event:") || strings.Contains(body, "data: data:") {
+			t.Fatalf("double-wrapped SSE leaked to client: %s", body)
+		}
+		if !strings.Contains(body, "event: response.output_text.delta") || !strings.Contains(body, `"delta":"ok"`) {
+			t.Fatalf("missing Responses text events: %s", body)
+		}
+		if !strings.Contains(body, "event: response.completed") {
+			t.Fatalf("missing Responses completion: %s", body)
+		}
+		if gctx.Tags["response_completed_sent"] != "true" {
+			t.Fatalf("response_completed_sent tag not set: %v", gctx.Tags)
+		}
+	}
+
+	func TestJoyCodeResponses_SelectsFunctionIDFromEndpointCapability(t *testing.T) {
 	tests := []struct {
 		name         string
 		requestTypes []core.RequestType

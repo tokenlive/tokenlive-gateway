@@ -203,13 +203,16 @@ func (p *JoyCodeProvider) invokeAnthropicResponses(gctx *core.GatewayContext, mo
 	}
 	gctx.RawBody = injectJoyCodePayload(adaptThinkingBehavior(translated.Body))
 
-	resp, err := p.callAnthropic(gctx, gctx.RawBody, upstream.Handoff)
-	if err != nil {
-		return enrichAnthropicError(err, gctx.UpstreamBody)
-	}
-	if gctx.IsStream {
-		return handleAnthropicResponsesStream(gctx, resp)
-	}
+		resp, err := p.callAnthropic(gctx, gctx.RawBody, upstream.Handoff)
+		if err != nil {
+			return enrichAnthropicError(err, gctx.UpstreamBody)
+		}
+		if gctx.IsStream {
+			// JoyCode anthropic_completions may wrap inner SSE as data: event: / data: data:.
+			// Unwrap is transport-only; standard Anthropic SSE is passed through unchanged.
+			resp.Body = newJoycodeResponsesUnwrapReader(resp.Body)
+			return handleAnthropicResponsesStream(gctx, resp)
+		}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -282,19 +285,27 @@ func (p *JoyCodeProvider) invokeNativeResponses(gctx *core.GatewayContext) error
 	return nil
 }
 
-// joycodeResponsesUnwrapReader 将 JoyCode responses_completions 的双层包裹 SSE 还原为标准格式：
+const (
+	unwrapModeUnknown = iota
+	unwrapModeWrapped
+	unwrapModePassthrough
+)
+
+// joycodeResponsesUnwrapReader 将 JoyCode 双层包裹 SSE 还原为标准格式：
 //
 //	data: event: response.created   ->  event: response.created
 //	data: data: {...}               ->  data: {...}
 //
 // 上游把内层流的每一行都再包一层 data:，且 event 行与 data 行各自独立成块；
-// 这里将相邻的 event/data 重新配对为单个 SSE 块（event + data + 空行），
-// 与 OpenAI Responses API 的标准流格式一致。
+// 这里将相邻的 event/data 重新配对为单个 SSE 块（event + data + 空行）。
+// 若首个非空行已是标准 SSE（event: / data: {...}），整段原样透传，避免破坏
+// Anthropic Messages 等标准协议流。
 type joycodeResponsesUnwrapReader struct {
 	underlying io.ReadCloser
 	reader     *bufio.Reader
 	buf        bytes.Buffer
 	pendEvent  string // 待配对的 "event: xxx\n" 行
+	mode       int
 }
 
 func newJoycodeResponsesUnwrapReader(rc io.ReadCloser) io.ReadCloser {
@@ -326,6 +337,23 @@ func (r *joycodeResponsesUnwrapReader) Read(p []byte) (int, error) {
 }
 
 func (r *joycodeResponsesUnwrapReader) processLine(line string) {
+	if r.mode != unwrapModeWrapped {
+		if r.mode == unwrapModePassthrough {
+			r.buf.WriteString(line)
+			return
+		}
+		if strings.TrimRight(line, "\r\n") == "" {
+			return
+		}
+		if strings.HasPrefix(line, "data: event:") || strings.HasPrefix(line, "data: data:") {
+			r.mode = unwrapModeWrapped
+		} else {
+			r.mode = unwrapModePassthrough
+			r.buf.WriteString(line)
+			return
+		}
+	}
+
 	switch {
 	case strings.HasPrefix(line, "data: event:"):
 		// 上一个 event 行没有等到配对的 data 行，先原样吐出（不丢事件）。
