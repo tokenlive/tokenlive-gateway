@@ -56,6 +56,67 @@ func TestOpenAIProvider_ChatCompletion_NonStream(t *testing.T) {
 	}
 }
 
+func TestOpenAIProvider_ImageGeneration_NonStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("unexpected auth header: %s", r.Header.Get("Authorization"))
+		}
+
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if payload["model"] != "grok-imagine-image-2.0" {
+			t.Fatalf("unexpected model: %v", payload["model"])
+		}
+		if payload["prompt"] != "a cat on the moon" {
+			t.Fatalf("unexpected prompt: %v", payload["prompt"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"created": 123,
+			"data": []map[string]string{
+				{"url": "https://example.com/generated.png"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	p := NewOpenAIProvider("xai", server.URL, "test-key", nil)
+	gctx := &core.GatewayContext{
+		Ctx:         context.Background(),
+		RequestType: core.RequestTypeImageGeneration,
+		RawBody:     []byte(`{"model":"grok-imagine-image-2.0","prompt":"a cat on the moon","response_format":"url"}`),
+	}
+
+	if err := p.Invoke(gctx); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	response, ok := gctx.Response.(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected response type: %T", gctx.Response)
+	}
+	data, ok := response["data"].([]interface{})
+	if !ok || len(data) != 1 {
+		t.Fatalf("unexpected image data: %#v", response["data"])
+	}
+}
+
+func TestOpenAIProviderRequestTypesIncludesImageGeneration(t *testing.T) {
+	p := NewOpenAIProvider("xai", "https://api.x.ai/v1", "test-key", nil)
+	for _, requestType := range p.RequestTypes() {
+		if requestType == core.RequestTypeImageGeneration {
+			return
+		}
+	}
+	t.Fatal("OpenAI provider does not advertise image_generation")
+}
+
 func TestOpenAIProvider_ChatCompletion_Stream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -417,8 +478,8 @@ func TestOpenAIProvider_UpstreamError(t *testing.T) {
 func TestOpenAIProvider_RequestTypes(t *testing.T) {
 	p := NewOpenAIProvider("openai", "", "", nil)
 	caps := p.RequestTypes()
-	if len(caps) != 4 {
-		t.Fatalf("expected 4 requestTypes, got %d", len(caps))
+	if len(caps) != 5 {
+		t.Fatalf("expected 5 requestTypes, got %d", len(caps))
 	}
 }
 

@@ -285,6 +285,59 @@ func TestRateLimitFilter_CostLimiter(t *testing.T) {
 	}
 }
 
+func TestRateLimitFilter_ImageGenerationSkipsTokenAndCostPolicies(t *testing.T) {
+	p := &policy.Policy{
+		Billing: &policy.BillingPolicy{
+			InputPrice:  3,
+			OutputPrice: 10,
+		},
+		LimitPolicies: []*policy.LimitPolicy{
+			{
+				Name: "image-requests",
+				Type: "request",
+				SlidingWindows: []*policy.SlidingWindow{
+					{Threshold: 100, TimeWindowInMs: 60000},
+				},
+			},
+			{
+				Name: "token-limit",
+				Type: "token",
+				SlidingWindows: []*policy.SlidingWindow{
+					{Threshold: 100000, TimeWindowInMs: 60000},
+				},
+			},
+			{
+				Name: "cost-limit",
+				Type: "cost",
+				SlidingWindows: []*policy.SlidingWindow{
+					{Threshold: 100000, TimeWindowInMs: 60000},
+				},
+			},
+		},
+	}
+
+	mockStore := &mockCascadeStore{}
+	f := NewRateLimitFilter(mockStore)
+	gctx := &core.GatewayContext{
+		Ctx:         context.Background(),
+		RequestType: core.RequestTypeImageGeneration,
+		UserID:      "u1",
+		Model:       "grok-imagine-image-2.0",
+		Policy:      p,
+		RawBody:     []byte(`{"model":"grok-imagine-image-2.0","prompt":"cat"}`),
+	}
+
+	if err := f.OnRequest(gctx); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(mockStore.incrCalls) != 1 {
+		t.Fatalf("expected only request limit to execute, got %#v", mockStore.incrCalls)
+	}
+	if gctx.InputTokens != 0 {
+		t.Fatalf("image generation must not synthesize token usage, got %d", gctx.InputTokens)
+	}
+}
+
 type mockCascadeStore struct {
 	core.StateStore
 
@@ -310,6 +363,14 @@ func (m *mockCascadeStore) RateLimitRefund(ctx context.Context, key string, toke
 	}
 	m.refundCalls[key] += tokens
 	return nil
+}
+
+func (m *mockCascadeStore) GetEMA(context.Context, string) (float64, error) {
+	return 200, nil
+}
+
+func (m *mockCascadeStore) UpdateEMA(context.Context, string, int64, float64) (float64, error) {
+	return 0, nil
 }
 
 func TestRateLimitFilter_CascadeRollback(t *testing.T) {

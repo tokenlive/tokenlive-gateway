@@ -24,6 +24,7 @@ func init() {
 	})
 	core.RegisterRequestInvoker(core.ProviderOpenAI, core.RequestTypeChatCompletion, &openaiChatInvoker{})
 	core.RegisterRequestInvoker(core.ProviderOpenAI, core.RequestTypeEmbedding, &openaiEmbeddingInvoker{})
+	core.RegisterRequestInvoker(core.ProviderOpenAI, core.RequestTypeImageGeneration, &openaiImageGenerationInvoker{})
 	core.RegisterRequestInvoker(core.ProviderOpenAI, core.RequestTypeResponses, &openaiResponsesInvoker{})
 	core.RegisterRequestInvoker(core.ProviderOpenAI, core.RequestTypeMessages, &openaiMessagesInvoker{})
 }
@@ -57,6 +58,7 @@ func (p *OpenAIProvider) RequestTypes() []core.RequestType {
 	return []core.RequestType{
 		core.RequestTypeChatCompletion,
 		core.RequestTypeEmbedding,
+		core.RequestTypeImageGeneration,
 		core.RequestTypeResponses,
 		core.RequestTypeMessages,
 	}

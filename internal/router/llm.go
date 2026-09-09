@@ -59,6 +59,9 @@ func InitLLMRouter(deps RouterDeps, r *gin.RouterGroup) {
 		// 嵌入向量
 		llmGroup.POST("/embeddings", deps.LLMHandler.CreateEmbedding)
 
+		// 图像生成
+		llmGroup.POST("/images/generations", deps.LLMHandler.CreateImage)
+
 		// 模型列表
 		llmGroup.GET("/models", deps.LLMHandler.ListModels)
 	}

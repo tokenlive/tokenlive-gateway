@@ -169,14 +169,20 @@ curl -X POST http://localhost:8000/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{"model":"text-embedding-ada-002","input":"Hello world"}'
 
-# 6. List Authorized Models for current API Key (source: Redis SET "aigw:user:{userID}:models")
+# 6. Image Generation (OpenAI standard)
+curl -X POST http://localhost:8000/v1/images/generations \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"grok-imagine-image-2.0","prompt":"A cat on the moon","response_format":"url"}'
+
+# 7. List Authorized Models for current API Key (source: Redis SET "aigw:user:{userID}:models")
 curl http://localhost:8000/v1/models \
   -H "Authorization: Bearer sk-your-api-key"
 
-# 7. Gateway Health Check
+# 8. Gateway Health Check
 curl http://localhost:8000/health
 
-# 8. Prometheus Metrics
+# 9. Prometheus Metrics
 curl http://localhost:8000/metrics
 ```
 
@@ -188,6 +194,7 @@ curl http://localhost:8000/metrics
 | `/v1/messages` | POST | Anthropic Messages completion (supports streaming SSE) |
 | `/v1/responses` | POST | Responses unified format (supports automatic translation to chat/completions) |
 | `/v1/embeddings` | POST | Create embeddings |
+| `/v1/images/generations` | POST | Generate images through OpenAI-compatible providers |
 | `/v1/models` | GET | List authorized models for the current API Key (OpenAI standard format). Data source: Redis SET `aigw:user:{userID}:models`. Unauthenticated requests return 401. If the user has no authorized models, returns `{object:"list", data:[]}` |
 | `/health` | GET | Gateway health check |
 | `/metrics` | GET | Prometheus metrics |

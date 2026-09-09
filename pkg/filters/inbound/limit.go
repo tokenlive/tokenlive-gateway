@@ -45,6 +45,11 @@ func (f *RateLimitFilter) OnRequest(gctx *core.GatewayContext) error {
 	}
 
 	for _, lp := range p.LimitPolicies {
+		// Image generation has no token usage contract yet. Keep request-count
+		// limits active, but do not create synthetic token/cost consumption.
+		if gctx.RequestType == core.RequestTypeImageGeneration && (lp.Type == "token" || lp.Type == "cost") {
+			continue
+		}
 		// check autonomous conditions
 		if !MatchLimitPolicyConditions(gctx, lp) {
 			continue // condition not matched, skip this limit policy

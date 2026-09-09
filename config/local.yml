@@ -143,6 +143,21 @@ pipelines:
         base_ms: 100
         error_codes: [ "500", "502", "503", "504", "429" ]
 
+  image_generation:
+    name: "image_generation"
+    request_types: [ "image_generation" ]
+    inbound_filters: [ "auth", "session_reader", "tagging", "credits_check", "rate_limit", "validate" ]
+    outbound_filters: [ "metrics", "status_collector", "access_log", "event_publisher" ]
+    invoker:
+      type: "cluster"
+      routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]
+      load_balancer: "round_robin"
+      retry:
+        retry: 0
+        backoff_type: "exponential"
+        base_ms: 100
+        error_codes: [ "500", "502", "503", "504", "429" ]
+
   # Messages 协议端点，支持原生与协议翻译路由，端点能否承接主要由 capability 路由决定
   messages:
     name: "messages"

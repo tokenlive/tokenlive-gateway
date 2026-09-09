@@ -90,7 +90,7 @@ func (ep *Endpoint) protocolSupportsRequestType(rt RequestType) bool {
 	switch ep.Protocol() {
 	case ProtocolOpenAI:
 		switch rt {
-		case RequestTypeChatCompletion, RequestTypeEmbedding, RequestTypeResponses, RequestTypeMessages:
+		case RequestTypeChatCompletion, RequestTypeEmbedding, RequestTypeImageGeneration, RequestTypeResponses, RequestTypeMessages:
 			return true
 		}
 	case ProtocolAnthropic:

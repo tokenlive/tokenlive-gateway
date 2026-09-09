@@ -629,7 +629,7 @@ func BuildFromRelationalConfig(
 				}
 				switch re.ProviderProtocol {
 				case "openai":
-					caps = append(caps, core.RequestTypeResponses)
+					caps = append(caps, core.RequestTypeImageGeneration, core.RequestTypeResponses)
 				case "anthropic":
 					caps = []core.RequestType{core.RequestTypeMessages}
 				}
@@ -716,7 +716,21 @@ func BuildFromRelationalConfig(
 		}
 	}
 
-	// 3. Default messages pipeline (Anthropic native protocol).
+	// 3. Default image generation pipeline.
+	// Image APIs do not expose token usage, so token settlement is intentionally omitted.
+	if _, exists := engineConfig.Pipelines["image_generation"]; !exists {
+		engineConfig.Pipelines["image_generation"] = &core.PipelineConfig{
+			Name:         "image_generation",
+			RequestTypes: []core.RequestType{core.RequestTypeImageGeneration},
+			Invoker: core.InvokerConfig{
+				Type: "cluster",
+			},
+			InboundFilters:  inboundFilters,
+			OutboundFilters: []string{"metrics", "status_collector", "access_log", "event_publisher"},
+		}
+	}
+
+	// 4. Default messages pipeline (Anthropic native protocol).
 	if _, exists := engineConfig.Pipelines["messages"]; !exists {
 		engineConfig.Pipelines["messages"] = &core.PipelineConfig{
 			Name:         "messages",

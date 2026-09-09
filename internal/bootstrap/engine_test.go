@@ -2,14 +2,46 @@ package bootstrap
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/config"
+	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
+
+func TestBuildFromRelationalConfigAddsImageGenerationPipeline(t *testing.T) {
+	engineConfig, _, _, _ := BuildFromRelationalConfig(&config.GatewayConfig{}, true)
+
+	pipeline, ok := engineConfig.Pipelines["image_generation"]
+	require.True(t, ok)
+	assert.Equal(t, []core.RequestType{core.RequestTypeImageGeneration}, pipeline.RequestTypes)
+	assert.Contains(t, pipeline.InboundFilters, "auth")
+	assert.NotContains(t, pipeline.OutboundFilters, "token_settlement")
+}
+
+func TestBuildFromRelationalConfigAdvertisesOpenAIImageCapability(t *testing.T) {
+	cfg := &config.GatewayConfig{
+		Models: map[string]config.ModelConfig{
+			"grok-imagine-image-2.0": {
+				RequestTypes: []string{"image_generation"},
+				Endpoints: []config.EndpointConfig{
+					{Provider: "xai", URL: "https://api.x.ai/v1"},
+				},
+			},
+		},
+		Providers: map[string]config.ProviderConfig{
+			"xai": {Protocol: "openai"},
+		},
+	}
+
+	_, _, providers, _ := BuildFromRelationalConfig(cfg, true)
+	require.Len(t, providers, 1)
+	assert.True(t, slices.Contains(providers[0].RequestTypes, core.RequestTypeImageGeneration))
+}
 
 func TestDynamicEndpointAdapterPreservesPriority(t *testing.T) {
 	cfg := &config.GatewayConfig{

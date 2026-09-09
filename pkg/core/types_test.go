@@ -38,6 +38,15 @@ func TestEndpointSupportsRequestType_ProtocolAwareFallback(t *testing.T) {
 			want:    true,
 		},
 		{
+			name:     "openai endpoint can serve image generation when declared",
+			protocol: string(ProtocolOpenAI),
+			declared: []RequestType{
+				RequestTypeImageGeneration,
+			},
+			request: RequestTypeImageGeneration,
+			want:    true,
+		},
+		{
 			name:     "gemini endpoint can serve native generate content",
 			protocol: string(ProtocolGemini),
 			declared: []RequestType{
