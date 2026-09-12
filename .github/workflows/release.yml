@@ -67,9 +67,12 @@ jobs:
         CGO_ENABLED: 0
         GOOS: ${{ matrix.goos }}
         GOARCH: ${{ matrix.goarch }}
+        RELEASE_TAG: ${{ steps.version.outputs.VERSION }}
+        BUILD_KIND: release
       run: |
+        test "$RELEASE_TAG" != "latest"
         BINARY_NAME="${{ env.APP_NAME }}_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}"
-        go build -ldflags "-w -s -X main.VERSION=${{ steps.version.outputs.VERSION }}" -o "${BINARY_NAME}" ./cmd/server
+        go build -ldflags "-w -s -X main.VERSION=${RELEASE_TAG} -X main.BUILD_KIND=${BUILD_KIND}" -o "${BINARY_NAME}" ./cmd/server
 
     - name: Package binary
       run: |
@@ -135,6 +138,7 @@ jobs:
         build-args: |
           VERSION=${{ steps.version.outputs.VERSION }}
           RELEASE_TAG=${{ steps.version.outputs.VERSION }}
+          BUILD_KIND=release
           APP_RELATIVE_PATH=./cmd/server
         tags: |
           ${{ steps.repo.outputs.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}

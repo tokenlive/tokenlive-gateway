@@ -4,6 +4,9 @@ FROM --platform=$BUILDPLATFORM ${REGISTRY}/golang:1.27.1-alpine AS builder
 ARG APP_RELATIVE_PATH
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
+ARG RELEASE_TAG=${VERSION}
+ARG BUILD_KIND=dev
 
 WORKDIR /data/app
 COPY go.mod go.sum ./
@@ -11,7 +14,8 @@ RUN go mod download
 
 COPY . /data/app
 RUN rm -rf /data/app/bin/
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o ./bin/tokenlive-gateway ${APP_RELATIVE_PATH}
+RUN test "${RELEASE_TAG}" != "latest" && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-s -w -X main.VERSION=${RELEASE_TAG} -X main.BUILD_KIND=${BUILD_KIND}" -o ./bin/tokenlive-gateway ${APP_RELATIVE_PATH}
 RUN mv config /data/app/bin/
 
 

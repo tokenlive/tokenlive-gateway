@@ -1,3 +1,10 @@
+RELEASE_TAG ?= dev
+BUILD_KIND ?= dev
+
+ifeq ($(RELEASE_TAG),latest)
+$(error latest is an image alias, not a runtime version)
+endif
+
 .PHONY: init
 init:
 	go install github.com/google/wire/cmd/wire@latest
@@ -22,7 +29,7 @@ test:
 
 .PHONY: build
 build:
-	go build -ldflags="-s -w" -o ./bin/tokenlive-gateway ./cmd/server
+	go build -ldflags="-s -w -X main.VERSION=$(RELEASE_TAG) -X main.BUILD_KIND=$(BUILD_KIND)" -o ./bin/tokenlive-gateway ./cmd/server
 
 .PHONY: docker
 docker:
