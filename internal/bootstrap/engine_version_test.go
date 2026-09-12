@@ -3,6 +3,8 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -254,4 +256,61 @@ func TestVersionReportFailedEngineBuildDoesNotReport(t *testing.T) {
 	_, _, _, err := NewGatewayEngine(v, &log.Logger{Logger: zap.NewNop()}, nil, nil, nil, nil, nil, nil, nil)
 	require.Error(t, err)
 	require.Never(t, func() bool { return calls.Load() != 0 }, 100*time.Millisecond, 5*time.Millisecond)
+}
+
+func TestVersionReportCleanupCancelsStalledRedisHandshake(t *testing.T) {
+	v := versionReportConfig(t)
+	started := make(chan struct{}, 1)
+	peerClosed := make(chan struct{}, 1)
+	var peersMu sync.Mutex
+	var peers []net.Conn
+	borrowed := redis.NewClient(&redis.Options{
+		Protocol: 2, DisableIdentity: true, MaxRetries: -1,
+		ReadTimeout: -2, WriteTimeout: -2,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			clientConn, peer := net.Pipe()
+			peersMu.Lock()
+			peers = append(peers, peer)
+			peersMu.Unlock()
+			go func() {
+				defer peer.Close()
+				buffer := make([]byte, 1024)
+				if _, err := peer.Read(buffer); err == nil {
+					started <- struct{}{}
+					// Consume requests without replying, like a stalled Redis
+					// handshake. Closing the private pool must interrupt it.
+					_, _ = io.Copy(io.Discard, peer)
+				}
+				peerClosed <- struct{}{}
+			}()
+			return clientConn, nil
+		},
+	})
+	defer borrowed.Close()
+	defer func() {
+		peersMu.Lock()
+		defer peersMu.Unlock()
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	}()
+	stop := startVersionReporter(context.Background(), v, borrowed, "redis", "", "")
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("reporter did not start Redis I/O")
+	}
+	stopped := make(chan struct{})
+	go func() { stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Error("bootstrap cleanup remained blocked on the Redis handshake")
+		return
+	}
+	select {
+	case <-peerClosed:
+	case <-time.After(time.Second):
+		t.Fatal("bootstrap cleanup abandoned an open reporting socket")
+	}
 }

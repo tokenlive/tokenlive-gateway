@@ -1,15 +1,19 @@
 package versionreport
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -397,5 +401,327 @@ func TestReportContinuesAfterHTTPFailureAndStops(t *testing.T) {
 				t.Fatal("reporter did not stop")
 			}
 		})
+	}
+}
+
+// pipeRedis exercises real go-redis socket reads/writes without an external
+// server. Its SET response can stall until the actual client connection closes.
+type pipeRedis struct {
+	started chan struct{}
+	release chan struct{}
+	stall   atomic.Bool
+	write   atomic.Bool
+	active  atomic.Int32
+	dials   atomic.Int32
+	wg      sync.WaitGroup
+}
+
+type pipeRedisConn struct {
+	net.Conn
+	server *pipeRedis
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *pipeRedisConn) Write(payload []byte) (int, error) {
+	if c.server.write.Load() && bytes.Contains(payload, []byte("\r\nset\r\n")) {
+		select {
+		case c.server.started <- struct{}{}:
+		default:
+		}
+	}
+	return c.Conn.Write(payload)
+}
+
+func (c *pipeRedisConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() {
+		c.server.active.Add(-1)
+		close(c.closed)
+	})
+	return err
+}
+
+func newPipeRedis(t *testing.T, timeout time.Duration) (*pipeRedis, *redis.Client) {
+	t.Helper()
+	server := &pipeRedis{started: make(chan struct{}, 1), release: make(chan struct{})}
+	server.stall.Store(true)
+	client := redis.NewClient(&redis.Options{
+		Protocol: 2, DisableIdentity: true, MaxRetries: -1,
+		ReadTimeout: timeout, WriteTimeout: timeout,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			clientConn, serverConn := net.Pipe()
+			conn := &pipeRedisConn{Conn: clientConn, server: server, closed: make(chan struct{})}
+			server.active.Add(1)
+			server.dials.Add(1)
+			server.wg.Add(1)
+			go func() {
+				defer server.wg.Done()
+				defer serverConn.Close()
+				reader := bufio.NewReader(serverConn)
+				for {
+					args, err := readRedisCommand(reader)
+					if err != nil {
+						return
+					}
+					switch strings.ToLower(args[0]) {
+					case "hello":
+						_, err = io.WriteString(serverConn, "-ERR unknown command 'hello'\r\n")
+						if server.write.Load() && server.stall.Load() {
+							// Do not read SET: net.Pipe.Write must actually block.
+							select {
+							case <-server.release:
+							case <-conn.closed:
+								return
+							}
+						}
+					case "set":
+						if server.stall.Load() {
+							select {
+							case server.started <- struct{}{}:
+							default:
+							}
+							select {
+							case <-server.release:
+							case <-conn.closed:
+								return
+							}
+						}
+						_, err = io.WriteString(serverConn, "+OK\r\n")
+					default:
+						_, err = io.WriteString(serverConn, "+OK\r\n")
+					}
+					if err != nil {
+						return
+					}
+				}
+			}()
+			return conn, nil
+		},
+	})
+	t.Cleanup(func() {
+		close(server.release)
+		_ = client.Close()
+		done := make(chan struct{})
+		go func() { server.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("Redis fixture still has an unclosed client connection")
+		}
+	})
+	return server, client
+}
+
+func readRedisCommand(reader *bufio.Reader) ([]string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "*")))
+	if err != nil {
+		return nil, err
+	}
+	args := make([]string, count)
+	for i := range args {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		size, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "$")))
+		if err != nil {
+			return nil, err
+		}
+		value := make([]byte, size+2)
+		if _, err := io.ReadFull(reader, value); err != nil {
+			return nil, err
+		}
+		args[i] = string(value[:size])
+	}
+	return args, nil
+}
+
+func TestRunStalledRedisCancellationPreservesBorrowedClient(t *testing.T) {
+	for _, timeout := range []time.Duration{30 * time.Second, -2} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			server, borrowed := newPipeRedis(t, timeout)
+			if err := borrowed.Ping(context.Background()).Err(); err != nil {
+				t.Fatal(err)
+			}
+			options := *borrowed.Options()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			n, _ := fixtureNode(t)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				Run(ctx, NewRedisSender(borrowed), n, nil)
+			}()
+			select {
+			case <-server.started:
+			case <-time.After(time.Second):
+				t.Fatal("SET never reached the stalled Redis server")
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Error("reporter is blocked on Redis I/O after cancellation")
+				return
+			}
+			if server.active.Load() != 1 {
+				t.Fatalf("reporter did not close only its private connection: active=%d", server.active.Load())
+			}
+			if err := borrowed.Ping(context.Background()).Err(); err != nil {
+				t.Fatalf("reporter closed the borrowed Redis client: %v", err)
+			}
+			if borrowed.Options().ContextTimeoutEnabled != options.ContextTimeoutEnabled ||
+				borrowed.Options().ReadTimeout != options.ReadTimeout ||
+				borrowed.Options().WriteTimeout != options.WriteTimeout ||
+				borrowed.Options().PoolSize != options.PoolSize {
+				t.Fatal("reporter mutated borrowed Redis options")
+			}
+		})
+	}
+}
+
+func TestRedisSenderDeadlineAndRecovery(t *testing.T) {
+	server, borrowed := newPipeRedis(t, -2)
+	sender := NewRedisSender(borrowed)
+	n, _ := fixtureNode(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- sender.Send(ctx, n) }()
+	select {
+	case <-server.started:
+	case <-time.After(time.Second):
+		t.Fatal("SET did not start")
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("stalled Redis report did not time out")
+		}
+	case <-time.After(time.Second):
+		t.Error("Redis report ignored its deadline")
+		return
+	}
+	if server.active.Load() != 0 {
+		t.Fatal("timed-out report retained its private Redis connection")
+	}
+	server.stall.Store(false)
+	if err := sender.Send(context.Background(), n); err != nil {
+		t.Fatalf("sender failed to recover after its previous timeout: %v", err)
+	}
+	if server.active.Load() != 0 {
+		t.Fatal("successful report retained its private Redis connection")
+	}
+}
+
+func TestRedisSenderCapsIOWithoutCallerDeadline(t *testing.T) {
+	server, borrowed := newPipeRedis(t, -2)
+	n, _ := fixtureNode(t)
+	result := make(chan error, 1)
+	go func() { result <- NewRedisSender(borrowed).Send(context.Background(), n) }()
+	select {
+	case <-server.started:
+	case <-time.After(time.Second):
+		t.Fatal("SET did not start")
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("stalled Redis report should time out")
+		}
+	case <-time.After(6 * time.Second):
+		t.Error("Redis report exceeded its five-second I/O budget")
+		return
+	}
+	if server.active.Load() != 0 {
+		t.Fatal("expired report left a Redis connection active")
+	}
+}
+
+func TestRedisSenderClosesOwnedConnectionAndPreservesDatabaseAuthentication(t *testing.T) {
+	mr := miniredis.RunT(t)
+	mr.RequireAuth("test-password")
+	borrowed := redis.NewClient(&redis.Options{Addr: mr.Addr(), Password: "test-password", DB: 3})
+	defer borrowed.Close()
+	n, _ := fixtureNode(t)
+	if err := NewRedisSender(borrowed).Send(context.Background(), n); err != nil {
+		t.Fatal(err)
+	}
+	const key = "tokenlive:gateway-versions:default:00000000-0000-4000-8000-000000000001"
+	if !mr.DB(3).Exists(key) || mr.DB(0).Exists(key) {
+		t.Fatal("private reporter client did not preserve the configured database")
+	}
+	deadline := time.Now().Add(time.Second)
+	for mr.CurrentConnectionCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if mr.CurrentConnectionCount() != 0 {
+		t.Fatal("completed report left its owned Redis connection open")
+	}
+	if err := borrowed.Ping(context.Background()).Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRedisSenderStalledWriteCancellation(t *testing.T) {
+	server, borrowed := newPipeRedis(t, -2)
+	server.write.Store(true)
+	n, _ := fixtureNode(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- NewRedisSender(borrowed).Send(ctx, n) }()
+	select {
+	case <-server.started:
+	case <-time.After(time.Second):
+		t.Fatal("SET write never started")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled SET returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Error("Redis SET write remained blocked after cancellation")
+		return
+	}
+	if server.active.Load() != 0 {
+		t.Fatal("canceled SET retained its private Redis connection")
+	}
+}
+
+func TestRedisSenderLimitsConcurrentReportsToOneConnection(t *testing.T) {
+	server, borrowed := newPipeRedis(t, -2)
+	sender := NewRedisSender(borrowed)
+	n, _ := fixtureNode(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- sender.Send(ctx, n) }()
+	select {
+	case <-server.started:
+	case <-time.After(time.Second):
+		t.Fatal("SET did not start")
+	}
+	short, cancelShort := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelShort()
+	if err := sender.Send(short, n); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("queued report did not honor its shorter deadline: %v", err)
+	}
+	if server.dials.Load() != 1 || server.active.Load() != 1 {
+		t.Fatalf("sender opened concurrent reporting connections: dialed=%d active=%d", server.dials.Load(), server.active.Load())
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Error("reporter did not join its canceled I/O")
+		return
 	}
 }

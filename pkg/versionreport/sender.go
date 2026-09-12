@@ -11,16 +11,24 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
-type redisSender struct{ client *redis.Client }
+const redisReportTimeout = 5 * time.Second
 
-// NewRedisSender borrows the existing Redis client without owning its lifecycle.
+type redisSender struct {
+	options redis.Options
+	active  chan struct{}
+}
+
+// NewRedisSender copies connection settings without modifying or closing client.
+// Each report owns a short-lived single-connection client so cancellation cannot
+// interrupt business commands sharing the original client's connection pool.
 func NewRedisSender(client *redis.Client) Sender {
 	if client == nil {
 		return nil
 	}
-	return &redisSender{client: client}
+	return &redisSender{options: *client.Options(), active: make(chan struct{}, 1)}
 }
 
 func (s *redisSender) Send(ctx context.Context, node Node) error {
@@ -32,8 +40,67 @@ func (s *redisSender) Send(ctx context.Context, node Node) error {
 	if err != nil {
 		return fmt.Errorf("versionreport: encode record: %w", err)
 	}
+	ctx, cancel := context.WithTimeout(ctx, redisReportTimeout)
+	defer cancel()
+	select {
+	case s.active <- struct{}{}:
+		defer func() { <-s.active }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	options := s.options
+	options.ContextTimeoutEnabled = true
+	options.ReadTimeout = boundedRedisTimeout(options.ReadTimeout)
+	options.WriteTimeout = boundedRedisTimeout(options.WriteTimeout)
+	options.DialTimeout = boundedRedisTimeout(options.DialTimeout)
+	options.PoolTimeout = boundedRedisTimeout(options.PoolTimeout)
+	options.MaxRetries = -1
+	options.DialerRetries = 1
+	options.PoolSize = 1
+	options.MaxActiveConns = 1
+	options.MaxConcurrentDials = 1
+	options.MinIdleConns = 0
+	options.MaxIdleConns = 1
+	// This short-lived client neither needs maintenance handoff workers nor
+	// shares the borrowed client's mutable notification configuration/processor.
+	options.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
+	options.PushNotificationProcessor = nil
+	if options.TLSConfig != nil {
+		options.TLSConfig = options.TLSConfig.Clone()
+	}
+	reportClient := redis.NewClient(&options)
+	closed := make(chan struct{})
+	stopClose := context.AfterFunc(ctx, func() {
+		// ContextTimeoutEnabled sets socket deadlines but does not interrupt
+		// in-flight I/O on manual cancellation. Closing our own pool does.
+		_ = reportClient.Close()
+		close(closed)
+	})
+	defer func() {
+		if stopClose() {
+			_ = reportClient.Close()
+		} else {
+			// Join the cancellation callback before releasing the send slot.
+			<-closed
+		}
+	}()
 	key := "tokenlive:gateway-versions:" + node.Namespace + ":" + node.InstanceID
-	return s.client.Set(ctx, key, payload, reportTTL).Err()
+	err = reportClient.Set(ctx, key, payload, reportTTL).Err()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+func boundedRedisTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 || timeout > redisReportTimeout {
+		return redisReportTimeout
+	}
+	return timeout
 }
 
 type httpSender struct {
