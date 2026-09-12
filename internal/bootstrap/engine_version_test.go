@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net"
@@ -259,58 +260,67 @@ func TestVersionReportFailedEngineBuildDoesNotReport(t *testing.T) {
 }
 
 func TestVersionReportCleanupCancelsStalledRedisHandshake(t *testing.T) {
-	v := versionReportConfig(t)
-	started := make(chan struct{}, 1)
-	peerClosed := make(chan struct{}, 1)
-	var peersMu sync.Mutex
-	var peers []net.Conn
-	borrowed := redis.NewClient(&redis.Options{
-		Protocol: 2, DisableIdentity: true, MaxRetries: -1,
-		ReadTimeout: -2, WriteTimeout: -2,
-		Dialer: func(context.Context, string, string) (net.Conn, error) {
-			clientConn, peer := net.Pipe()
-			peersMu.Lock()
-			peers = append(peers, peer)
-			peersMu.Unlock()
+	for _, useTLS := range []bool{false, true} {
+		t.Run(map[bool]string{false: "redis", true: "tls"}[useTLS], func(t *testing.T) {
+			v := versionReportConfig(t)
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			defer listener.Close()
+			started := make(chan struct{})
+			peerClosed := make(chan struct{})
+			accepted := make(chan net.Conn, 1)
 			go func() {
+				peer, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				accepted <- peer
 				defer peer.Close()
 				buffer := make([]byte, 1024)
 				if _, err := peer.Read(buffer); err == nil {
-					started <- struct{}{}
-					// Consume requests without replying, like a stalled Redis
-					// handshake. Closing the private pool must interrupt it.
+					close(started)
+					// The default reporter transport must close both an
+					// incomplete TLS handshake and a stalled Redis handshake.
 					_, _ = io.Copy(io.Discard, peer)
 				}
-				peerClosed <- struct{}{}
+				close(peerClosed)
 			}()
-			return clientConn, nil
-		},
-	})
-	defer borrowed.Close()
-	defer func() {
-		peersMu.Lock()
-		defer peersMu.Unlock()
-		for _, peer := range peers {
-			_ = peer.Close()
-		}
-	}()
-	stop := startVersionReporter(context.Background(), v, borrowed, "redis", "", "")
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("reporter did not start Redis I/O")
-	}
-	stopped := make(chan struct{})
-	go func() { stop(); close(stopped) }()
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Error("bootstrap cleanup remained blocked on the Redis handshake")
-		return
-	}
-	select {
-	case <-peerClosed:
-	case <-time.After(time.Second):
-		t.Fatal("bootstrap cleanup abandoned an open reporting socket")
+			defer func() {
+				select {
+				case peer := <-accepted:
+					_ = peer.Close()
+				default:
+				}
+			}()
+			options := &redis.Options{
+				Addr: listener.Addr().String(), Protocol: 2, DisableIdentity: true, MaxRetries: -1,
+				ReadTimeout: -2, WriteTimeout: -2, DialTimeout: 30 * time.Second,
+			}
+			if useTLS {
+				options.TLSConfig = &tls.Config{InsecureSkipVerify: true} // Local stalled-handshake fixture.
+			}
+			borrowed := redis.NewClient(options)
+			defer borrowed.Close()
+			stop := startVersionReporter(context.Background(), v, borrowed, "redis", "", "")
+			t.Cleanup(stop)
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("reporter did not start Redis I/O")
+			}
+			stopped := make(chan struct{})
+			go func() { stop(); close(stopped) }()
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Error("bootstrap cleanup remained blocked on the Redis handshake")
+				return
+			}
+			select {
+			case <-peerClosed:
+			case <-time.After(time.Second):
+				t.Fatal("bootstrap cleanup abandoned an open reporting socket")
+			}
+		})
 	}
 }

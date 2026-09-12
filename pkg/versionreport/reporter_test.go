@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -555,7 +557,7 @@ func TestRunStalledRedisCancellationPreservesBorrowedClient(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				Run(ctx, NewRedisSender(borrowed), n, nil)
+				Run(ctx, NewRedisSenderWithDialer(borrowed, borrowed.Options().Dialer), n, nil)
 			}()
 			select {
 			case <-server.started:
@@ -587,7 +589,7 @@ func TestRunStalledRedisCancellationPreservesBorrowedClient(t *testing.T) {
 
 func TestRedisSenderDeadlineAndRecovery(t *testing.T) {
 	server, borrowed := newPipeRedis(t, -2)
-	sender := NewRedisSender(borrowed)
+	sender := NewRedisSenderWithDialer(borrowed, borrowed.Options().Dialer)
 	n, _ := fixtureNode(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -623,7 +625,9 @@ func TestRedisSenderCapsIOWithoutCallerDeadline(t *testing.T) {
 	server, borrowed := newPipeRedis(t, -2)
 	n, _ := fixtureNode(t)
 	result := make(chan error, 1)
-	go func() { result <- NewRedisSender(borrowed).Send(context.Background(), n) }()
+	go func() {
+		result <- NewRedisSenderWithDialer(borrowed, borrowed.Options().Dialer).Send(context.Background(), n)
+	}()
 	select {
 	case <-server.started:
 	case <-time.After(time.Second):
@@ -675,7 +679,7 @@ func TestRedisSenderStalledWriteCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
-	go func() { result <- NewRedisSender(borrowed).Send(ctx, n) }()
+	go func() { result <- NewRedisSenderWithDialer(borrowed, borrowed.Options().Dialer).Send(ctx, n) }()
 	select {
 	case <-server.started:
 	case <-time.After(time.Second):
@@ -698,7 +702,7 @@ func TestRedisSenderStalledWriteCancellation(t *testing.T) {
 
 func TestRedisSenderLimitsConcurrentReportsToOneConnection(t *testing.T) {
 	server, borrowed := newPipeRedis(t, -2)
-	sender := NewRedisSender(borrowed)
+	sender := NewRedisSenderWithDialer(borrowed, borrowed.Options().Dialer)
 	n, _ := fixtureNode(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -723,5 +727,305 @@ func TestRedisSenderLimitsConcurrentReportsToOneConnection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("reporter did not join its canceled I/O")
 		return
+	}
+}
+
+func TestRedisSenderCancellationWaitsForPendingDial(t *testing.T) {
+	started := make(chan struct{}, 1)
+	canceled := make(chan struct{}, 1)
+	exited := make(chan struct{}, 1)
+	finish := make(chan struct{})
+	force := make(chan struct{})
+	borrowed := redis.NewClient(&redis.Options{
+		MaxRetries: -1,
+		Dialer: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			started <- struct{}{}
+			select {
+			case <-ctx.Done():
+				canceled <- struct{}{}
+			case <-force:
+			}
+			select {
+			case <-finish:
+			case <-force:
+			}
+			exited <- struct{}{}
+			return nil, context.Canceled
+		},
+	})
+	defer borrowed.Close()
+	defer close(force)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n, _ := fixtureNode(t)
+	result := make(chan error, 1)
+	go func() { result <- NewRedisSenderWithDialer(borrowed, borrowed.Options().Dialer).Send(ctx, n) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("dial did not start")
+	}
+	cancel()
+	select {
+	case <-canceled:
+	case <-time.After(200 * time.Millisecond):
+		t.Error("pending dial did not receive the report cancellation")
+	}
+	early := false
+	select {
+	case <-result:
+		early = true
+		t.Error("Send returned before its pending dial finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(finish)
+	if !early {
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled dial returned %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Send did not return after its dial finished")
+		}
+	}
+	select {
+	case <-exited:
+	default:
+		t.Error("Send released ownership while the dial was still running")
+	}
+}
+
+func TestRedisSenderPendingDialsDoNotOverlap(t *testing.T) {
+	started := make(chan struct{}, 8)
+	force := make(chan struct{})
+	finish := make(chan struct{})
+	var active atomic.Int32
+	borrowed := redis.NewClient(&redis.Options{
+		MaxRetries: -1,
+		Dialer: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			active.Add(1)
+			defer active.Add(-1)
+			started <- struct{}{}
+			select {
+			case <-ctx.Done():
+			case <-force:
+			}
+			select {
+			case <-finish:
+			case <-force:
+			}
+			return nil, context.Canceled
+		},
+	})
+	defer borrowed.Close()
+	defer close(force)
+	sender := NewRedisSenderWithDialer(borrowed, borrowed.Options().Dialer)
+	n, _ := fixtureNode(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := make(chan error, 1)
+	go func() { first <- sender.Send(ctx, n) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first dial did not start")
+	}
+	cancel()
+	secondCtx, secondCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer secondCancel()
+	second := make(chan error, 1)
+	go func() { second <- sender.Send(secondCtx, n) }()
+	select {
+	case <-started:
+		t.Error("another reporting dial started before the previous dial finished")
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(finish)
+	select {
+	case <-second:
+	case <-time.After(time.Second):
+		t.Fatal("second Send did not finish")
+	}
+	select {
+	case <-first:
+	case <-time.After(time.Second):
+		t.Fatal("first Send did not finish")
+	}
+	if active.Load() != 0 {
+		t.Error("Send returned with pending reporting dials")
+	}
+}
+
+func TestRedisSenderTLSHandshakeCancellationClosesPendingConnection(t *testing.T) {
+	for _, mode := range []string{"cancel", "short_deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			started := make(chan struct{})
+			closed := make(chan struct{})
+			peer := make(chan net.Conn, 1)
+			go func() {
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				peer <- conn
+				buffer := make([]byte, 4096)
+				if _, err := conn.Read(buffer); err == nil {
+					close(started)
+					// Consume ClientHello without responding. EOF demonstrates
+					// that the reporter actually closed its pending TLS socket.
+					_, _ = io.Copy(io.Discard, conn)
+				}
+				close(closed)
+			}()
+			defer func() {
+				select {
+				case conn := <-peer:
+					_ = conn.Close()
+				default:
+				}
+			}()
+			borrowed := redis.NewClient(&redis.Options{
+				Addr: listener.Addr().String(), DialTimeout: 30 * time.Second,
+				TLSConfig: &tls.Config{InsecureSkipVerify: true}, // Local stalled-handshake fixture.
+			})
+			defer borrowed.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			if mode == "short_deadline" {
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+			}
+			defer cancel()
+			n, _ := fixtureNode(t)
+			result := make(chan error, 1)
+			go func() { result <- NewRedisSender(borrowed).Send(ctx, n) }()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("TLS handshake did not start")
+			}
+			if mode == "cancel" {
+				cancel()
+			}
+			select {
+			case err := <-result:
+				if err == nil {
+					t.Fatal("incomplete TLS handshake succeeded")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("TLS handshake outlived the report cancellation/deadline")
+			}
+			select {
+			case <-closed:
+			case <-time.After(time.Second):
+				t.Fatal("Send returned but its pending TLS connection was still open")
+			}
+		})
+	}
+}
+
+func TestRedisSenderDefaultTransportDoesNotReuseImplicitDialer(t *testing.T) {
+	mr := miniredis.RunT(t)
+	var implicitCalls atomic.Int32
+	borrowed := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			implicitCalls.Add(1)
+			return nil, errors.New("implicit dialer must not be reused")
+		},
+	})
+	defer borrowed.Close()
+	n, _ := fixtureNode(t)
+	if err := NewRedisSender(borrowed).Send(context.Background(), n); err != nil {
+		t.Fatal(err)
+	}
+	if implicitCalls.Load() != 0 {
+		t.Fatal("default sender reused the borrowed client's dialer")
+	}
+}
+
+func TestRedisSenderTLSAuthenticationAndExplicitCustomTransport(t *testing.T) {
+	certificateServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	certificate := certificateServer.TLS.Certificates[0]
+	roots := x509.NewCertPool()
+	roots.AddCert(certificateServer.Certificate())
+	certificateServer.Close()
+	serverNames := make(chan string, 8)
+	mr, err := miniredis.RunTLS(&tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			serverNames <- hello.ServerName
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+	mr.RequireAuth("test-password")
+	clientTLS := &tls.Config{RootCAs: roots, ServerName: "example.com"}
+	borrowed := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(), Password: "test-password", DB: 3,
+		TLSConfig: clientTLS, DialTimeout: 30 * time.Second,
+	})
+	defer borrowed.Close()
+	n, _ := fixtureNode(t)
+	const key = "tokenlive:gateway-versions:default:00000000-0000-4000-8000-000000000001"
+	for _, custom := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "explicit_custom"}[custom], func(t *testing.T) {
+			sender := NewRedisSender(borrowed)
+			var customCalls atomic.Int32
+			if custom {
+				sender = NewRedisSenderWithDialer(borrowed, func(ctx context.Context, network, addr string) (net.Conn, error) {
+					customCalls.Add(1)
+					dialer := &tls.Dialer{Config: clientTLS.Clone()}
+					// Return the fully established TLS transport. A second TLS
+					// wrapper in the reporter would break the Redis handshake.
+					return dialer.DialContext(ctx, network, addr)
+				})
+			}
+			if err := sender.Send(context.Background(), n); err != nil {
+				t.Fatal(err)
+			}
+			if !mr.DB(3).Exists(key) || mr.DB(0).Exists(key) {
+				t.Fatal("TLS reporter failed to retain authentication/database configuration")
+			}
+			if name := <-serverNames; name != "example.com" {
+				t.Fatalf("TLS ServerName/SNI was lost: %q", name)
+			}
+			if custom && customCalls.Load() != 1 {
+				t.Fatalf("custom transport established %d times", customCalls.Load())
+			}
+			mr.DB(3).Del(key)
+		})
+	}
+	if clientTLS.ServerName != "example.com" || clientTLS.RootCAs != roots || clientTLS.InsecureSkipVerify {
+		t.Fatal("reporter mutated the borrowed TLS configuration")
+	}
+	untrustedTLS := clientTLS.Clone()
+	untrustedTLS.RootCAs = x509.NewCertPool()
+	untrusted := redis.NewClient(&redis.Options{Addr: mr.Addr(), TLSConfig: untrustedTLS})
+	defer untrusted.Close()
+	if err := NewRedisSender(untrusted).Send(context.Background(), n); err == nil {
+		t.Fatal("default TLS reporter bypassed certificate verification")
+	}
+	if mr.DB(3).Exists(key) || mr.DB(0).Exists(key) {
+		t.Fatal("untrusted TLS report reached Redis")
+	}
+}
+
+func TestRedisSenderExplicitCustomDialerRequiresConfiguration(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "not-used.invalid:1"})
+	defer client.Close()
+	if NewRedisSenderWithDialer(client, nil) != nil {
+		t.Fatal("nil custom dialer enabled reporting")
+	}
+	if NewRedisSenderWithDialer(nil, client.Options().Dialer) != nil {
+		t.Fatal("nil client enabled a custom sender")
 	}
 }

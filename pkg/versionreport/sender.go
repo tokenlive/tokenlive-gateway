@@ -3,11 +3,15 @@ package versionreport
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -18,17 +22,35 @@ const redisReportTimeout = 5 * time.Second
 
 type redisSender struct {
 	options redis.Options
+	dialer  func(context.Context, string, string) (net.Conn, error)
 	active  chan struct{}
 }
 
 // NewRedisSender copies connection settings without modifying or closing client.
-// Each report owns a short-lived single-connection client so cancellation cannot
-// interrupt business commands sharing the original client's connection pool.
+// It uses context-aware TCP/unix and TLS dialing from Network, Addr and TLSConfig;
+// Options.Dialer is intentionally not reused, because go-redis's default dialer
+// closes over the original options and its TLS path ignores caller cancellation.
 func NewRedisSender(client *redis.Client) Sender {
+	return newRedisSender(client, nil)
+}
+
+// NewRedisSenderWithDialer explicitly opts into a custom transport. The dialer
+// must honor ctx and return a fully established, exclusively owned connection,
+// including any custom TLS handshake. The reporter does not wrap it in TLS again.
+// Send calls it synchronously and does not release the send slot until it exits.
+// A nil client or dialer disables reporting.
+func NewRedisSenderWithDialer(client *redis.Client, dialer func(context.Context, string, string) (net.Conn, error)) Sender {
+	if dialer == nil {
+		return nil
+	}
+	return newRedisSender(client, dialer)
+}
+
+func newRedisSender(client *redis.Client, dialer func(context.Context, string, string) (net.Conn, error)) Sender {
 	if client == nil {
 		return nil
 	}
-	return &redisSender{options: *client.Options(), active: make(chan struct{}, 1)}
+	return &redisSender{options: *client.Options(), dialer: dialer, active: make(chan struct{}, 1)}
 }
 
 func (s *redisSender) Send(ctx context.Context, node Node) error {
@@ -72,17 +94,62 @@ func (s *redisSender) Send(ctx context.Context, node Node) error {
 	if options.TLSConfig != nil {
 		options.TLSConfig = options.TLSConfig.Clone()
 	}
+
+	// Establish the complete transport in this goroutine. go-redis's pool dials
+	// asynchronously with a background-derived context and Close does not join
+	// those dials, so it must never own real connection establishment here.
+	dialCtx, cancelDial := context.WithTimeout(ctx, options.DialTimeout)
+	var conn net.Conn
+	if s.dialer != nil {
+		conn, err = s.dialer(dialCtx, options.Network, options.Addr)
+	} else {
+		dialer := &net.Dialer{Timeout: options.DialTimeout, KeepAlive: 5 * time.Minute}
+		if options.TLSConfig != nil {
+			// tls.Dialer uses HandshakeContext, retaining normal certificate,
+			// ServerName/SNI and mTLS behavior while honoring cancellation.
+			tlsDialer := &tls.Dialer{NetDialer: dialer, Config: options.TLSConfig}
+			conn, err = tlsDialer.DialContext(dialCtx, options.Network, options.Addr)
+		} else {
+			conn, err = dialer.DialContext(dialCtx, options.Network, options.Addr)
+		}
+	}
+	cancelDial()
+	if err != nil {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return err
+	}
+	if conn == nil {
+		return errors.New("versionreport: dialer returned no connection")
+	}
+	defer conn.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var handedOff atomic.Bool
+	options.Dialer = func(context.Context, string, string) (net.Conn, error) {
+		if handedOff.Swap(true) {
+			return nil, errors.New("versionreport: reporting connection already assigned")
+		}
+		return conn, nil
+	}
 	reportClient := redis.NewClient(&options)
+	closeOwned := func() {
+		// Also close before pool registration, including the narrow handoff race.
+		_ = conn.Close()
+		_ = reportClient.Close()
+	}
 	closed := make(chan struct{})
 	stopClose := context.AfterFunc(ctx, func() {
 		// ContextTimeoutEnabled sets socket deadlines but does not interrupt
 		// in-flight I/O on manual cancellation. Closing our own pool does.
-		_ = reportClient.Close()
+		closeOwned()
 		close(closed)
 	})
 	defer func() {
 		if stopClose() {
-			_ = reportClient.Close()
+			closeOwned()
 		} else {
 			// Join the cancellation callback before releasing the send slot.
 			<-closed
