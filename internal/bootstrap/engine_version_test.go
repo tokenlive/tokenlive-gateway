@@ -108,6 +108,75 @@ func TestVersionReportStartsAfterEngineBuildAndUsesOneProcessIdentity(t *testing
 	}
 }
 
+func TestVersionReportBootstrapHonorsExplicitAdminTLSOptIn(t *testing.T) {
+	for _, optIn := range []bool{true, false} {
+		t.Run(map[bool]string{true: "explicit opt-in", false: "verification enabled by default"}[optIn], func(t *testing.T) {
+			v := versionReportConfig(t)
+			reports := make(chan versionreport.Node, 1)
+			closed := make(chan struct{}, 1)
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/gateway/version" || r.Method != http.MethodPost ||
+					r.Header.Get("X-Sync-Token") != "private-admin-token" {
+					t.Error("unexpected report endpoint, method or authentication")
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				var node versionreport.Node
+				if err := json.NewDecoder(r.Body).Decode(&node); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				reports <- node
+				w.WriteHeader(http.StatusOK)
+			}))
+			server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateClosed {
+					select {
+					case closed <- struct{}{}:
+					default:
+					}
+				}
+			}
+			server.StartTLS()
+			defer server.Close()
+			v.Set("gateway.admin_url", server.URL)
+			v.Set("gateway.sync_token", "private-admin-token")
+			if optIn {
+				v.Set("gateway.admin_tls_skip_verify", true)
+			}
+			cleanup := newVersionTestEngine(t, v, nil)
+			if optIn {
+				select {
+				case node := <-reports:
+					require.Equal(t, "v2.3.4", node.Version)
+					require.Equal(t, "release", node.BuildKind)
+				case <-time.After(time.Second):
+					t.Fatal("explicit TLS opt-in did not deliver an authenticated report")
+				}
+				cleanup()
+				select {
+				case <-closed:
+				case <-time.After(time.Second):
+					t.Fatal("reporter cleanup left its TLS connection open")
+				}
+			} else {
+				// A closed TLS connection proves the default reporter attempted
+				// the request and rejected the untrusted certificate.
+				select {
+				case <-closed:
+				case <-reports:
+					t.Fatal("default reporter accepted an untrusted certificate")
+				case <-time.After(time.Second):
+					t.Fatal("default reporter did not attempt its TLS connection")
+				}
+				cleanup()
+				require.Empty(t, reports, "verification must remain enabled after an opted-in engine")
+			}
+		})
+	}
+}
+
 func TestVersionReportEmbeddedDisablesRedisAndHTTP(t *testing.T) {
 	v := versionReportConfig(t)
 	v.Set("gateway.config_source", "embedded")

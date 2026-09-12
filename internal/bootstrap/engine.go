@@ -2,7 +2,9 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -611,8 +613,23 @@ func startVersionReporter(ctx context.Context, v *viper.Viper, rdb *redis.Client
 	if configSource == "embedded" {
 		return func() {}
 	}
-	sender := versionreport.SelectSender(rdb, nil, adminURL, token)
+	var client *http.Client
+	closeTransport := func() {}
+	if rdb == nil {
+		// Match the existing Admin sync trust policy without sharing a client
+		// or transport. Certificate verification remains enabled by default.
+		transport := &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: v.GetBool("gateway.admin_tls_skip_verify"),
+			},
+		}
+		client = &http.Client{Transport: transport}
+		closeTransport = transport.CloseIdleConnections
+	}
+	sender := versionreport.SelectSender(rdb, client, adminURL, token)
 	if sender == nil {
+		closeTransport()
 		return func() {}
 	}
 	namespace := os.Getenv("GATEWAY_VERSION_NAMESPACE")
@@ -637,6 +654,7 @@ func startVersionReporter(ctx context.Context, v *viper.Viper, rdb *redis.Client
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer closeTransport()
 		versionreport.Run(reportCtx, sender, node, time.After)
 	}()
 	return func() {
