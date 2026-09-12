@@ -21,6 +21,7 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/routers"
 	"github.com/tokenlive/tokenlive-gateway/pkg/store"
 	"github.com/tokenlive/tokenlive-gateway/pkg/telemetry"
+	"github.com/tokenlive/tokenlive-gateway/pkg/versionreport"
 
 	"github.com/tokenlive/tokenlive-gateway/internal/service"
 
@@ -28,11 +29,15 @@ import (
 	_ "github.com/tokenlive/tokenlive-gateway/pkg/llm/providers"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 )
+
+// One runtime identity per Gateway process, independent of engine rebuilds.
+var versionReportInstanceID = uuid.NewString()
 
 // NewGatewayDataStores creates StateStore and CompensationQueue.
 // Chooses Redis or in-memory based on state_store config / Redis availability.
@@ -579,7 +584,10 @@ func NewGatewayEngine(
 		}
 	}
 
+	stopVersionReporter := startVersionReporter(engine.Context(), v, rdb, configSource, adminURL, syncToken)
+
 	cleanup := func() {
+		stopVersionReporter()
 		if compWorker != nil {
 			compWorker.Close()
 		}
@@ -594,6 +602,47 @@ func NewGatewayEngine(
 
 	return engine, policyService, cleanup, nil
 
+}
+
+// startVersionReporter is called only after a successful engine build.
+// Embedded hosts are the standalone edition and must never register themselves
+// as professional Gateway nodes, even when Redis or an Admin URL is available.
+func startVersionReporter(ctx context.Context, v *viper.Viper, rdb *redis.Client, configSource, adminURL, token string) func() {
+	if configSource == "embedded" {
+		return func() {}
+	}
+	sender := versionreport.SelectSender(rdb, nil, adminURL, token)
+	if sender == nil {
+		return func() {}
+	}
+	namespace := os.Getenv("GATEWAY_VERSION_NAMESPACE")
+	if namespace == "" {
+		namespace = "default"
+	}
+	version, buildKind := v.GetString("runtime.version"), v.GetString("runtime.build_kind")
+	if version == "" {
+		version = "dev"
+	}
+	if buildKind == "" {
+		buildKind = "dev"
+	}
+	node := versionreport.Node{
+		SchemaVersion: 1,
+		Namespace:     namespace,
+		InstanceID:    versionReportInstanceID,
+		Version:       version,
+		BuildKind:     buildKind,
+	}
+	reportCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		versionreport.Run(reportCtx, sender, node, time.After)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // BuildFromRelationalConfig builds EngineConfig and Provider instances from model-centric config.

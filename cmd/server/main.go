@@ -5,11 +5,18 @@ import (
 	"flag"
 	"fmt"
 
+	"github.com/spf13/viper"
 	"github.com/tokenlive/tokenlive-gateway/cmd/server/wire"
 	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 
 	"go.uber.org/zap"
+)
+
+// VERSION and BUILD_KIND are set by release builds using -ldflags -X.
+var (
+	VERSION    = "dev"
+	BUILD_KIND = "dev"
 )
 
 // @title           AI Gateway
@@ -29,8 +36,14 @@ import (
 // @externalDocs.url          https://swagger.io/resources/open-api/
 func main() {
 	var envConf = flag.String("conf", "config/local.yml", "config path, eg: -conf ./config/local.yml")
+	showVersion := flag.Bool("version", false, "print build identity and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("tokenlive-gateway %s (%s)\n", VERSION, BUILD_KIND)
+		return
+	}
 	conf := config.NewConfig(*envConf)
+	setRuntimeIdentity(conf)
 
 	logger := log.NewLog(conf)
 	zap.ReplaceGlobals(logger.Logger)
@@ -55,4 +68,9 @@ func main() {
 	if err = app.Run(context.Background()); err != nil {
 		panic(err)
 	}
+}
+
+func setRuntimeIdentity(conf *viper.Viper) {
+	conf.Set("runtime.version", VERSION)
+	conf.Set("runtime.build_kind", BUILD_KIND)
 }
