@@ -23,6 +23,7 @@ type Endpoint struct {
 	Code             string
 	URL              string
 	Provider         string
+	ProviderCode     string
 	Model            string
 	UpstreamModel    string // Upstream model name; empty falls back to Model
 	Metadata         map[string]string
@@ -138,6 +139,7 @@ type AttemptRecord struct {
 	EndpointID   string
 	EndpointCode string
 	Provider     string
+	ProviderCode string
 	Latency      time.Duration
 	StatusCode   int
 	ContentType  string

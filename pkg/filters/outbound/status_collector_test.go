@@ -38,10 +38,12 @@ func TestStatusCollectorFilter_OnResponse(t *testing.T) {
 			History: []core.AttemptRecord{
 				{
 					EndpointID: "ep-1",
+					Provider:   "provider-a",
 					Success:    false, // 第一次尝试失败，会触发 failover
 				},
 				{
 					EndpointID: "ep-2",
+					Provider:   "provider-b",
 					Success:    true, // 第二次尝试成功
 				},
 			},
@@ -79,6 +81,18 @@ func TestStatusCollectorFilter_OnResponse(t *testing.T) {
 		ep2Key := fmt.Sprintf("aigw:status:endpoint:ep-2:%d:s", minute)
 		if val := getVal(ep2Key); val != "1" {
 			t.Errorf("expected endpoint ep-2 success count to be 1, got %q", val)
+		}
+
+		// 校验 Provider A (Fail)
+		provAKey := fmt.Sprintf("aigw:status:provider:provider-a:%d:f", minute)
+		if val := getVal(provAKey); val != "1" {
+			t.Errorf("expected provider-a fail count to be 1, got %q", val)
+		}
+
+		// 校验 Provider B (Success)
+		provBKey := fmt.Sprintf("aigw:status:provider:provider-b:%d:s", minute)
+		if val := getVal(provBKey); val != "1" {
+			t.Errorf("expected provider-b success count to be 1, got %q", val)
 		}
 
 		// 校验自然日统计项

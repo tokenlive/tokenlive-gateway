@@ -59,6 +59,7 @@ type ResolvedEndpoint struct {
 	Description        string            `json:"description,omitempty"`
 	RealModel          string            `json:"real_model"`
 	ProviderName       string            `json:"provider_name"`
+	ProviderCode       string            `json:"provider_code,omitempty"`
 	ProviderProtocol   string            `json:"provider_protocol"`
 	APIKey             string            `json:"api_key"`
 	AuthType           string            `json:"auth_type,omitempty"`

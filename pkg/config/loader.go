@@ -88,6 +88,7 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				ID:               ep.ID,
 				Code:             ep.Code,
 				ProviderName:     ep.Provider,
+				ProviderCode:     ep.Provider,
 				ProviderProtocol: protocol,
 				URL:              ep.URL,
 				Priority:         ep.Priority,

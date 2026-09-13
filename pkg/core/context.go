@@ -137,6 +137,7 @@ func (c *GatewayContext) RecordAttempt(success bool) {
 		rec.EndpointID = c.SelectedEndpoint.ID
 		rec.EndpointCode = c.SelectedEndpoint.Code
 		rec.Provider = c.SelectedEndpoint.Provider
+		rec.ProviderCode = c.SelectedEndpoint.ProviderCode
 	}
 	c.History = append(c.History, rec)
 	c.AttemptCount++

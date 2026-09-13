@@ -10,6 +10,7 @@ type DynamicEndpoint struct {
 	ID                 string
 	Code               string
 	ProviderName       string
+	ProviderCode       string
 	ProviderProtocol   string
 	URL                string
 	APIKey             string
@@ -77,6 +78,7 @@ func (d *DynamicDiscovery) List(ctx context.Context, model string) ([]*Endpoint,
 			Code:               de.Code,
 			URL:                de.URL,
 			Provider:           de.ProviderName,
+			ProviderCode:       de.ProviderCode,
 			ProviderProtocol:   de.ProviderProtocol,
 			APIKey:             de.APIKey,
 			Model:              model,

@@ -16,8 +16,10 @@ import (
 )
 
 type AttemptMetric struct {
-	EndpointID string `json:"endpoint_id"`
-	Success    bool   `json:"success"`
+	EndpointID   string `json:"endpoint_id"`
+	Provider     string `json:"provider,omitempty"`
+	ProviderCode string `json:"provider_code,omitempty"`
+	Success      bool   `json:"success"`
 }
 
 type RequestMetric struct {
@@ -181,7 +183,12 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 		endpointID string
 		success    bool
 	}
+	type provAttempt struct {
+		provider string
+		success  bool
+	}
 	var epAttempts []epAttempt
+	var provAttempts []provAttempt
 	for _, rec := range gctx.History {
 		if rec.EndpointID != "" {
 			epAttempts = append(epAttempts, epAttempt{
@@ -189,17 +196,44 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 				success:    rec.Success,
 			})
 		}
+		prov := rec.ProviderCode
+		if prov == "" {
+			prov = rec.Provider
+		}
+		if prov != "" {
+			provAttempts = append(provAttempts, provAttempt{
+				provider: prov,
+				success:  rec.Success,
+			})
+		}
+	}
+
+	if len(provAttempts) == 0 && provider != "" {
+		provCode := ""
+		if gctx.SelectedEndpoint != nil && gctx.SelectedEndpoint.ProviderCode != "" {
+			provCode = gctx.SelectedEndpoint.ProviderCode
+		} else {
+			provCode = provider
+		}
+		provAttempts = append(provAttempts, provAttempt{
+			provider: provCode,
+			success:  !hasErr,
+		})
 	}
 
 	// HTTP mode: enqueue to buffer for async batch reporting
 	if f.rdb == nil {
 		if f.metricCh != nil {
 			var attempts []AttemptMetric
-			for _, att := range epAttempts {
-				attempts = append(attempts, AttemptMetric{
-					EndpointID: att.endpointID,
-					Success:    att.success,
-				})
+			for _, rec := range gctx.History {
+				if rec.EndpointID != "" || rec.Provider != "" || rec.ProviderCode != "" {
+					attempts = append(attempts, AttemptMetric{
+						EndpointID:   rec.EndpointID,
+						Provider:     rec.Provider,
+						ProviderCode: rec.ProviderCode,
+						Success:      rec.Success,
+					})
+				}
 			}
 			m := RequestMetric{
 				Time:                time.Now().Unix(),
@@ -280,6 +314,18 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 			}
 			pipe.Incr(bgCtx, epKey)
 			pipe.Expire(bgCtx, epKey, 2*time.Hour)
+		}
+
+		// 1.3 provider attempt stats
+		for _, att := range provAttempts {
+			var provKey string
+			if att.success {
+				provKey = fmt.Sprintf("aigw:status:provider:%s:%d:s", att.provider, minute)
+			} else {
+				provKey = fmt.Sprintf("aigw:status:provider:%s:%d:f", att.provider, minute)
+			}
+			pipe.Incr(bgCtx, provKey)
+			pipe.Expire(bgCtx, provKey, 2*time.Hour)
 		}
 
 		if perf.EndpointID != "" {
