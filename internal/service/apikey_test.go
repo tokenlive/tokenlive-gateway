@@ -212,3 +212,33 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 		}
 	})
 }
+
+func TestApiKeyService_PurgeCache(t *testing.T) {
+	logger := log.NewLog(config.NewConfig(""))
+	svc := NewApiKeyService(nil, logger)
+
+	origCache := svc.cache
+	if origCache == nil {
+		t.Fatal("expected non-nil cache")
+	}
+
+	// Add an entry to cache
+	svc.cache.AddValid("sk-test", &ApiKeyInfo{UserID: "user-1"})
+	if _, _, ok := svc.cache.Get("sk-test"); !ok {
+		t.Fatal("expected cached entry")
+	}
+
+	// Purge
+	svc.PurgeCache()
+
+	// Verify entry was cleared
+	if _, _, ok := svc.cache.Get("sk-test"); ok {
+		t.Fatal("expected entry to be purged")
+	}
+
+	// Verify cache instance was reused (no new allocation / goroutine leak)
+	if svc.cache != origCache {
+		t.Fatal("expected same cache pointer to be retained to prevent ticker leaks")
+	}
+}
+

@@ -172,8 +172,7 @@ func (s *ApiKeyService) DeductCredits(ctx context.Context, apiKey string, credit
 
 // PurgeCache 清空本地 LRU 缓存以立使新配置生效
 func (s *ApiKeyService) PurgeCache() {
-	s.cache = store.NewExpirableCache[string, *ApiKeyInfo](
-		10000, 30*time.Second,
-		5000, 10*time.Second,
-	)
+	if s.cache != nil {
+		s.cache.Purge()
+	}
 }
