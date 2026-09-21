@@ -374,7 +374,16 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 
 		var invoker core.Invoker
 		if lbStrategy == "round_robin" && lastSelectedEndpointID != "" {
-			nextEp := nextEndpointAfter(filtered, excluded, lastSelectedEndpointID)
+			// Keep the previous endpoint as the cursor in discovery order, even
+			// after exclusion. Only select candidates that survived all routers.
+			unavailable := make(map[string]bool, len(endpoints))
+			for _, ep := range endpoints {
+				unavailable[ep.ID] = true
+			}
+			for _, ep := range filtered {
+				delete(unavailable, ep.ID)
+			}
+			nextEp := nextEndpointAfter(endpoints, unavailable, lastSelectedEndpointID)
 			if nextEp == nil {
 				lastErr = core.ErrNoAvailableEndpoint
 				return lastErr
@@ -502,8 +511,8 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 			return err
 		}
 
-			// Remaining invocation errors count against endpoint health.
-			ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, err)
+		// Remaining invocation errors count against endpoint health.
+		ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, err)
 
 		// Synthetic latency so failed endpoints are not preferred by least_latency
 		ci.recordFailurePenalty(gctx)

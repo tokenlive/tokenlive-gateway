@@ -414,7 +414,8 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 			t.Fatalf("expected tools length 3, got %v", req["tools"])
 		}
 
-		// 收集解析后的工具名称，验证 namespace 工具会保留可逆限定名。
+		// 收集解析后的工具名称，验证 namespace 工具会清洗为 pattern-safe 限定名
+		// (点号 -> 下划线)，以兼容严格上游 (DeepSeek/Qwen) 的 ^[a-zA-Z0-9_-]+$ 校验。
 		toolNames := make(map[string]bool)
 		for _, tVal := range tools {
 			toolMap, ok := tVal.(map[string]interface{})
@@ -431,8 +432,8 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 			toolNames[fnMap["name"].(string)] = true
 		}
 
-		if !toolNames["mcp__node_repl.js"] {
-			t.Error("expected tool 'mcp__node_repl.js' to be present")
+		if !toolNames["mcp__node_repl_js"] {
+			t.Error("expected tool 'mcp__node_repl_js' (sanitized from mcp__node_repl.js) to be present")
 		}
 		if !toolNames["apply_patch"] {
 			t.Error("expected tool 'apply_patch' to be present")
@@ -1094,7 +1095,7 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelAfterFinish(t 
 	gctx.IsStream = true
 
 	resp := &http.Response{Body: &readOnceErrorCloser{data: []byte(stream), err: context.Canceled}}
-	err := handleResponsesStream(gctx, resp)
+	err := handleResponsesStream(gctx, resp, nil)
 	if err != nil {
 		t.Fatalf("expected completed tool call followed by client cancellation to succeed, got %v", err)
 	}
@@ -1130,7 +1131,7 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelBeforeFinishIs
 	gctx.IsStream = true
 
 	resp := &http.Response{Body: &readOnceErrorCloser{data: []byte(stream), err: context.Canceled}}
-	err := handleResponsesStream(gctx, resp)
+	err := handleResponsesStream(gctx, resp, nil)
 	if !errors.Is(err, core.ErrClientDisconnected) {
 		t.Fatalf("expected client disconnect classification, got %v", err)
 	}
@@ -1151,7 +1152,7 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_UpstreamErrorAfterFinishSt
 	gctx.IsStream = true
 
 	resp := &http.Response{Body: &readOnceErrorCloser{data: []byte(stream), err: upstreamErr}}
-	err := handleResponsesStream(gctx, resp)
+	err := handleResponsesStream(gctx, resp, nil)
 	if !errors.Is(err, upstreamErr) {
 		t.Fatalf("expected genuine upstream read error to remain fatal, got %v", err)
 	}

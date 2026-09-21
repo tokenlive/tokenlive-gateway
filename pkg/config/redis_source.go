@@ -3,10 +3,12 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/store"
 
 	"github.com/redis/go-redis/v9"
@@ -25,6 +27,9 @@ type RedisConfigSource struct {
 	mu           sync.RWMutex
 	cache        map[string][]ResolvedEndpoint
 	lastVersions map[string]int64
+	smartCache   map[string]*core.SmartRoutingConfig
+	smartErrors  map[string]error
+	managedSmart map[string]bool
 }
 
 func NewRedisConfigSource(client redis.Cmdable, pollInterval time.Duration, logger *zap.Logger) *RedisConfigSource {
@@ -37,7 +42,89 @@ func NewRedisConfigSource(client redis.Cmdable, pollInterval time.Duration, logg
 		logger:       logger,
 		cache:        make(map[string][]ResolvedEndpoint),
 		lastVersions: make(map[string]int64),
+		smartCache:   make(map[string]*core.SmartRoutingConfig),
+		smartErrors:  make(map[string]error),
+		managedSmart: make(map[string]bool),
 	}
+}
+
+// GetSmartRouting also distinguishes a Redis-owned normal/deleted model from
+// a miss, preventing stale static smart definitions from surviving a type change.
+// Each read checks Redis, so version changes and deletes take effect together;
+// returned ranges never alias either the cache or another request.
+func (r *RedisConfigSource) GetSmartRouting(ctx context.Context, modelCode string) (*core.SmartRoutingConfig, bool, error) {
+	pipe := r.client.Pipeline()
+	smartCmd := pipe.Get(ctx, RedisKeySmartRouting(modelCode))
+	versionCmd := pipe.HGet(ctx, store.RedisKeyConfigModelVersions, modelCode)
+	endpointCmd := pipe.Exists(ctx, store.RedisKeyConfigEndpoints(modelCode))
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if cached := r.smartCache[modelCode]; cached != nil {
+			return cached.Clone(), true, nil
+		}
+		if invalid := r.smartErrors[modelCode]; invalid != nil {
+			return nil, true, invalid
+		}
+		return nil, r.managedSmart[modelCode], nil
+	}
+	if smartCmd.Err() == redis.Nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		delete(r.smartCache, modelCode)
+		delete(r.smartErrors, modelCode)
+		return nil, endpointCmd.Val() > 0 || r.managedSmart[modelCode], nil
+	}
+	if err := smartCmd.Err(); err != nil {
+		return nil, true, fmt.Errorf("model %s: read smart_routing: %w", modelCode, err)
+	}
+
+	var smart core.SmartRoutingConfig
+	data, _ := smartCmd.Bytes()
+	err := json.Unmarshal(data, &smart)
+	if err == nil {
+		err = smart.Validate(modelCode)
+	}
+	if err == nil {
+		smart.ApplyDefaults()
+		err = r.validateSmartDependencies(ctx, &smart)
+	}
+	version, _ := strconv.ParseInt(versionCmd.Val(), 10, 64)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.managedSmart[modelCode] = true
+	r.lastVersions[modelCode] = version
+	delete(r.cache, modelCode)
+	if err != nil {
+		err = fmt.Errorf("model %s: invalid smart_routing: %w", modelCode, err)
+		delete(r.smartCache, modelCode)
+		r.smartErrors[modelCode] = err
+		return nil, true, err
+	}
+	delete(r.smartErrors, modelCode)
+	r.smartCache[modelCode] = smart.Clone()
+	return smart.Clone(), true, nil
+}
+
+func (r *RedisConfigSource) validateSmartDependencies(ctx context.Context, smart *core.SmartRoutingConfig) error {
+	deps := []string{smart.JudgeModel}
+	for _, target := range smart.Ranges {
+		deps = append(deps, target.Model)
+	}
+	pipe := r.client.Pipeline()
+	cmds := make(map[string]*redis.IntCmd, len(deps))
+	for _, dep := range deps {
+		cmds[dep] = pipe.Exists(ctx, RedisKeySmartRouting(dep))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+	for dep, cmd := range cmds {
+		if cmd.Val() > 0 {
+			return fmt.Errorf("dependency %s must be ordinary", dep)
+		}
+	}
+	return nil
 }
 
 // GetEndpoints returns resolved endpoints for a model (cache or Redis).
@@ -146,6 +233,8 @@ func (r *RedisConfigSource) checkVersion(ctx context.Context) {
 				zap.Int64("new", remoteVer),
 			)
 			delete(r.cache, model)
+			delete(r.smartCache, model)
+			delete(r.smartErrors, model)
 			delete(r.lastVersions, model)
 		}
 	}
@@ -168,6 +257,9 @@ func (r *RedisConfigSource) KnownModels() map[string]bool {
 		for name := range r.cache {
 			result[name] = true
 		}
+		for name := range r.smartCache {
+			result[name] = true
+		}
 		return result
 	}
 
@@ -180,13 +272,15 @@ func (r *RedisConfigSource) KnownModels() map[string]bool {
 	pipe := r.client.Pipeline()
 	cmds := make(map[string]*redis.IntCmd, len(modelCodes))
 	for _, code := range modelCodes {
-		cmds[code] = pipe.Exists(ctx, store.RedisKeyConfigEndpoints(code))
+		cmds[code] = pipe.Exists(ctx, store.RedisKeyConfigEndpoints(code), RedisKeySmartRouting(code))
 	}
 	_, _ = pipe.Exec(ctx)
 
 	for code, cmd := range cmds {
 		if cmd.Val() > 0 {
-			result[code] = true
+			if _, _, err := r.GetSmartRouting(ctx, code); err == nil {
+				result[code] = true
+			}
 		}
 	}
 
@@ -197,7 +291,7 @@ func (r *RedisConfigSource) KnownModelsList() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var list []string
-	for name := range r.cache {
+	for name := range r.lastVersions {
 		list = append(list, name)
 	}
 	return list
@@ -207,5 +301,7 @@ func (r *RedisConfigSource) ClearCache() {
 	r.mu.Lock()
 	r.cache = make(map[string][]ResolvedEndpoint)
 	r.lastVersions = make(map[string]int64)
+	r.smartCache = make(map[string]*core.SmartRoutingConfig)
+	r.smartErrors = make(map[string]error)
 	r.mu.Unlock()
 }

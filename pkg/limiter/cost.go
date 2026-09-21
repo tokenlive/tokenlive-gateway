@@ -105,6 +105,7 @@ func (e *CostLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayConte
 			}
 		}
 	}
+	recordReservations(gctx, lp, limitKey, estimateCost)
 	return nil
 }
 

@@ -111,6 +111,51 @@ type mockFallbackInvoker struct {
 	called bool
 }
 
+type smartSensitiveHedgingProvider struct{ mockHedgingProvider }
+
+func (p *smartSensitiveHedgingProvider) Invoke(g *core.GatewayContext) error {
+	if !g.Sensitive || g.MaxResponseBytes != 64 || g.Tenant != "tenant-a" || g.UserTenant != "user-tenant" {
+		return errors.New("smart isolation metadata was dropped")
+	}
+	return p.mockHedgingProvider.Invoke(g)
+}
+
+func TestHedgingPreservesSmartIsolationMetadata(t *testing.T) {
+	a := &smartSensitiveHedgingProvider{mockHedgingProvider: mockHedgingProvider{name: "a", responseStr: "ok"}}
+	b := &smartSensitiveHedgingProvider{mockHedgingProvider: mockHedgingProvider{name: "b", responseStr: "ok"}}
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{{ID: "a", ProviderImpl: a}, {ID: "b", ProviderImpl: b}}}
+	invoke := NewHedgingInvoker(discovery, nil, map[string]core.LoadBalancer{"round_robin": &mockHedgingLoadBalancer{}}, core.NewCircuitBreakerManager(), newMockStateStore(), zap.NewNop(), nil)
+	g := core.AcquireContext(httptest.NewRecorder(), httptest.NewRequest("POST", "/", nil))
+	defer core.ReleaseContext(g)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	g.Ctx = ctx
+	g.Request = g.Request.WithContext(ctx)
+	g.Sensitive = true
+	g.MaxResponseBytes = 64
+	g.Tenant, g.UserTenant = "tenant-a", "user-tenant"
+	g.Policy = &policy.Policy{InvocationPolicy: &policy.InvocationPolicy{RetryPolicy: &policy.RetryPolicy{BaseMs: 50}}}
+	if err := invoke.Invoke(g); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHedgingBothFailuresReturnWithoutWaitingForCancellation(t *testing.T) {
+	a := &mockHedgingProvider{name: "a", err: errors.New("a failed")}
+	b := &mockHedgingProvider{name: "b", err: errors.New("b failed")}
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{{ID: "a", ProviderImpl: a}, {ID: "b", ProviderImpl: b}}}
+	invoke := NewHedgingInvoker(discovery, nil, map[string]core.LoadBalancer{"round_robin": &mockHedgingLoadBalancer{}}, core.NewCircuitBreakerManager(), newMockStateStore(), zap.NewNop(), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	g := core.AcquireContext(httptest.NewRecorder(), httptest.NewRequest("POST", "/", nil).WithContext(ctx))
+	defer core.ReleaseContext(g)
+	g.Policy = &policy.Policy{InvocationPolicy: &policy.InvocationPolicy{RetryPolicy: &policy.RetryPolicy{BaseMs: 50}}}
+	err := invoke.Invoke(g)
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		t.Fatalf("failed channels did not terminate promptly: %v", err)
+	}
+}
+
 func (mfi *mockFallbackInvoker) Invoke(gctx *core.GatewayContext) error {
 	mfi.called = true
 	gctx.UpstreamBody = []byte(`{"response":"fallback"}`)

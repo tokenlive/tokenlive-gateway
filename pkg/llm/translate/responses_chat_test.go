@@ -13,7 +13,7 @@ func TestResponsesRequestToChat_Basic(t *testing.T) {
 		"input": "hello",
 		"max_output_tokens": 50
 	}`)
-	out, err := ResponsesRequestToChat(raw)
+	out, _, err := ResponsesRequestToChat(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestResponsesRequestToChat_DropsReasoningItems(t *testing.T) {
 			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}
 		]
 	}`)
-	out, err := ResponsesRequestToChat(raw)
+	out, _, err := ResponsesRequestToChat(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestResponsesRequestToChat_StripsResponsesOnlyParams(t *testing.T) {
 		"text": {"format": {"type": "text"}},
 		"reasoning": {"effort": "medium"}
 	}`)
-	out, err := ResponsesRequestToChat(raw)
+	out, _, err := ResponsesRequestToChat(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestResponsesRequestToChat_PreservesNamespacedTools(t *testing.T) {
 			}]
 		}]
 	}`)
-	out, err := ResponsesRequestToChat(raw)
+	out, _, err := ResponsesRequestToChat(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,8 +127,10 @@ func TestResponsesRequestToChat_PreservesNamespacedTools(t *testing.T) {
 	}
 	tool, _ := tools[0].(map[string]interface{})
 	fn, _ := tool["function"].(map[string]interface{})
-	if fn["name"] != "collaboration.spawn_agent" {
-		t.Fatalf("tool name = %v, want collaboration.spawn_agent", fn["name"])
+	// Namespace-qualified names are sanitized to a pattern-safe form (dot -> _)
+	// so strict upstreams (DeepSeek/Qwen) accept them.
+	if fn["name"] != "collaboration_spawn_agent" {
+		t.Fatalf("tool name = %v, want collaboration_spawn_agent", fn["name"])
 	}
 
 	msgs, _ := req["messages"].([]interface{})
@@ -139,7 +141,7 @@ func TestResponsesRequestToChat_PreservesNamespacedTools(t *testing.T) {
 	calls, _ := assistant["tool_calls"].([]interface{})
 	call, _ := calls[0].(map[string]interface{})
 	callFn, _ := call["function"].(map[string]interface{})
-	if callFn["name"] != "collaboration.spawn_agent" {
+	if callFn["name"] != "collaboration_spawn_agent" {
 		t.Fatalf("history call name = %v", callFn["name"])
 	}
 }
@@ -155,7 +157,7 @@ func TestResponsesRequestToChat_FunctionCallOutputArray(t *testing.T) {
 			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]}
 		]
 	}`)
-	out, err := ResponsesRequestToChat(raw)
+	out, _, err := ResponsesRequestToChat(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +188,7 @@ func TestChatCompletionToResponses_Text(t *testing.T) {
 		}],
 		"usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
 	}`)
-	res, err := ChatCompletionToResponses(chat, "gpt-4")
+	res, err := ChatCompletionToResponses(chat, "gpt-4", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +227,7 @@ func TestChatCompletionToResponses_Tools(t *testing.T) {
 		}],
 		"usage": {"prompt_tokens": 1, "completion_tokens": 1}
 	}`)
-	res, err := ChatCompletionToResponses(chat, "m")
+	res, err := ChatCompletionToResponses(chat, "m", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +259,7 @@ func TestChatCompletionToResponses_NamespacedTool(t *testing.T) {
 			"finish_reason": "tool_calls"
 		}]
 	}`)
-	res, err := ChatCompletionToResponses(chat, "m")
+	res, err := ChatCompletionToResponses(chat, "m", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +288,7 @@ func TestChatCompletionToResponses_Reasoning(t *testing.T) {
 		}],
 		"usage": {"prompt_tokens": 1, "completion_tokens": 1}
 	}`)
-	res, err := ChatCompletionToResponses(chat, "gpt-4")
+	res, err := ChatCompletionToResponses(chat, "gpt-4", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,5 +577,157 @@ func TestCorrectNativeMessagesRequest_RequiredEmptyArray(t *testing.T) {
 	}
 	if len(arr) != 0 {
 		t.Errorf("expected empty required, got %v", arr)
+	}
+}
+
+// TestResponsesChat_RoundTrip_NamespacedToolSanitized proves the fix for
+// strict upstreams (DeepSeek/Qwen) that reject dots in tools[].function.name:
+// the request path sanitizes "namespace.name" to "namespace_name", and the
+// response path restores the original (namespace, name) via the mapper.
+func TestResponsesChat_RoundTrip_NamespacedToolSanitized(t *testing.T) {
+	raw := []byte(`{
+		"model": "deepseek-chat",
+		"input": [
+			{"type": "function_call", "call_id": "call_ns", "namespace": "collaboration", "name": "spawn_agent", "arguments": "{}"},
+			{"type": "function_call_output", "call_id": "call_ns", "output": "ok"},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]}
+		],
+		"tools": [{
+			"name": "collaboration",
+			"type": "namespace",
+			"tools": [{
+				"type": "function",
+				"name": "spawn_agent",
+				"parameters": {"type": "object"}
+			}]
+		}]
+	}`)
+
+	chatBody, mapper, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chatReq map[string]interface{}
+	if err := json.Unmarshal(chatBody, &chatReq); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Outbound tool name must be pattern-safe (no dot) for DeepSeek.
+	tools, _ := chatReq["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(tools))
+	}
+	tool, _ := tools[0].(map[string]interface{})
+	fn, _ := tool["function"].(map[string]interface{})
+	gotName, _ := fn["name"].(string)
+	if gotName != "collaboration_spawn_agent" {
+		t.Fatalf("outbound tool name = %q, want collaboration_spawn_agent (dot rejected by DeepSeek)", gotName)
+	}
+	if strings.Contains(gotName, ".") {
+		t.Fatalf("outbound tool name %q still contains a dot", gotName)
+	}
+
+	// 2. History tool_call name must match the same sanitized form.
+	msgs, _ := chatReq["messages"].([]interface{})
+	histCall, _ := msgs[0].(map[string]interface{})
+	histCalls, _ := histCall["tool_calls"].([]interface{})
+	histFn, _ := histCalls[0].(map[string]interface{})["function"].(map[string]interface{})
+	if histFn["name"] != "collaboration_spawn_agent" {
+		t.Fatalf("history tool_call name = %v, want collaboration_spawn_agent", histFn["name"])
+	}
+
+	// 3. DeepSeek echoes back the sanitized name; response path restores namespace.
+	chatResp := []byte(`{
+		"id": "chatcmpl-rt",
+		"choices": [{
+			"message": {
+				"role": "assistant",
+				"content": "",
+				"tool_calls": [{
+					"id": "call_ns",
+					"type": "function",
+					"function": {"name": "collaboration_spawn_agent", "arguments": "{\"x\":1}"}
+				}]
+			},
+			"finish_reason": "tool_calls"
+		}],
+		"usage": {"prompt_tokens": 2, "completion_tokens": 1}
+	}`)
+	res, err := ChatCompletionToResponses(chatResp, "deepseek-chat", mapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(res.Body, &resp); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := resp["output"].([]interface{})
+	if len(out) != 1 {
+		t.Fatalf("output len = %d, want 1", len(out))
+	}
+	item, _ := out[0].(map[string]interface{})
+	if item["type"] != "function_call" {
+		t.Fatalf("type = %v, want function_call", item["type"])
+	}
+	if item["name"] != "spawn_agent" {
+		t.Errorf("restored name = %v, want spawn_agent", item["name"])
+	}
+	if item["namespace"] != "collaboration" {
+		t.Errorf("restored namespace = %v, want collaboration", item["namespace"])
+	}
+}
+
+// TestResponsesChat_RoundTrip_ColonNamespaceTool covers MCP/plugin namespaced
+// tools whose namespace contains a colon (e.g. "browser-use:control-browser"),
+// which is the actual shape that triggered the DeepSeek 400 in the field.
+func TestResponsesChat_RoundTrip_ColonNamespaceTool(t *testing.T) {
+	raw := []byte(`{
+		"model": "deepseek-chat",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]}
+		],
+		"tools": [{
+			"name": "browser-use",
+			"type": "namespace",
+			"tools": [{
+				"type": "function",
+				"name": "control-browser",
+				"parameters": {"type": "object"}
+			}]
+		}]
+	}`)
+	chatBody, mapper, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chatReq map[string]interface{}
+	_ = json.Unmarshal(chatBody, &chatReq)
+	tools, _ := chatReq["tools"].([]interface{})
+	fn, _ := tools[0].(map[string]interface{})["function"].(map[string]interface{})
+	gotName, _ := fn["name"].(string)
+	if strings.ContainsAny(gotName, ".:") {
+		t.Fatalf("outbound tool name %q contains illegal separator", gotName)
+	}
+
+	chatResp := []byte(`{
+		"id": "chatcmpl-c",
+		"choices": [{
+			"message": {"role": "assistant", "content": "", "tool_calls": [{
+				"id": "c1", "type": "function",
+				"function": {"name": "browser-use_control-browser", "arguments": "{}"}
+			}]},
+			"finish_reason": "tool_calls"
+		}]
+	}`)
+	res, err := ChatCompletionToResponses(chatResp, "deepseek-chat", mapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(res.Body, &resp)
+	out, _ := resp["output"].([]interface{})
+	item, _ := out[0].(map[string]interface{})
+	if item["name"] != "control-browser" || item["namespace"] != "browser-use" {
+		t.Fatalf("restored = name=%v namespace=%v, want control-browser / browser-use", item["name"], item["namespace"])
 	}
 }

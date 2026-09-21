@@ -140,6 +140,9 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 	if settleUsage {
 		gctx.Cost = computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice)
 	}
+	if gctx.TrackLimitReservations {
+		return f.SettleLimits(gctx)
+	}
 
 	policy := gctx.Policy
 	if policy == nil || len(policy.LimitPolicies) == 0 {
@@ -225,6 +228,57 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// SettleLimits reconciles smart-call quotas without charging user credits.
+// Each entry records its exact bucket and estimate at precharge time.
+func (f *TokenSettlementFilter) SettleLimits(gctx *core.GatewayContext) error {
+	ctx := gctx.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
+	}
+	input, output, cached, creation := resolvePrices(gctx)
+	for i := range gctx.LimitReservations {
+		r := &gctx.LimitReservations[i]
+		if r.Settled {
+			continue
+		}
+		var actual int64
+		if gctx.Err == nil || errors.Is(gctx.Err, core.ErrClientDisconnected) {
+			if r.Type == "token" {
+				actual = int64(gctx.InputTokens + gctx.OutputTokens)
+			} else {
+				actual = int64(computeActualCost(gctx, input, cached, creation, output) * 1000)
+			}
+		}
+		diff := actual - r.Estimated
+		var err error
+		if diff != 0 {
+			if r.Burst {
+				// Admission may reject an extra debit, but actual usage has already
+				// happened. Require debt-aware reconciliation without widening the
+				// StateStore interface implemented by existing adapters and mocks.
+				adjuster, ok := f.stateStore.(interface {
+					RateLimitAdjust(context.Context, string, int64, int64, int64, time.Duration, time.Time) (int64, error)
+				})
+				if !ok {
+					return errors.New("state store does not support burst quota reconciliation")
+				}
+				_, err = adjuster.RateLimitAdjust(ctx, r.Key, diff, r.Rate, r.Capacity, r.Window, time.Now())
+			} else if diff < 0 {
+				err = f.stateStore.RateLimitRefund(ctx, r.Key, -diff)
+			} else {
+				_, err = f.stateStore.RateLimitIncr(ctx, r.Key, diff, r.Window)
+			}
+		}
+		if err != nil {
+			return err
+		}
+		r.Settled = true
 	}
 	return nil
 }

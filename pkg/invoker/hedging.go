@@ -121,6 +121,7 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 		winnerChan:    make(chan string, 2),
 		failuresChan:  make(chan error, 2),
 		sessionCancel: sessionCancel,
+		completed:     map[string]chan struct{}{epA.ID: make(chan struct{}), epB.ID: make(chan struct{})},
 	}
 
 	ctxA, cancelA := context.WithCancel(sessionCtx)
@@ -128,24 +129,36 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 	ctxB, cancelB := context.WithCancel(sessionCtx)
 	defer cancelB()
 
-	go hi.invokeSub(gctx, epA, ctxA, cancelA, session)
+	// Sub-calls can outlive Invoke after the loser is canceled. Never let them
+	// read a pooled caller context while its owner is resetting it.
+	requestBase := *gctx
+	requestBase.Tags = make(map[string]string, len(gctx.Tags))
+	for key, value := range gctx.Tags {
+		requestBase.Tags[key] = value
+	}
+	go hi.invokeSub(&requestBase, epA, ctxA, cancelA, session)
 
 	// Wait for delay; skip B if A already won
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
+	failuresCount := 0
 
 	select {
 	case <-timer.C:
 		// A did not win in time; start B in parallel
 		gctx.Logger(hi.logger).Info("delayed hedging triggered, starting sub-call B", zap.String("epB", epB.ID))
-		go hi.invokeSub(gctx, epB, ctxB, cancelB, session)
+		go hi.invokeSub(&requestBase, epB, ctxB, cancelB, session)
 	case winnerID := <-session.winnerChan:
 		// A won fast; skip B
 		gctx.Logger(hi.logger).Info("fast win occurred on A, skipping call B", zap.String("winner", winnerID))
 	case errA := <-session.failuresChan:
+		failuresCount++
+		if err := session.smartTerminalError(gctx); err != nil {
+			return err
+		}
 		// A failed early; start B immediately
 		gctx.Logger(hi.logger).Warn("sub-call A failed early, starting sub-call B immediately", zap.Error(errA))
-		go hi.invokeSub(gctx, epB, ctxB, cancelB, session)
+		go hi.invokeSub(&requestBase, epB, ctxB, cancelB, session)
 	case <-sessionCtx.Done():
 		return sessionCtx.Err()
 	}
@@ -155,6 +168,9 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 	var finalErr error
 
 	for {
+		if err := session.smartTerminalError(gctx); err != nil {
+			return err
+		}
 		session.mu.Lock()
 		wID := session.winnerID
 		winnerGctx = session.winnerGctx
@@ -168,6 +184,9 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 		case <-session.winnerChan:
 			// Winner signaled; re-check
 		case ferr := <-session.failuresChan:
+			if err := session.smartTerminalError(gctx); err != nil {
+				return err
+			}
 			session.mu.Lock()
 			if session.winnerID != "" {
 				session.mu.Unlock()
@@ -178,10 +197,15 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 			gctx.Logger(hi.logger).Warn("hedging sub-call encountered failure", zap.Error(ferr))
 			finalErr = ferr
 
-			session.mu.Lock()
-			failuresCount := len(session.failuresChan) + 1 // include the one just read
-			session.mu.Unlock()
+			failuresCount++
 			if failuresCount >= 2 {
+				session.mu.Lock()
+				if failed := session.lastFailure; failed != nil {
+					gctx.UpstreamResponse = failed.UpstreamResponse
+					gctx.UpstreamError = failed.UpstreamError
+					gctx.UpstreamBody = failed.UpstreamBody
+				}
+				session.mu.Unlock()
 				return fmt.Errorf("all hedging channels failed, last error: %w", finalErr)
 			}
 		case <-sessionCtx.Done():
@@ -199,10 +223,20 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 	}
 	session.mu.Unlock()
 
+	// Streaming chooses a winner at the first byte, before that provider has
+	// finished writing usage/history. Let the winner finish before reading it.
+	select {
+	case <-session.completed[winnerID]:
+	case <-sessionCtx.Done():
+		return sessionCtx.Err()
+	}
 	gctx.Logger(hi.logger).Info("hedging execution finished", zap.String("winner", winnerID))
 
 	// Copy winner fields onto main gctx
 	gctx.SelectedEndpoint = winnerGctx.SelectedEndpoint
+	gctx.SelectedInvoker = winnerGctx.SelectedInvoker
+	gctx.History = append(gctx.History, winnerGctx.History...)
+	gctx.AttemptCount += winnerGctx.AttemptCount
 	gctx.UpstreamConnect = winnerGctx.UpstreamConnect
 	gctx.UpstreamResponse = winnerGctx.UpstreamResponse
 	gctx.UpstreamBody = winnerGctx.UpstreamBody
@@ -216,7 +250,7 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 	gctx.Cost = winnerGctx.Cost
 	gctx.Response = winnerGctx.Response
 
-	return nil
+	return winnerGctx.UpstreamError
 }
 
 // selectTwoEndpoints picks two distinct endpoints via the load balancer.
@@ -268,6 +302,11 @@ func (hi *HedgingInvoker) invokeSub(
 	cancel context.CancelFunc,
 	session *hedgingSession,
 ) {
+	defer func() {
+		if done := session.completed[ep.ID]; done != nil {
+			close(done)
+		}
+	}()
 	hw := &hedgingWriter{
 		ResponseWriter: session.mainWriter,
 		owner:          session,
@@ -276,20 +315,26 @@ func (hi *HedgingInvoker) invokeSub(
 
 	// Clone request context with cancellable childCtx
 	childGctx := &core.GatewayContext{
-		Ctx:            ctx,
-		Request:        gctx.Request.WithContext(ctx),
-		ResponseWriter: hw,
-		RawBody:        gctx.RawBody,
-		RequestType:    gctx.RequestType,
-		OriginalModel:  gctx.OriginalModel,
-		IsStream:       gctx.IsStream,
-		APIKey:         gctx.APIKey,
-		UserID:         gctx.UserID,
-		SessionID:      gctx.SessionID,
-		Model:          gctx.Model,
-		Policy:         gctx.Policy,
-		Tags:           make(map[string]string),
-		StartTime:      gctx.StartTime,
+		Ctx:               ctx,
+		Request:           gctx.Request.WithContext(ctx),
+		GovernanceRequest: gctx.GovernanceRequest,
+		ResponseWriter:    hw,
+		RawBody:           gctx.RawBody,
+		RequestType:       gctx.RequestType,
+		OriginalModel:     gctx.OriginalModel,
+		IsStream:          gctx.IsStream,
+		APIKey:            gctx.APIKey,
+		Tenant:            gctx.Tenant,
+		UserTenant:        gctx.UserTenant,
+		WorkspaceID:       gctx.WorkspaceID,
+		Sensitive:         gctx.Sensitive,
+		MaxResponseBytes:  gctx.MaxResponseBytes,
+		UserID:            gctx.UserID,
+		SessionID:         gctx.SessionID,
+		Model:             gctx.Model,
+		Policy:            gctx.Policy,
+		Tags:              make(map[string]string),
+		StartTime:         gctx.StartTime,
 	}
 	for k, v := range gctx.Tags {
 		childGctx.Tags[k] = v
@@ -327,10 +372,22 @@ func (hi *HedgingInvoker) invokeSub(
 			zap.String("url", ep.URL),
 		)
 	}
-	err := ep.ProviderImpl.Invoke(childGctx)
+	err := NewProviderInvoker(ep.ProviderImpl, ep).Invoke(childGctx)
+	if err != nil && childGctx.UpstreamError == nil {
+		childGctx.UpstreamError = err
+	}
 	childGctx.RecordAttempt(err == nil)
 
 	if err != nil {
+		session.mu.Lock()
+		session.lastFailure = childGctx
+		if childGctx.Sensitive && session.terminalFailure == nil &&
+			(isExplicitlyNonRetryable(err) || childGctx.UpstreamResponse != nil &&
+				childGctx.UpstreamResponse.StatusCode >= 400 && childGctx.UpstreamResponse.StatusCode < 500 &&
+				childGctx.UpstreamResponse.StatusCode != http.StatusTooManyRequests) {
+			session.terminalFailure = childGctx
+		}
+		session.mu.Unlock()
 		hi.cbManager.RecordFailure(childGctx, ep, err)
 		select {
 		case session.failuresChan <- err:
@@ -363,13 +420,31 @@ func (hi *HedgingInvoker) Endpoint() *core.Endpoint {
 
 // hedgingSession coordinates a dual-call hedge race.
 type hedgingSession struct {
-	mu            sync.Mutex
-	winnerID      string
-	winnerGctx    *core.GatewayContext
-	mainWriter    http.ResponseWriter
-	winnerChan    chan string
-	failuresChan  chan error
-	sessionCancel context.CancelFunc
+	mu              sync.Mutex
+	winnerID        string
+	winnerGctx      *core.GatewayContext
+	lastFailure     *core.GatewayContext
+	terminalFailure *core.GatewayContext
+	mainWriter      http.ResponseWriter
+	winnerChan      chan string
+	failuresChan    chan error
+	sessionCancel   context.CancelFunc
+	completed       map[string]chan struct{}
+}
+
+func (s *hedgingSession) smartTerminalError(g *core.GatewayContext) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	failed := s.terminalFailure
+	if failed == nil {
+		return nil
+	}
+	g.UpstreamResponse, g.UpstreamError, g.UpstreamBody = failed.UpstreamResponse, failed.UpstreamError, failed.UpstreamBody
+	code := http.StatusBadRequest
+	if failed.UpstreamResponse != nil {
+		code = failed.UpstreamResponse.StatusCode
+	}
+	return &smartHTTPError{status: code, reason: "upstream rejected smart routing request"}
 }
 
 // claimWinner marks this child as the race winner (first-write wins).

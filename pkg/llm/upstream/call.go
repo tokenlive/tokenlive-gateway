@@ -123,11 +123,13 @@ func Call(gctx *core.GatewayContext, req Request) (*http.Response, error) {
 	if gctx.SelectedEndpoint != nil {
 		endpointID = gctx.SelectedEndpoint.ID
 	}
-	gctx.Logger(zap.L()).Debug("sending request to upstream with headers",
-		zap.String("endpoint_id", endpointID),
-		zap.String("url", httpReq.URL.String()),
-		zap.Any("headers", httpReq.Header),
-	)
+	if !gctx.Sensitive {
+		gctx.Logger(zap.L()).Debug("sending request to upstream with headers",
+			zap.String("endpoint_id", endpointID),
+			zap.String("url", httpReq.URL.String()),
+			zap.Any("headers", httpReq.Header),
+		)
+	}
 
 	resp, err := req.Client.Do(httpReq)
 	if err != nil {
@@ -141,6 +143,9 @@ func Call(gctx *core.GatewayContext, req Request) (*http.Response, error) {
 	}
 
 	gctx.UpstreamResponse = resp
+	if gctx.MaxResponseBytes > 0 {
+		resp.Body = &boundedBody{ReadCloser: resp.Body, remaining: gctx.MaxResponseBytes}
+	}
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -148,6 +153,9 @@ func Call(gctx *core.GatewayContext, req Request) (*http.Response, error) {
 		timer.Stop()
 		singleCancel(nil)
 		gctx.UpstreamBody = respBody
+		if gctx.Sensitive {
+			return nil, fmt.Errorf("upstream error: status %d", resp.StatusCode)
+		}
 		gctx.Logger(zap.L()).Warn("upstream error details",
 			zap.String("endpoint_id", endpointID),
 			zap.Int("status", resp.StatusCode),

@@ -148,6 +148,10 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 		zap.String("user_id", gctx.UserID),
 		zap.String("session_id", gctx.SessionID),
 	}
+	if gctx.SmartRouting != nil {
+		gctx.SmartRouting.DurationMs = time.Since(gctx.StartTime).Milliseconds()
+		fields = append(fields, zap.Any("smart_routing", gctx.SmartRouting))
+	}
 	if fr := gctx.GetTagValue("upstream_finish_reason"); fr != "" {
 		fields = append(fields, zap.String("upstream_finish_reason", fr))
 	}

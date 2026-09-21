@@ -20,11 +20,18 @@ var builtinToolStandardFields = map[string][]string{
 }
 
 // ResponsesRequestToChat translates Responses request to Chat Completions.
-func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
+// The returned ToolNameMapper records the (namespace, name) -> sanitized-name
+// mapping used on the request side; pass it to ChatCompletionToResponses /
+// handleResponsesStream so the response path can restore original namespaces.
+// Strict upstreams (DeepSeek, Qwen) reject dots in tools[].function.name, so
+// namespace-qualified names are sanitized to ^[a-zA-Z0-9_-]+$.
+func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
-		return nil, fmt.Errorf("parse raw body: %w", err)
+		return nil, nil, fmt.Errorf("parse raw body: %w", err)
 	}
+
+	mapper := NewToolNameMapper()
 
 	var openAIMessages []interface{}
 	if instructions, ok := payload["instructions"].(string); ok && instructions != "" {
@@ -96,7 +103,7 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 					name, _ := itemMap["name"].(string)
 					args, _ := itemMap["arguments"].(string)
 					if ns, _ := itemMap["namespace"].(string); ns != "" {
-						name = ns + "." + name
+						name = mapper.SanitizeAndRegister(ns, name)
 					}
 					pendingToolCalls = append(pendingToolCalls, map[string]interface{}{
 						"id":   callID,
@@ -247,14 +254,14 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 							if ns, _ := toolMap["name"].(string); ns != "" {
 								stdTool["namespace"] = ns
 							}
-							finalTools = append(finalTools, WrapFlatToolToNestedOpenAI(stdTool))
+							finalTools = append(finalTools, WrapFlatToolToNestedOpenAI(stdTool, mapper))
 						}
 					}
 				}
 			} else {
 				stdTool := BuildStandardTool(toolMap)
 				if stdTool != nil && stdTool["type"] == "function" {
-					finalTools = append(finalTools, WrapFlatToolToNestedOpenAI(stdTool))
+					finalTools = append(finalTools, WrapFlatToolToNestedOpenAI(stdTool, mapper))
 				}
 			}
 		}
@@ -269,9 +276,9 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, error) {
 
 	newBody, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal translated body: %w", err)
+		return nil, nil, fmt.Errorf("marshal translated body: %w", err)
 	}
-	return newBody, nil
+	return newBody, mapper, nil
 }
 
 // ChatCompletionToResponsesResult is non-stream Chat→Responses result.
@@ -281,7 +288,10 @@ type ChatCompletionToResponsesResult struct {
 }
 
 // ChatCompletionToResponses translates non-stream Chat response to Responses.
-func ChatCompletionToResponses(chatBody []byte, model string) (ChatCompletionToResponsesResult, error) {
+// mapper (from ResponsesRequestToChat) restores original (namespace, name) for
+// sanitized tool names the upstream echoed back. nil mapper falls back to the
+// dot-split heuristic.
+func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMapper) (ChatCompletionToResponsesResult, error) {
 	var oaiResp struct {
 		ID      string `json:"id"`
 		Model   string `json:"model"`
@@ -364,8 +374,13 @@ func ChatCompletionToResponses(chatBody []byte, model string) (ChatCompletionToR
 		if len(choice.Message.ToolCalls) > 0 {
 			for _, tc := range choice.Message.ToolCalls {
 				toolName := tc.Function.Name
-				toolNamespace := splitChatToolNamespace(toolName)
-				toolName = chatToolLocalName(toolName)
+				var toolNamespace string
+				if mapper != nil {
+					toolNamespace, toolName = mapper.Restore(toolName)
+				} else {
+					toolNamespace = splitChatToolNamespace(toolName)
+					toolName = chatToolLocalName(toolName)
+				}
 				outputList = append(outputList, map[string]interface{}{
 					"id":        tc.ID,
 					"call_id":   tc.ID,
@@ -661,7 +676,10 @@ func chatToolLocalName(name string) string {
 }
 
 // WrapFlatToolToNestedOpenAI wraps a flat function tool as nested OpenAI Chat form.
-func WrapFlatToolToNestedOpenAI(flatTool map[string]interface{}) map[string]interface{} {
+// When the flat tool carries a namespace, the name is sanitized to a pattern-safe
+// form via mapper (registering the mapping for later response-side restoration),
+// instead of the raw "namespace.name" form that strict upstreams reject.
+func WrapFlatToolToNestedOpenAI(flatTool map[string]interface{}, mapper *ToolNameMapper) map[string]interface{} {
 	toolType, _ := flatTool["type"].(string)
 	if toolType == "" {
 		toolType = "function"
@@ -675,7 +693,7 @@ func WrapFlatToolToNestedOpenAI(flatTool map[string]interface{}) map[string]inte
 	}
 	if ns, ok := innerMap["namespace"].(string); ok && ns != "" {
 		if name, _ := innerMap["name"].(string); name != "" {
-			innerMap["name"] = ns + "." + name
+			innerMap["name"] = mapper.SanitizeAndRegister(ns, name)
 		}
 		delete(innerMap, "namespace")
 	}

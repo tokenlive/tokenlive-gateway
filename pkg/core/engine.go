@@ -60,6 +60,7 @@ type Engine struct {
 	enableActiveHealthCheck bool
 	aliasService            AliasResolver
 	publisher               events.Publisher
+	smartRouter             SmartRouter
 }
 
 // NewEngine creates an Engine.
@@ -136,6 +137,9 @@ func (e *Engine) SetInvokerBuilder(ib InvokerBuilder) {
 func (e *Engine) SetAliasService(as AliasResolver) {
 	e.aliasService = as
 }
+
+// SetSmartRouter installs optional logical model orchestration before Init.
+func (e *Engine) SetSmartRouter(router SmartRouter) { e.smartRouter = router }
 
 // SetPublisher injects the event publisher (optional, call before Init).
 func (e *Engine) SetPublisher(pub events.Publisher) {
@@ -277,6 +281,12 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		gctx.Model = resolved
 	}
+	if e.smartRouter != nil {
+		if err := e.smartRouter.Prepare(gctx); err != nil {
+			e.writeError(w, e.getErrorCode(err), err, gctx)
+			return
+		}
+	}
 
 	// 2. Match Pipeline
 	pipe := e.matchPipeline(gctx.RequestType)
@@ -299,6 +309,13 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	for _, f := range pipe.InboundFilters {
 		if err := f.OnRequest(gctx); err != nil {
 			gctx.Err = err
+			if gctx.TrackLimitReservations {
+				if settlement, ok := e.filterRegistry["token_settlement"].(interface{ SettleLimits(*GatewayContext) error }); ok {
+					if settleErr := settlement.SettleLimits(gctx); settleErr != nil {
+						e.logger.Error("smart inbound quota settlement failed", zap.Error(settleErr))
+					}
+				}
+			}
 			// On Inbound rejection, execute OutboundFilters that declare InboundSafe
 			for _, outf := range pipe.OutboundFilters {
 				if _, ok := outf.(InboundSafeFilter); ok {
@@ -320,7 +337,13 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	var invokeErr error
 	fallbackPolicy := getFallbackPolicy(gctx)
-	if fallbackPolicy != nil && len(fallbackPolicy.Targets) > 0 {
+	smartHandled := false
+	if e.smartRouter != nil {
+		smartHandled, invokeErr = e.smartRouter.Invoke(gctx, pipe)
+	}
+	if smartHandled {
+		gctx.Err = invokeErr
+	} else if fallbackPolicy != nil && len(fallbackPolicy.Targets) > 0 {
 		models := append([]string{gctx.Model}, fallbackPolicy.Targets...)
 		for i, modelName := range models {
 			if i > 0 {

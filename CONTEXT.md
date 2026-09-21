@@ -130,6 +130,17 @@ _Avoid_: session affinity, sticky routing
 **Fatal Error (致命错误)**:
 服务治理流中的一种阻断性异常标记。当触发某些不可恢复的故障（例如强端点亲和性强制要求且不允许降级，但路由匹配失败）时，系统会在请求上下文（`GatewayContext.FatalErr`）中写入致命错误（如 `ErrFatalNoAvailableEndpoint`）。该错误一经标记，将立刻短路重试引擎与降级引擎，立即终止单次请求内的所有重试 Attempt 并跳过 Fallback 链，直接向客户端返回错误，以防止模型污染和无谓的重试开销。
 
+**Media Endpoint (媒体端点)**:
+承载语音模态能力的 **Endpoint**，通过 `RequestTypes` 声明 `asr_stream`（流式语音识别）或 `tts_stream`（流式语音合成）。与 LLM 端点共用同一套 Discovery / Router / LoadBalancer / CircuitBreaker 治理链路和 Admin CRUD，但媒体专属属性（采样率、编解码、语言、音色、按秒/按千字符单价）收敛在独立的 `Media` 子结构中，**不复用** LLM 的 `ContextLength` / `MaxOutputTokens` / `InputPrice` / `OutputPrice` 等 Token 语义字段，以保证 ClickHouse 账本中 Token 字段语义单一、对账可信。ASR/TTS 的上游实现（FunASR、Sherpa-ONNX、CosyVoice、EdgeTTS、火山 TTS 等）表达为独立的 ProtocolFamily。
+_Avoid_: ASR 引擎, TTS 引擎, 语音引擎, media provider
+
+**Realtime Session (实时会话)**:
+一条端侧设备与网关之间的双向长连接所对应的有状态会话。与无状态的 HTTP 请求不同，它持有连接级的媒体状态（Opus 编解码器、音频环形缓冲、ASR 流句柄、TTS 待合成队列）与会话级身份（Device-Id → UserID 映射、`session_id`），生命周期可达数十分钟。一条 Realtime Session 内包含多个 **Voice Turn**。
+_Avoid_: connection, ws session, 长连接
+
+**Voice Turn (语音轮次)**:
+Realtime Session 内的一次完整交互单元：从用户开始说话到本轮 TTS 播放结束（或被打断）。Voice Turn 是**计量与结算的最小单位**——一轮内产生的 ASR 秒数、LLM Token、TTS 字符共同构成该轮的复合成本。
+_Avoid_: round, 对话轮, request
 
 ## Relationships
 

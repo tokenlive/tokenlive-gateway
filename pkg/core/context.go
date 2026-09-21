@@ -23,13 +23,14 @@ var ErrClientDisconnected = errors.New("client disconnected")
 // Does not implement context.Context (strong-typed fields preferred).
 type GatewayContext struct {
 	// ===== Request constants (immutable) =====
-	Ctx            context.Context
-	Request        *http.Request
-	ResponseWriter http.ResponseWriter
-	RawBody        []byte
-	RequestType    RequestType
-	OriginalModel  string
-	IsStream       bool
+	Ctx               context.Context
+	Request           *http.Request
+	GovernanceRequest *http.Request // Original metadata for policy matchers, never the transport request.
+	ResponseWriter    http.ResponseWriter
+	RawBody           []byte
+	RequestType       RequestType
+	OriginalModel     string
+	IsStream          bool
 
 	// Populated by InboundFilter
 	APIKey      string
@@ -42,8 +43,15 @@ type GatewayContext struct {
 	SessionID   string
 
 	// ===== Decision results (Fallback may rewrite Model) =====
-	Model  string
-	Policy *policy.Policy
+	Model                  string
+	Policy                 *policy.Policy
+	SmartConfig            *SmartRoutingConfig
+	SmartRouting           *SmartRoutingRecord
+	TrackLimitReservations bool
+	LimitReservations      []LimitReservation
+	LimitKeys              map[string]bool
+	Sensitive              bool
+	MaxResponseBytes       int64
 
 	// ===== Per-attempt (ResetAttempt clears these) =====
 	SelectedInvoker  Invoker
@@ -182,12 +190,13 @@ func ReleaseContext(gctx *GatewayContext) {
 
 // GetHeader returns all values for the given HTTP header key (supports multi-value).
 func (c *GatewayContext) GetHeader(key string) []string {
-	if c.Request == nil {
+	request := c.requestForGovernance()
+	if request == nil {
 		return nil
 	}
-	actual := c.Request.Header[key]
+	actual := request.Header[key]
 	if len(actual) == 0 {
-		val := c.Request.Header.Get(key)
+		val := request.Header.Get(key)
 		if val != "" {
 			return []string{val}
 		}
@@ -197,22 +206,31 @@ func (c *GatewayContext) GetHeader(key string) []string {
 
 // GetQuery returns all values for the given URL query parameter (supports multi-value).
 func (c *GatewayContext) GetQuery(key string) []string {
-	if c.Request == nil || c.Request.URL == nil {
+	request := c.requestForGovernance()
+	if request == nil || request.URL == nil {
 		return nil
 	}
-	return c.Request.URL.Query()[key]
+	return request.URL.Query()[key]
 }
 
 // GetCookie returns the value of the given cookie key.
 func (c *GatewayContext) GetCookie(key string) string {
-	if c.Request == nil {
+	request := c.requestForGovernance()
+	if request == nil {
 		return ""
 	}
-	cookie, err := c.Request.Cookie(key)
+	cookie, err := request.Cookie(key)
 	if err != nil {
 		return ""
 	}
 	return cookie.Value
+}
+
+func (c *GatewayContext) requestForGovernance() *http.Request {
+	if c.GovernanceRequest != nil {
+		return c.GovernanceRequest
+	}
+	return c.Request
 }
 
 // GetSystemValue extracts built-in context variables (e.g. "user", "model").
