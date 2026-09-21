@@ -29,8 +29,8 @@ func NewHTTPGatewayProvider(adminURL string, syncToken string, tlsSkipVerify boo
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 	return &HTTPGatewayProvider{
-		adminURL:      adminURL,
-		syncToken:     syncToken,
+		adminURL:  adminURL,
+		syncToken: syncToken,
 		httpClient: &http.Client{
 			Timeout:   5 * time.Second,
 			Transport: transport,
@@ -43,7 +43,7 @@ func NewHTTPGatewayProvider(adminURL string, syncToken string, tlsSkipVerify boo
 func (p *HTTPGatewayProvider) UpdateConfig(gwCfg *GatewayConfig) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cachedConfig = gwCfg
+	p.cachedConfig = cloneGatewayConfig(gwCfg)
 }
 
 // UpdatePolicies replaces the cached governance policies.
@@ -68,7 +68,7 @@ func (p *HTTPGatewayProvider) GetConfig(ctx context.Context, modelCode string) (
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.cachedConfig != nil {
-		return p.cachedConfig, nil
+		return cloneGatewayConfig(p.cachedConfig), nil
 	}
 	return nil, fmt.Errorf("gateway config not loaded yet")
 }

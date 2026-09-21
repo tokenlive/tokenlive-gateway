@@ -68,11 +68,11 @@ func (pi *ProviderInvoker) Endpoint() *core.Endpoint {
 
 // replaceModelInBody sets the "model" field in a JSON request body.
 func replaceModelInBody(body []byte, newModel string) []byte {
-	var m map[string]interface{}
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
 	}
-	m["model"] = newModel
+	m["model"], _ = json.Marshal(newModel)
 	out, err := json.Marshal(m)
 	if err != nil {
 		return body

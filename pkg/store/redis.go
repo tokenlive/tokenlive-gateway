@@ -162,6 +162,23 @@ func (s *RedisStateStore) RateLimitTake(ctx context.Context, key string, tokens 
 	return allowed, remaining, nil
 }
 
+// RateLimitAdjust reconciles already-consumed usage in the same token bucket as
+// admission. It allows a negative balance, which later refills must repay.
+// The optional operation leaves core.StateStore and RateLimitTake compatible.
+func (s *RedisStateStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
+	res, err := s.rateLimitTakeScript.Eval(ctx, s.client,
+		[]string{s.key("tb", key)},
+		tokens, float64(rate), float64(capacity), float64(window.Milliseconds()), float64(now.UnixMilli()), 1,
+	).Int64Slice()
+	if err != nil {
+		return 0, fmt.Errorf("redis rate limit adjust: %w", err)
+	}
+	if len(res) < 2 || res[0] != 1 {
+		return 0, fmt.Errorf("redis rate limit adjust invalid response: %v", res)
+	}
+	return res[1], nil
+}
+
 // --- sticky session ---
 
 // StickyGet returns the endpointID for sessionKey, or ErrKeyNotFound.

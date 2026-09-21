@@ -359,6 +359,10 @@ func NewGatewayEngine(
 
 	// Register OutboundFilters.
 	engine.RegisterFilter("token_settlement", outbound.NewTokenSettlementFilter(stateStore, apiKeyService, logger.Logger))
+	if modelService != nil && configMgr != nil {
+		modelService.SetConfigManager(configMgr)
+		engine.SetSmartRouter(invoker.NewSmartRouter(configMgr, modelService, policyService, engine))
+	}
 	engine.RegisterFilter("sticky_session", outbound.NewStickySessionFilter(stateStore, 5*time.Minute))
 	engine.RegisterFilter("metrics", outbound.NewMetricsFilter(
 		metricsRegistry,

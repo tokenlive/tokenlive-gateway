@@ -1,6 +1,7 @@
 package outbound
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,6 +12,31 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
+
+func TestAccessLogRecordsSmartDecisionWithoutPrompt(t *testing.T) {
+	sink, logs := observer.New(zap.InfoLevel)
+	f := NewAccessLogFilter(zap.New(sink), nil, nil, nil, nil)
+	g := &core.GatewayContext{
+		Model: "smart", OriginalModel: "smart", StartTime: time.Now(),
+		RawBody:      []byte("a-private-user-prompt"),
+		SmartRouting: &core.SmartRoutingRecord{Model: "smart", Version: 1, JudgeModel: "judge", ExecutedModel: "strong", Reason: "judge_timeout"},
+	}
+	if err := f.OnResponse(g); err != nil {
+		t.Fatal(err)
+	}
+	fields := logs.All()[0].ContextMap()
+	value, ok := fields["smart_routing"]
+	if !ok {
+		t.Fatal("missing smart routing metadata")
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"score":null`) || strings.Contains(string(data), "a-private-user-prompt") {
+		t.Fatalf("invalid smart metadata: %s", data)
+	}
+}
 
 func TestAccessLogFilter_RedactsAPIKey(t *testing.T) {
 	coreObs, logs := observer.New(zap.InfoLevel)

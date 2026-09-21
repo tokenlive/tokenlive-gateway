@@ -117,6 +117,9 @@ func (p *HTTPConfigPoller) pollConfig(ctx context.Context, onUpdate func(ctx con
 	if err := json.NewDecoder(resp.Body).Decode(&gwCfg); err != nil {
 		return err
 	}
+	if err := Validate(&gwCfg); err != nil {
+		return err
+	}
 
 	p.provider.UpdateConfig(&gwCfg)
 

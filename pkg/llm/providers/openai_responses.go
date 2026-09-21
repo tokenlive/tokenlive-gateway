@@ -46,7 +46,7 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 	}
 
 	// Branch B: protocol downgrade and translation (Responses -> Chat/Completions)
-	newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
+	newBody, toolMapper, err := translate.ResponsesRequestToChat(gctx.RawBody)
 	if err != nil {
 		return err
 	}
@@ -60,9 +60,9 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 
 	// Translate response body (OpenAI Chat -> Responses)
 	if gctx.IsStream {
-		return handleResponsesStream(gctx, gctx.UpstreamResponse)
+		return handleResponsesStream(gctx, gctx.UpstreamResponse, toolMapper)
 	}
-	if err := translateResponsesNonStreamResponse(gctx); err != nil {
+	if err := translateResponsesNonStreamResponse(gctx, toolMapper); err != nil {
 		return fmt.Errorf("translate response: %w", err)
 	}
 	return nil
@@ -70,11 +70,12 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 
 // Compatible with same-package callers (joycode / tests)
 func translateResponsesToChatCompletion(rawBody []byte) ([]byte, error) {
-	return translate.ResponsesRequestToChat(rawBody)
+	body, _, err := translate.ResponsesRequestToChat(rawBody)
+	return body, err
 }
 
-func translateResponsesNonStreamResponse(gctx *core.GatewayContext) error {
-	res, err := translate.ChatCompletionToResponses(gctx.UpstreamBody, gctx.Model)
+func translateResponsesNonStreamResponse(gctx *core.GatewayContext, toolMapper *translate.ToolNameMapper) error {
+	res, err := translate.ChatCompletionToResponses(gctx.UpstreamBody, gctx.Model, toolMapper)
 	if err != nil {
 		return err
 	}
@@ -359,7 +360,7 @@ func chatToolLocalName(name string) string {
 	return name
 }
 
-func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error {
+func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolMapper *translate.ToolNameMapper) error {
 	defer resp.Body.Close()
 
 	defer func() {
@@ -686,10 +687,14 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response) error
 								localTC.Name = tc.Function.Name
 							}
 							if localTC.Namespace == "" {
-								localTC.Namespace = splitChatToolNamespace(localTC.Name)
-							}
-							if localTC.Namespace != "" {
-								localTC.Name = chatToolLocalName(localTC.Name)
+								if toolMapper != nil {
+									localTC.Namespace, localTC.Name = toolMapper.Restore(localTC.Name)
+								} else {
+									localTC.Namespace = splitChatToolNamespace(localTC.Name)
+									if localTC.Namespace != "" {
+										localTC.Name = chatToolLocalName(localTC.Name)
+									}
+								}
 							}
 
 							// Once we have a tool name and haven't sent the added event yet, send it immediately

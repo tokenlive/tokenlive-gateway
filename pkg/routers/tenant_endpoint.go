@@ -35,7 +35,7 @@ func (r *TenantEndpointRouter) Name() string { return "tenant_endpoint" }
 
 func (r *TenantEndpointRouter) Route(gctx *core.GatewayContext, endpoints []*core.Endpoint) []*core.Endpoint {
 	// Skip non-tenant requests.
-	if gctx.Tenant == "" {
+	if gctx.Tenant == "" || r.rdb == nil {
 		return endpoints
 	}
 

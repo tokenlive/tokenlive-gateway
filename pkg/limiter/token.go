@@ -94,6 +94,7 @@ func (e *TokenLimitExecutor) Execute(ctx context.Context, gctx *core.GatewayCont
 			}
 		}
 	}
+	recordReservations(gctx, lp, limitKey, estimate)
 	return nil
 }
 

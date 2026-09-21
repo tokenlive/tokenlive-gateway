@@ -19,6 +19,8 @@ type ModelService struct {
 	rdb            *redis.Client
 	logger         *log.Logger
 	fallbackModels map[string]bool
+	configManager  *config.ConfigManager
+	redisSource    *config.RedisConfigSource
 }
 
 func NewModelService(rdb *redis.Client, logger *log.Logger, conf *viper.Viper) *ModelService {
@@ -32,11 +34,16 @@ func NewModelService(rdb *redis.Client, logger *log.Logger, conf *viper.Viper) *
 			logger.Logger.Error("failed to load gateway config for model service", zap.Error(err))
 		}
 	}
+	var redisSource *config.RedisConfigSource
+	if rdb != nil {
+		redisSource = config.NewRedisConfigSource(rdb, 0, logger.Logger)
+	}
 
 	return &ModelService{
 		rdb:            rdb,
 		logger:         logger,
 		fallbackModels: fallbackModels,
+		redisSource:    redisSource,
 	}
 }
 
@@ -46,15 +53,39 @@ func (s *ModelService) UpdateFallbackModels(models map[string]bool) {
 	s.fallbackModels = models
 }
 
+// SetConfigManager connects authorization checks to live routing snapshots.
+func (s *ModelService) SetConfigManager(manager *config.ConfigManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.configManager = manager
+}
+
 // ValidateModel 校验指定用户的 model 是否存在且合法
 // model 参数为客户端请求的模型标识（应为 model_code）
 func (s *ModelService) ValidateModel(ctx context.Context, model string, tenant string, userID string) (bool, error) {
+	s.mu.RLock()
+	manager := s.configManager
+	isFallback := s.fallbackModels[model]
+	s.mu.RUnlock()
+	if manager != nil {
+		if target, ok := manager.GetAlias(model); ok {
+			model = target
+		}
+		if _, err := manager.GetSmartRouting(ctx, model); err != nil {
+			return false, err
+		}
+		isFallback = manager.HasModel(ctx, model)
+	} else if s.redisSource != nil {
+		smart, configured, err := s.redisSource.GetSmartRouting(ctx, model)
+		if err != nil {
+			return false, err
+		}
+		if configured {
+			isFallback = smart != nil
+		}
+	}
 	// 1. ToB 租户模式校验
 	if tenant != "" {
-		s.mu.RLock()
-		isFallback := s.fallbackModels[model]
-		s.mu.RUnlock()
-
 		if s.rdb == nil {
 			s.logger.Logger.Debug("redis client is nil in ToB, fallback to local config validation", zap.String("model", model))
 			return isFallback, nil
@@ -96,14 +127,14 @@ func (s *ModelService) ValidateModel(ctx context.Context, model string, tenant s
 		if !isMember {
 			s.logger.Logger.Warn("model not allowed for tenant", zap.String("tenant", tenant), zap.String("model", model))
 		}
-		return isMember, nil
+		if !isMember || isFallback {
+			return isMember, nil
+		}
+		exists, err = s.rdb.Exists(ctx, store.RedisKeyConfigEndpoints(model)).Result()
+		return err == nil && exists > 0, nil
 	}
 
 	// 2. ToC 个人模式校验：放通系统中所有已配置/可用的模型
-	s.mu.RLock()
-	isFallback := s.fallbackModels[model]
-	s.mu.RUnlock()
-
 	if isFallback {
 		return true, nil
 	}

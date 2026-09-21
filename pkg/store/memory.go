@@ -53,6 +53,10 @@ type tokenBucketEntry struct {
 }
 
 func (e *tokenBucketEntry) take(requested int64, rate int64, capacity int64, window time.Duration, now time.Time) (bool, int64) {
+	return e.apply(requested, rate, capacity, window, now, false)
+}
+
+func (e *tokenBucketEntry) apply(requested int64, rate int64, capacity int64, window time.Duration, now time.Time, adjustment bool) (bool, int64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -73,7 +77,9 @@ func (e *tokenBucketEntry) take(requested int64, rate int64, capacity int64, win
 	}
 
 	reqFloat := float64(requested)
-	if e.tokens >= reqFloat {
+	// Reconciliation records usage that already happened, even beyond capacity.
+	// Refunds must also succeed while the bucket carries debt.
+	if adjustment || requested < 0 || e.tokens >= reqFloat {
 		e.tokens -= reqFloat
 		if e.tokens > limitCap {
 			e.tokens = limitCap
@@ -246,6 +252,15 @@ func (s *MemoryStateStore) RateLimitTake(ctx context.Context, key string, tokens
 	e := s.getOrCreateTokenBucketEntry(key)
 	allowed, remaining := e.take(tokens, rate, capacity, window, now)
 	return allowed, remaining, nil
+}
+
+// RateLimitAdjust reconciles already-consumed usage; positive tokens debit even
+// below zero, negative tokens refund up to capacity. This optional capability
+// deliberately does not change the admission-only core.StateStore interface.
+func (s *MemoryStateStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
+	e := s.getOrCreateTokenBucketEntry(key)
+	_, remaining := e.apply(tokens, rate, capacity, window, now, true)
+	return remaining, nil
 }
 
 // --- sticky session ---

@@ -535,6 +535,47 @@ func TestClusterInvoker_RoundRobinRetriesWalkRemainingEndpointsInOrder(t *testin
 	assertAttemptEndpoints(t, gctx2.History, []string{"ep-2", "ep-3", "ep-4"})
 }
 
+type skipRetryEndpointRouter struct{ id string }
+
+func (r skipRetryEndpointRouter) Name() string { return "skip_retry_endpoint" }
+func (r skipRetryEndpointRouter) Route(_ *core.GatewayContext, endpoints []*core.Endpoint) []*core.Endpoint {
+	var allowed []*core.Endpoint
+	for _, ep := range endpoints {
+		if ep.ID != r.id {
+			allowed = append(allowed, ep)
+		}
+	}
+	return allowed
+}
+
+func TestClusterInvoker_RoundRobinRetriesPreserveOrderWithoutBypassingRouters(t *testing.T) {
+	provider := &countingProvider{name: "openai", failCount: 100}
+	var endpoints []*core.Endpoint
+	for _, id := range []string{"ep-1", "ep-2", "ep-3", "ep-4"} {
+		endpoints = append(endpoints, &core.Endpoint{
+			ID: id, Provider: "openai", Model: "gpt-4", ProviderImpl: provider,
+		})
+	}
+	ci := newTestClusterInvoker(&mockDiscovery{endpoints: endpoints}, &testRoundRobin{}, &policy.RetryPolicy{
+		Retry: 2, BackoffType: "fixed", BaseMs: 1, ErrorCodes: []string{"500"},
+	})
+	ci.routerChain = []core.Router{skipRetryEndpointRouter{id: "ep-3"}}
+	for _, want := range [][]string{
+		{"ep-1", "ep-2", "ep-4"},
+		{"ep-2", "ep-4", "ep-1"},
+		{"ep-4", "ep-1", "ep-2"},
+	} {
+		gctx := newTestGatewayContext()
+		err := ci.Invoke(gctx)
+		if err == nil {
+			core.ReleaseContext(gctx)
+			t.Fatal("expected retries to fail")
+		}
+		assertAttemptEndpoints(t, gctx.History, want)
+		core.ReleaseContext(gctx)
+	}
+}
+
 func TestClusterInvoker_ReturnsNoAvailableEndpointWhenEndpointsExhaustBeforeRetryLimit(t *testing.T) {
 	ep1 := &core.Endpoint{ID: "ep-1", Provider: "openai", Model: "gpt-4"}
 	ep2 := &core.Endpoint{ID: "ep-2", Provider: "openai", Model: "gpt-4"}

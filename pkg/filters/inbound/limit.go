@@ -54,6 +54,10 @@ func (f *RateLimitFilter) OnRequest(gctx *core.GatewayContext) error {
 		if !MatchLimitPolicyConditions(gctx, lp) {
 			continue // condition not matched, skip this limit policy
 		}
+		limitKey := limiter.GetLimitKey(gctx, lp)
+		if gctx.TrackLimitReservations && gctx.LimitKeys[limitKey] {
+			continue
+		}
 		// estimate initial InputTokens to prevent zero-stat refund on stream interruption
 		if (lp.Type == "token" || lp.Type == "cost") && gctx.InputTokens == 0 {
 			gctx.InputTokens = int(limiter.EstimateInputTokens(gctx, lp))
@@ -104,6 +108,12 @@ func (f *RateLimitFilter) OnRequest(gctx *core.GatewayContext) error {
 					}
 				}
 				return err
+			}
+			if gctx.TrackLimitReservations {
+				if gctx.LimitKeys == nil {
+					gctx.LimitKeys = make(map[string]bool)
+				}
+				gctx.LimitKeys[limitKey] = true
 			}
 		}
 	}

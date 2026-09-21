@@ -171,7 +171,7 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 
 	if endpointDeclaresRequestType(gctx.SelectedEndpoint, core.RequestTypeChatCompletion) &&
 		!endpointDeclaresRequestType(gctx.SelectedEndpoint, core.RequestTypeResponses) {
-		newBody, err := translate.ResponsesRequestToChat(gctx.RawBody)
+		newBody, toolMapper, err := translate.ResponsesRequestToChat(gctx.RawBody)
 		if err != nil {
 			return fmt.Errorf("translate responses to chat completion: %w", err)
 		}
@@ -181,9 +181,9 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 		}
 
 		if gctx.IsStream {
-			return handleResponsesStream(gctx, gctx.UpstreamResponse)
+			return handleResponsesStream(gctx, gctx.UpstreamResponse, toolMapper)
 		}
-		if err := translateResponsesNonStreamResponse(gctx); err != nil {
+		if err := translateResponsesNonStreamResponse(gctx, toolMapper); err != nil {
 			return fmt.Errorf("translate response: %w", err)
 		}
 		return nil

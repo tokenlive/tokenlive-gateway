@@ -21,6 +21,15 @@ func getTestProjectRoot() string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(b)))
 }
 
+func TestTenantEndpointRouterWithoutRedis(t *testing.T) {
+	router := NewTenantEndpointRouter(nil, zap.NewNop())
+	endpoints := []*core.Endpoint{{ID: "a"}}
+	got := router.Route(&core.GatewayContext{Ctx: context.Background(), Tenant: "tenant-a", Model: "child"}, endpoints)
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("unexpected endpoints: %v", got)
+	}
+}
+
 func setupTenantRouterTestRedis(t *testing.T) (*redis.Client, *zap.Logger) {
 	v := config.NewConfig(filepath.Join(getTestProjectRoot(), "config", "local.yml"))
 
