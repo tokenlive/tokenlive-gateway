@@ -33,6 +33,17 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 
 	mapper := NewToolNameMapper()
 
+	// In thinking/reasoning mode, upstream protocols expect assistant history turns
+	// to carry reasoning_content. We infer thinking mode purely from protocol signals:
+	// 1. Explicit reasoning parameters (e.g. reasoning.effort != "none")
+	// 2. Or the presence of reasoning items in conversation history
+	hasReasoningConfig := false
+	if reasoningVal, ok := payload["reasoning"].(map[string]interface{}); ok {
+		if effort, _ := reasoningVal["effort"].(string); effort != "" && effort != "none" {
+			hasReasoningConfig = true
+		}
+	}
+
 	var openAIMessages []interface{}
 	if instructions, ok := payload["instructions"].(string); ok && instructions != "" {
 		openAIMessages = append(openAIMessages, map[string]interface{}{
@@ -50,29 +61,47 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 				})
 			}
 		} else if inputArr, ok := inputVal.([]interface{}); ok {
-			// First pass: collect all valid tool_call_ids that actually have corresponding function_call_output
+			// First pass: collect valid tool_call_ids and detect if history contains reasoning items
 			validToolCallIDs := make(map[string]bool)
+			hasReasoningHistory := false
 			for _, item := range inputArr {
 				itemMap, ok := item.(map[string]interface{})
 				if !ok {
 					continue
 				}
-				if itemType, _ := itemMap["type"].(string); itemType == "function_call_output" {
+				itemType, _ := itemMap["type"].(string)
+				if itemType == "function_call_output" {
 					if callID, _ := itemMap["call_id"].(string); callID != "" {
 						validToolCallIDs[callID] = true
 					}
+				} else if itemType == "reasoning" {
+					hasReasoningHistory = true
 				}
 			}
 
+			inThinkingMode := hasReasoningConfig || hasReasoningHistory
+
 			// Second pass: assemble openAIMessages while merging contiguous function_call items
 			var pendingToolCalls []interface{}
+			// pendingReasoning carries the text of the most recent reasoning item so
+			// it can be folded into the next assistant message's `reasoning_content`
+			// field. Thinking models reject multi-turn history that omits it.
+			var pendingReasoning string
 
 			flushPendingToolCalls := func() {
 				if len(pendingToolCalls) > 0 {
-					openAIMessages = append(openAIMessages, map[string]interface{}{
+					msg := map[string]interface{}{
 						"role":       "assistant",
 						"tool_calls": pendingToolCalls,
-					})
+					}
+					if pendingReasoning != "" {
+						msg["reasoning_content"] = pendingReasoning
+						pendingReasoning = ""
+					} else if inThinkingMode {
+						// Thinking models require reasoning_content on every assistant turn
+						msg["reasoning_content"] = ""
+					}
+					openAIMessages = append(openAIMessages, msg)
 					pendingToolCalls = nil
 				}
 			}
@@ -84,9 +113,16 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 				}
 				itemType, _ := itemMap["type"].(string)
 
-				// Reasoning items are Responses protocol state, not conversation
-				// content. Dropping them prevents empty user messages upstream.
+				// Reasoning items carry the prior turn's thinking. DeepSeek (and
+				// other thinking models) require reasoning_content to be passed
+				// back in multi-turn history; stash the summary text so the next
+				// assistant message can carry it. Codex may send reasoning as
+				// either a `summary` array or an `encrypted_content` blob — only
+				// the summary text form is recoverable for upstream re-injection.
 				if itemType == "reasoning" {
+					if text := extractReasoningSummary(itemMap); text != "" {
+						pendingReasoning = text
+					}
 					continue
 				}
 
@@ -204,6 +240,20 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 				}
 				if toolCalls, ok := itemMap["tool_calls"]; ok {
 					msg["tool_calls"] = toolCalls
+				}
+				// Fold any pending reasoning into this assistant message so thinking
+				// models receive reasoning_content back in multi-turn history.
+				if openAIRole == "assistant" {
+					if pendingReasoning != "" {
+						msg["reasoning_content"] = pendingReasoning
+						pendingReasoning = ""
+					} else if inThinkingMode {
+						// Thinking mode requires reasoning_content on every assistant turn.
+						// Fall back to empty string to satisfy upstream protocol validation.
+						if _, exists := msg["reasoning_content"]; !exists {
+							msg["reasoning_content"] = ""
+						}
+					}
 				}
 
 				openAIMessages = append(openAIMessages, msg)
@@ -757,4 +807,56 @@ func correctInputForNativeResponses(payload map[string]interface{}) {
 			}
 		}
 	}
+}
+
+// extractReasoningSummary pulls the text of a Responses reasoning item. Codex
+// sends reasoning back as either a `summary` array of {type:"summary_text",
+// text:...} parts, a `content` array/string, or a plain string. Only the plaintext
+// summary form is recoverable for re-injection as reasoning_content upstream;
+// encrypted reasoning has no plaintext to pass back.
+func extractReasoningSummary(itemMap map[string]interface{}) string {
+	// 1. Try summary array: [{"type": "summary_text", "text": "..."}] or ["..."]
+	if summary, ok := itemMap["summary"].([]interface{}); ok {
+		var b strings.Builder
+		for _, part := range summary {
+			if partMap, ok := part.(map[string]interface{}); ok {
+				if text, _ := partMap["text"].(string); text != "" {
+					b.WriteString(text)
+				}
+			} else if str, ok := part.(string); ok && str != "" {
+				b.WriteString(str)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	// 2. Try summary as string
+	if summaryStr, ok := itemMap["summary"].(string); ok && summaryStr != "" {
+		return summaryStr
+	}
+	// 3. Try reasoning_content or text as string
+	if rc, ok := itemMap["reasoning_content"].(string); ok && rc != "" {
+		return rc
+	}
+	if text, ok := itemMap["text"].(string); ok && text != "" {
+		return text
+	}
+	// 4. Try content array
+	if contentArr, ok := itemMap["content"].([]interface{}); ok {
+		var b strings.Builder
+		for _, part := range contentArr {
+			if partMap, ok := part.(map[string]interface{}); ok {
+				if text, _ := partMap["text"].(string); text != "" {
+					b.WriteString(text)
+				}
+			} else if str, ok := part.(string); ok && str != "" {
+				b.WriteString(str)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	return ""
 }

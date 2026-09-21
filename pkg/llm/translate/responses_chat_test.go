@@ -731,3 +731,166 @@ func TestResponsesChat_RoundTrip_ColonNamespaceTool(t *testing.T) {
 		t.Fatalf("restored = name=%v namespace=%v, want control-browser / browser-use", item["name"], item["namespace"])
 	}
 }
+
+// TestResponsesRequestToChat_ReasoningPassedBack covers the fix for DeepSeek
+// thinking models requiring reasoning_content in multi-turn history. Codex
+// sends the previous reasoning item back in `input`; the translator must NOT
+// drop it — it must fold the reasoning summary into the next assistant
+// message's `reasoning_content` field so DeepSeek accepts the turn.
+func TestResponsesRequestToChat_ReasoningPassedBack(t *testing.T) {
+	raw := []byte(`{
+		"model": "deepseek-chat",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+			{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "thinking hard"}]},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "again"}]}
+		]
+	}`)
+	out, _, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := req["messages"].([]interface{})
+	// Expect: system(none here) + user + assistant(with reasoning_content) + user
+	if len(msgs) != 3 {
+		t.Fatalf("messages len = %d, want 3: %+v", len(msgs), msgs)
+	}
+	assistant, _ := msgs[1].(map[string]interface{})
+	if assistant["role"] != "assistant" {
+		t.Fatalf("msg[1] role = %v, want assistant", assistant["role"])
+	}
+	rc, ok := assistant["reasoning_content"].(string)
+	if !ok || rc == "" {
+		t.Fatalf("assistant message missing reasoning_content; DeepSeek thinking mode rejects this. msg=%v", assistant)
+	}
+	if rc != "thinking hard" {
+		t.Errorf("reasoning_content = %q, want %q", rc, "thinking hard")
+	}
+}
+
+// Reasoning followed by a function_call assistant turn must also carry the
+// reasoning_content into the assembled assistant tool_call message.
+func TestResponsesRequestToChat_ReasoningBeforeToolCall(t *testing.T) {
+	raw := []byte(`{
+		"model": "deepseek-chat",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "run it"}]},
+			{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "plan: call js"}]},
+			{"type": "function_call", "call_id": "call_1", "name": "js", "arguments": "{\"code\":\"1\"}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": "1"},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "ok"}]}
+		]
+	}`)
+	out, _, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]interface{}
+	_ = json.Unmarshal(out, &req)
+	msgs, _ := req["messages"].([]interface{})
+	// Find the assistant message with tool_calls
+	var asstWithTools map[string]interface{}
+	for _, m := range msgs {
+		mm, _ := m.(map[string]interface{})
+		if mm != nil && mm["role"] == "assistant" {
+			if _, ok := mm["tool_calls"]; ok {
+				asstWithTools = mm
+				break
+			}
+		}
+	}
+	if asstWithTools == nil {
+		t.Fatalf("no assistant message with tool_calls found: %+v", msgs)
+	}
+	rc, ok := asstWithTools["reasoning_content"].(string)
+	if !ok || rc != "plan: call js" {
+		t.Fatalf("tool_call assistant missing reasoning_content = %q; got msg=%v", rc, asstWithTools)
+	}
+}
+
+// When a conversation operates in thinking mode (e.g. reasoning.effort is set, or
+// previous reasoning items exist in history), any assistant message WITHOUT a prior
+// reasoning item (e.g. from session compaction or third-party history) falls back
+// to "" so upstream thinking models accept the turn without 400 rejection.
+// This is purely protocol-driven and works regardless of the model's brand/name.
+func TestResponsesRequestToChat_ThinkingModeFallbackEmptyReasoning(t *testing.T) {
+	raw := []byte(`{
+		"model": "my-custom-reasoner",
+		"reasoning": {"effort": "high"},
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hi"}]},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "how are you?"}]}
+		]
+	}`)
+	out, _, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]interface{}
+	_ = json.Unmarshal(out, &req)
+	msgs, _ := req["messages"].([]interface{})
+	if len(msgs) != 3 {
+		t.Fatalf("messages len = %d, want 3", len(msgs))
+	}
+	assistant, _ := msgs[1].(map[string]interface{})
+	rc, exists := assistant["reasoning_content"]
+	if !exists {
+		t.Fatalf("thinking mode assistant message must have reasoning_content fallback to empty string; got %+v", assistant)
+	}
+	if rc != "" {
+		t.Errorf("expected empty string fallback, got %v", rc)
+	}
+}
+
+// Non-thinking mode conversations (e.g. standard gpt-4 or any model without reasoning
+// parameters or history) MUST NOT receive reasoning_content: "" to prevent 400 Bad Request
+// on strict upstream schemas.
+func TestResponsesRequestToChat_NonThinkingNoEmptyReasoningFallback(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-4",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hi"}]},
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "how are you?"}]}
+		]
+	}`)
+	out, _, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]interface{}
+	_ = json.Unmarshal(out, &req)
+	msgs, _ := req["messages"].([]interface{})
+	assistant, _ := msgs[1].(map[string]interface{})
+	if _, exists := assistant["reasoning_content"]; exists {
+		t.Fatalf("non-thinking assistant message should NOT have reasoning_content: %+v", assistant)
+	}
+}
+
+// Flexible extraction: summary as string or content blocks
+func TestResponsesRequestToChat_ReasoningFlexibleFormats(t *testing.T) {
+	raw := []byte(`{
+		"model": "deepseek-chat",
+		"input": [
+			{"type": "reasoning", "id": "rs_1", "summary": "plain string thinking"},
+			{"type": "message", "role": "assistant", "content": "reply"}
+		]
+	}`)
+	out, _, err := ResponsesRequestToChat(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]interface{}
+	_ = json.Unmarshal(out, &req)
+	msgs, _ := req["messages"].([]interface{})
+	assistant, _ := msgs[0].(map[string]interface{})
+	if assistant["reasoning_content"] != "plain string thinking" {
+		t.Errorf("expected plain string thinking, got %v", assistant["reasoning_content"])
+	}
+}
