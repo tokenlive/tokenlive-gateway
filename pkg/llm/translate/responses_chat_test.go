@@ -922,6 +922,118 @@ func TestResponsesRequestToChat_NonThinkingNoEmptyReasoningFallback(t *testing.T
 	}
 }
 
+// DeepSeek rejects an assistant tool_calls message unless every id is answered
+// by the tool messages that follow it immediately. These histories are shapes
+// Responses clients actually replay; the translator must not split or drop the pair.
+func TestResponsesRequestToChat_ToolCallsStayPaired(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string // assistant tool_call ids, in order, each answered by the next tool messages
+	}{
+		{
+			name: "output id only",
+			raw: `{
+				"model": "deepseek-v4-flash",
+				"input": [
+					{"type": "function_call", "id": "call_1", "name": "read", "arguments": "{}"},
+					{"type": "function_call_output", "id": "call_1", "output": "ok"},
+					{"type": "message", "role": "user", "content": "next"}
+				]
+			}`,
+			want: []string{"call_1"},
+		},
+		{
+			name: "message splits a parallel round",
+			raw: `{
+				"model": "deepseek-v4-flash",
+				"input": [
+					{"type": "function_call", "call_id": "call_a", "name": "read", "arguments": "{}"},
+					{"type": "message", "role": "assistant", "content": "partial"},
+					{"type": "function_call", "call_id": "call_b", "name": "bash", "arguments": "{}"},
+					{"type": "function_call_output", "call_id": "call_a", "output": "file"},
+					{"type": "function_call_output", "call_id": "call_b", "output": "done"},
+					{"type": "message", "role": "user", "content": "next"}
+				]
+			}`,
+			want: []string{"call_a", "call_b"},
+		},
+		{
+			name: "output before call",
+			raw: `{
+				"model": "deepseek-v4-flash",
+				"input": [
+					{"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+					{"type": "function_call", "call_id": "call_1", "name": "read", "arguments": "{}"},
+					{"type": "message", "role": "user", "content": "next"}
+				]
+			}`,
+			want: []string{"call_1"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _, err := ResponsesRequestToChat([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req map[string]interface{}
+			if err := json.Unmarshal(out, &req); err != nil {
+				t.Fatal(err)
+			}
+			assertToolCallsPaired(t, req["messages"], tc.want)
+		})
+	}
+}
+
+func assertToolCallsPaired(t *testing.T, messages interface{}, wantIDs []string) {
+	t.Helper()
+	msgs, _ := messages.([]interface{})
+	var assistant map[string]interface{}
+	var assistantAt int
+	for i, m := range msgs {
+		mm, _ := m.(map[string]interface{})
+		if mm == nil || mm["role"] != "assistant" {
+			continue
+		}
+		if _, ok := mm["tool_calls"]; ok {
+			if assistant != nil {
+				t.Fatalf("tool calls split across assistant messages: %+v", msgs)
+			}
+			assistant = mm
+			assistantAt = i
+		}
+	}
+	if assistant == nil {
+		t.Fatalf("no assistant tool_calls message: %+v", msgs)
+	}
+	calls, _ := assistant["tool_calls"].([]interface{})
+	if len(calls) != len(wantIDs) {
+		t.Fatalf("tool_calls len = %d, want %d: %+v", len(calls), len(wantIDs), assistant)
+	}
+	var got []string
+	for _, c := range calls {
+		cm, _ := c.(map[string]interface{})
+		id, _ := cm["id"].(string)
+		got = append(got, id)
+	}
+	for i, id := range wantIDs {
+		if got[i] != id {
+			t.Fatalf("tool_call ids = %v, want %v", got, wantIDs)
+		}
+	}
+	for j, id := range wantIDs {
+		idx := assistantAt + 1 + j
+		if idx >= len(msgs) {
+			t.Fatalf("missing tool message for %s: %+v", id, msgs)
+		}
+		tool, _ := msgs[idx].(map[string]interface{})
+		if tool["role"] != "tool" || tool["tool_call_id"] != id {
+			t.Fatalf("message after tool_calls[%d] = %+v, want tool %s", j, tool, id)
+		}
+	}
+}
+
 // Flexible extraction: summary as string or content blocks
 func TestResponsesRequestToChat_ReasoningFlexibleFormats(t *testing.T) {
 	raw := []byte(`{

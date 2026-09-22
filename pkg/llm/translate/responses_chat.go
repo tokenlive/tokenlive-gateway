@@ -61,8 +61,12 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 				})
 			}
 		} else if inputArr, ok := inputVal.([]interface{}); ok {
-			// First pass: collect valid tool_call_ids and detect if history contains reasoning items
-			validToolCallIDs := make(map[string]bool)
+			// First pass: index tool outputs by call id and detect reasoning history.
+			// DeepSeek requires every tool_calls id to be answered by the tool
+			// messages that follow that assistant message immediately. Outputs are
+			// matched by id, not by position, so a message or an output that
+			// arrives before its call cannot split the pair.
+			toolOutputs := make(map[string]string)
 			hasReasoningHistory := false
 			for _, item := range inputArr {
 				itemMap, ok := item.(map[string]interface{})
@@ -71,8 +75,8 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 				}
 				itemType, _ := itemMap["type"].(string)
 				if itemType == "function_call_output" {
-					if callID, _ := itemMap["call_id"].(string); callID != "" {
-						validToolCallIDs[callID] = true
+					if callID := responseItemCallID(itemMap); callID != "" {
+						toolOutputs[callID] = functionCallOutputText(itemMap)
 					}
 				} else if itemType == "reasoning" {
 					hasReasoningHistory = true
@@ -81,29 +85,60 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 
 			inThinkingMode := hasReasoningConfig || hasReasoningHistory
 
-			// Second pass: assemble openAIMessages while merging contiguous function_call items
+			// Second pass: assemble openAIMessages. A function_call round stays
+			// open across non-output items so parallel calls that are not
+			// contiguous still become one assistant message, with matching tool
+			// messages flushed immediately after it.
 			var pendingToolCalls []interface{}
+			var pendingToolText string
+			pendingAnswered := make(map[string]bool)
 			// pendingReasoning carries the text of the most recent reasoning item so
 			// it can be folded into the next assistant message's `reasoning_content`
 			// field. Thinking models reject multi-turn history that omits it.
 			var pendingReasoning string
 
 			flushPendingToolCalls := func() {
-				if len(pendingToolCalls) > 0 {
-					msg := map[string]interface{}{
-						"role":       "assistant",
-						"tool_calls": pendingToolCalls,
-					}
-					if pendingReasoning != "" {
-						msg["reasoning_content"] = pendingReasoning
-						pendingReasoning = ""
-					} else if inThinkingMode {
-						// Thinking models require reasoning_content on every assistant turn
-						msg["reasoning_content"] = ""
-					}
-					openAIMessages = append(openAIMessages, msg)
-					pendingToolCalls = nil
+				if len(pendingToolCalls) == 0 {
+					return
 				}
+				var answered []interface{}
+				var toolMsgs []interface{}
+				for _, tc := range pendingToolCalls {
+					tcMap, _ := tc.(map[string]interface{})
+					id, _ := tcMap["id"].(string)
+					output, ok := toolOutputs[id]
+					if id == "" || !ok {
+						continue
+					}
+					answered = append(answered, tc)
+					toolMsgs = append(toolMsgs, map[string]interface{}{
+						"role":         "tool",
+						"tool_call_id": id,
+						"content":      output,
+					})
+					pendingAnswered[id] = true
+				}
+				pendingToolCalls = nil
+				if len(answered) == 0 {
+					return
+				}
+				msg := map[string]interface{}{
+					"role":       "assistant",
+					"tool_calls": answered,
+				}
+				if pendingToolText != "" {
+					msg["content"] = pendingToolText
+					pendingToolText = ""
+				}
+				if pendingReasoning != "" {
+					msg["reasoning_content"] = pendingReasoning
+					pendingReasoning = ""
+				} else if inThinkingMode {
+					// Thinking models require reasoning_content on every assistant turn
+					msg["reasoning_content"] = ""
+				}
+				openAIMessages = append(openAIMessages, msg)
+				openAIMessages = append(openAIMessages, toolMsgs...)
 			}
 
 			for _, item := range inputArr {
@@ -126,14 +161,12 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 					continue
 				}
 
-				// 1. Function Call item
+				// 1. Function Call item. Keep the round open until a real message
+				// so parallel calls separated by other items stay one assistant
+				// message. Calls with no indexed output are dropped at flush.
 				if itemType == "function_call" {
-					callID, _ := itemMap["call_id"].(string)
-					if callID == "" {
-						callID, _ = itemMap["id"].(string)
-					}
-					// Only keep tool calls that have a corresponding output in context to avoid "unresponded tool_call_id" upstream error
-					if !validToolCallIDs[callID] {
+					callID := responseItemCallID(itemMap)
+					if _, ok := toolOutputs[callID]; !ok {
 						continue
 					}
 					name, _ := itemMap["name"].(string)
@@ -152,47 +185,34 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 					continue
 				}
 
-				// Flush pending tool_calls before any non-function_call item
-				flushPendingToolCalls()
-
-				// 2. Function Call Output item from Responses payload (Tool Result)
+				// 2. Function Call Output. Already indexed; emitted with its call
+				// when the round flushes. An output whose call is not still
+				// pending belongs to a round that already flushed, so close it.
 				if itemType == "function_call_output" {
-					callID, _ := itemMap["call_id"].(string)
-					outputStr := ""
-					if outVal, ok := itemMap["output"]; ok {
-						if str, ok := outVal.(string); ok {
-							outputStr = str
-						} else if blocks, ok := outVal.([]interface{}); ok {
-							var blockText strings.Builder
-							for _, block := range blocks {
-								blockMap, ok := block.(map[string]interface{})
-								if !ok {
-									continue
-								}
-								if text, _ := blockMap["text"].(string); text != "" {
-									blockText.WriteString(text)
-								}
-							}
-							outputStr = blockText.String()
-							if outputStr == "" {
-								if bytes, err := json.Marshal(outVal); err == nil {
-									outputStr = string(bytes)
-								}
-							}
-						} else if bytes, err := json.Marshal(outVal); err == nil {
-							outputStr = string(bytes)
-						}
+					callID := responseItemCallID(itemMap)
+					if callID == "" || pendingAnswered[callID] || !pendingHasCallID(pendingToolCalls, callID) {
+						flushPendingToolCalls()
 					}
-					openAIMessages = append(openAIMessages, map[string]interface{}{
-						"role":         "tool",
-						"tool_call_id": callID,
-						"content":      outputStr,
-					})
 					continue
 				}
 
-				// 3. Regular Message item
+				// 3. Regular Message item. An assistant message that carries its
+				// own tool_calls is a different round and closes the open one.
+				// Text that arrives while a round is still open is preamble
+				// for that round: emitting it now would put a message between
+				// tool_calls and the tool messages DeepSeek requires next.
 				role, _ := itemMap["role"].(string)
+				if _, hasToolCalls := itemMap["tool_calls"]; hasToolCalls || role != "assistant" || len(pendingToolCalls) == 0 {
+					flushPendingToolCalls()
+				} else if text := messageItemText(itemMap); text != "" {
+					if pendingToolText != "" {
+						pendingToolText += "\n"
+					}
+					pendingToolText += text
+					continue
+				} else {
+					continue
+				}
 				openAIRole := "user"
 				if role == "developer" || role == "system" {
 					openAIRole = "system"
@@ -202,27 +222,10 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 					openAIRole = role
 				}
 
-				var textContent strings.Builder
-				if contentVal, ok := itemMap["content"]; ok {
-					if contentStr, ok := contentVal.(string); ok {
-						textContent.WriteString(contentStr)
-					} else if contentArr, ok := contentVal.([]interface{}); ok {
-						for _, c := range contentArr {
-							if cMap, ok := c.(map[string]interface{}); ok {
-								if text, ok := cMap["text"].(string); ok && text != "" {
-									textContent.WriteString(text)
-								} else if text, ok := cMap["input_text"].(string); ok && text != "" {
-									textContent.WriteString(text)
-								} else if text, ok := cMap["value"].(string); ok && text != "" {
-									textContent.WriteString(text)
-								}
-							}
-						}
-					}
-				}
+				textContent := messageItemText(itemMap)
 
 				// Filter out empty assistant messages without tool calls, as they corrupt upstream context
-				if openAIRole == "assistant" && strings.TrimSpace(textContent.String()) == "" {
+				if openAIRole == "assistant" && strings.TrimSpace(textContent) == "" {
 					if toolCalls, ok := itemMap["tool_calls"]; !ok || toolCalls == nil {
 						continue
 					}
@@ -230,7 +233,7 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 
 				msg := map[string]interface{}{
 					"role":    openAIRole,
-					"content": textContent.String(),
+					"content": textContent,
 				}
 				if name, ok := itemMap["name"].(string); ok && name != "" {
 					msg["name"] = name
@@ -796,6 +799,86 @@ func WrapFlatToolToNestedOpenAI(flatTool map[string]interface{}, mapper *ToolNam
 		"type":   toolType,
 		toolType: innerMap,
 	}
+}
+
+// responseItemCallID is the id a function_call and its function_call_output
+// share. Clients sometimes put that id in `id` and leave `call_id` empty;
+// reading only one of the two fields drops the call or emits an empty
+// tool_call_id, which DeepSeek rejects as an unanswered tool call.
+func responseItemCallID(itemMap map[string]interface{}) string {
+	if callID, _ := itemMap["call_id"].(string); callID != "" {
+		return callID
+	}
+	id, _ := itemMap["id"].(string)
+	return id
+}
+
+func pendingHasCallID(pending []interface{}, callID string) bool {
+	for _, tc := range pending {
+		tcMap, _ := tc.(map[string]interface{})
+		if id, _ := tcMap["id"].(string); id == callID {
+			return true
+		}
+	}
+	return false
+}
+
+func messageItemText(itemMap map[string]interface{}) string {
+	contentVal, ok := itemMap["content"]
+	if !ok {
+		return ""
+	}
+	if contentStr, ok := contentVal.(string); ok {
+		return contentStr
+	}
+	contentArr, ok := contentVal.([]interface{})
+	if !ok {
+		return ""
+	}
+	var textContent strings.Builder
+	for _, c := range contentArr {
+		cMap, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if text, ok := cMap["text"].(string); ok && text != "" {
+			textContent.WriteString(text)
+		} else if text, ok := cMap["input_text"].(string); ok && text != "" {
+			textContent.WriteString(text)
+		} else if text, ok := cMap["value"].(string); ok && text != "" {
+			textContent.WriteString(text)
+		}
+	}
+	return textContent.String()
+}
+
+func functionCallOutputText(itemMap map[string]interface{}) string {
+	outVal, ok := itemMap["output"]
+	if !ok {
+		return ""
+	}
+	if str, ok := outVal.(string); ok {
+		return str
+	}
+	if blocks, ok := outVal.([]interface{}); ok {
+		var blockText strings.Builder
+		for _, block := range blocks {
+			blockMap, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if text, _ := blockMap["text"].(string); text != "" {
+				blockText.WriteString(text)
+			}
+		}
+		if blockText.Len() > 0 {
+			return blockText.String()
+		}
+	}
+	if bytes, err := json.Marshal(outVal); err == nil {
+		return string(bytes)
+	}
+	return ""
 }
 
 func correctInputForNativeResponses(payload map[string]interface{}) {
