@@ -32,6 +32,30 @@ func newGctx(rt core.RequestType) *core.GatewayContext {
 	}
 }
 
+// newGctxWithCBPolicy 返回带 SERVICE+INSTANCE 熔断策略的 gctx。
+// 无策略时 CircuitBreakerRouter 会复位旧熔断状态并全量放行,
+// 因此验证过滤路径的测试必须显式携带策略。
+func newGctxWithCBPolicy(rt core.RequestType) *core.GatewayContext {
+	gctx := newGctx(rt)
+	gctx.Policy = &policy.Policy{
+		CircuitBreakPolicies: []*policy.CircuitBreakPolicy{
+			{
+				ID:         "cb-test-service",
+				Name:       "test service breaker",
+				Level:      "SERVICE",
+				ErrorCodes: []string{"500"},
+			},
+			{
+				ID:         "cb-test-instance",
+				Name:       "test instance breaker",
+				Level:      "INSTANCE",
+				ErrorCodes: []string{"500"},
+			},
+		},
+	}
+	return gctx
+}
+
 func mustNewLogger(t *testing.T) *zap.Logger {
 	t.Helper()
 	logger, err := zap.NewDevelopment()
@@ -159,7 +183,7 @@ func TestCircuitBreakerRouter_FiltersOpenServiceCircuit(t *testing.T) {
 	logger := mustNewLogger(t)
 	cbm := core.NewCircuitBreakerManager()
 	r := NewCircuitBreakerRouter(cbm, false, logger)
-	gctx := newGctx(core.RequestTypeChatCompletion)
+	gctx := newGctxWithCBPolicy(core.RequestTypeChatCompletion)
 
 	// 使 openai:gpt-4 的服务级熔断器跳闸
 	for i := 0; i < 6; i++ {
@@ -179,7 +203,7 @@ func TestCircuitBreakerRouter_FiltersOpenInstanceCircuit(t *testing.T) {
 	logger := mustNewLogger(t)
 	cbm := core.NewCircuitBreakerManager()
 	r := NewCircuitBreakerRouter(cbm, false, logger)
-	gctx := newGctx(core.RequestTypeChatCompletion)
+	gctx := newGctxWithCBPolicy(core.RequestTypeChatCompletion)
 
 	// 使 ep1 的实例级熔断器跳闸
 	for i := 0; i < 6; i++ {
@@ -199,7 +223,7 @@ func TestCircuitBreakerRouter_FiltersBothLevels(t *testing.T) {
 	logger := mustNewLogger(t)
 	cbm := core.NewCircuitBreakerManager()
 	r := NewCircuitBreakerRouter(cbm, false, logger)
-	gctx := newGctx(core.RequestTypeChatCompletion)
+	gctx := newGctxWithCBPolicy(core.RequestTypeChatCompletion)
 
 	// 服务级跳闸
 	for i := 0; i < 6; i++ {
@@ -224,7 +248,7 @@ func TestCircuitBreakerRouter_EmptyResultWhenAllOpen(t *testing.T) {
 	logger := mustNewLogger(t)
 	cbm := core.NewCircuitBreakerManager()
 	r := NewCircuitBreakerRouter(cbm, false, logger)
-	gctx := newGctx(core.RequestTypeChatCompletion)
+	gctx := newGctxWithCBPolicy(core.RequestTypeChatCompletion)
 
 	// 所有 endpoint 的服务级熔断跳闸
 	for i := 0; i < 6; i++ {
@@ -400,7 +424,7 @@ func TestCircuitBreakerRouter_HalfOpenPermits_EnabledActive(t *testing.T) {
 
 	// 1. 创建处于 HalfOpen 的端点路由，且开启了主动健康探测 (enableActive = true)
 	r := NewCircuitBreakerRouter(cbm, true, logger)
-	gctx := newGctx(core.RequestTypeChatCompletion)
+	gctx := newGctxWithCBPolicy(core.RequestTypeChatCompletion)
 
 	ep := newEndpoint("ep-ho-test2", "openai", "gpt-4", nil, nil)
 

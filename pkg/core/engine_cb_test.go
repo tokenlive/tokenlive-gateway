@@ -11,6 +11,27 @@ import (
 	"go.uber.org/zap"
 )
 
+// cbTestPolicy 返回带 SERVICE+INSTANCE 熔断策略的 Policy,
+// 供路由过滤路径测试使用(无策略时路由会复位旧熔断状态)。
+func cbTestPolicy() *policy.Policy {
+	return &policy.Policy{
+		CircuitBreakPolicies: []*policy.CircuitBreakPolicy{
+			{
+				ID:         "cb-test",
+				Name:       "test breaker",
+				Level:      "SERVICE",
+				ErrorCodes: []string{"500"},
+			},
+			{
+				ID:         "cb-test-instance",
+				Name:       "test instance breaker",
+				Level:      "INSTANCE",
+				ErrorCodes: []string{"500"},
+			},
+		},
+	}
+}
+
 func TestCircuitBreakerRouter_FiltersOpenEndpoints(t *testing.T) {
 	cbManager := core.NewCircuitBreakerManager()
 
@@ -23,7 +44,11 @@ func TestCircuitBreakerRouter_FiltersOpenEndpoints(t *testing.T) {
 	}
 
 	router := routers.NewCircuitBreakerRouter(cbManager, false, zap.NewNop())
-	gctx := &core.GatewayContext{Ctx: context.Background()}
+	gctx := &core.GatewayContext{
+		Ctx: context.Background(),
+		// 无策略时路由会复位旧状态,这里带上策略验证过滤路径
+		Policy: cbTestPolicy(),
+	}
 
 	result := router.Route(gctx, []*core.Endpoint{ep1, ep2})
 
@@ -45,7 +70,10 @@ func TestCircuitBreakerRouter_FiltersInstanceOpen(t *testing.T) {
 	}
 
 	router := routers.NewCircuitBreakerRouter(cbManager, false, zap.NewNop())
-	gctx := &core.GatewayContext{Ctx: context.Background()}
+	gctx := &core.GatewayContext{
+		Ctx: context.Background(),
+		Policy: cbTestPolicy(),
+	}
 
 	result := router.Route(gctx, []*core.Endpoint{ep1, ep2})
 

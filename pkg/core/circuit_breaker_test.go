@@ -106,3 +106,67 @@ func TestCircuitBreakerManager_RecordFailure_EventIncludesEndpointCode(t *testin
 		t.Fatalf("expected endpoint code %q, got %q", "glm-primary", got.EndpointCode)
 	}
 }
+
+// 策略被禁用后,半开探测许可必须归还,否则熔断器永久卡在 HALF_OPEN,
+// 后续请求全部被 AllowRequest 拒绝(线上已发生的僵尸熔断问题)。
+func TestCircuitBreakerManager_PolicyRemoved_ReleasesHalfOpenPermit(t *testing.T) {
+	cbm := NewCircuitBreakerManager()
+
+	ep := &Endpoint{
+		ID:       "ep-1",
+		Code:     "grok-primary",
+		Provider: "Grok1",
+		Model:    "grok-4.6",
+	}
+	serviceKey := ep.Provider + ":" + ep.Model
+
+	// 1. 用短恢复超时的策略把实例打到 Open
+	gctx := &GatewayContext{
+		Policy: &policy.Policy{
+			CircuitBreakPolicies: []*policy.CircuitBreakPolicy{
+				{
+					ID:                          "cb-instance",
+					Name:                        "instance breaker",
+					Level:                       "INSTANCE",
+					SlidingWindowType:           "count",
+					SlidingWindowSize:           5,
+					MinCallsThreshold:           1,
+					FailureRateThreshold:        1,
+					AllowedCallsInHalfOpenState: 1,
+					WaitDurationInOpenState:     50, // 50ms 后转 HalfOpen
+					ErrorCodes:                  []string{"400"},
+				},
+			},
+		},
+		UpstreamResponse: &http.Response{StatusCode: http.StatusBadRequest},
+	}
+	cbm.RecordFailure(gctx, ep, nil)
+	if !cbm.IsInstanceOpen(ep.ID) {
+		t.Fatalf("expected instance breaker to be OPEN after failure")
+	}
+
+	// 2. 等待超过恢复超时,状态推进到 HalfOpen
+	time.Sleep(80 * time.Millisecond)
+	if state := cbm.GetState(ep.ID); state != CircuitHalfOpen {
+		t.Fatalf("expected HALF_OPEN after wait_duration, got %v", state)
+	}
+
+	// 3. 半开许可被获取(模拟探测请求在途)
+	if !cbm.AcquireHalfOpenPermit(ep.ID, false) {
+		t.Fatalf("expected to acquire half-open permit")
+	}
+
+	// 4. 策略禁用(消失)后,成功响应的记录应归还许可而不是泄漏
+	gctxNoPolicy := &GatewayContext{}
+	cbm.RecordSuccess(gctxNoPolicy, ep)
+
+	// 5. 许可已归还:允许再次获取,路由不会被永久拒绝
+	if !cbm.AcquireHalfOpenPermit(ep.ID, false) {
+		t.Fatalf("expected permit to be released after policy removal, permit leaked")
+	}
+
+	// 6. 服务级许可同样归还
+	if !cbm.AcquireHalfOpenPermit(serviceKey, false) {
+		t.Fatalf("expected service-level permit to be released after policy removal")
+	}
+}

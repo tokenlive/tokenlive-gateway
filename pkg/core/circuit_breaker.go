@@ -447,8 +447,21 @@ func (cbm *CircuitBreakerManager) GetEntryWithModel(key string, modelCode string
 	return e
 }
 
+// releasePermitsWithoutPolicy releases half-open probe permits when circuit
+// break policies disappeared after the permits were acquired. record() is the
+// normal release path, so without this the permits leak and the breaker stays
+// stuck in HALF_OPEN with no traffic able to recover it.
+func (cbm *CircuitBreakerManager) releasePermitsWithoutPolicy(ep *Endpoint) {
+	if ep == nil {
+		return
+	}
+	cbm.ReleaseHalfOpenPermit(ep.Provider + ":" + ep.Model)
+	cbm.ReleaseHalfOpenPermit(ep.ID)
+}
+
 func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoint) {
 	if gctx.Policy == nil || len(gctx.Policy.CircuitBreakPolicies) == 0 {
+		cbm.releasePermitsWithoutPolicy(ep)
 		return
 	}
 
@@ -515,6 +528,7 @@ func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoi
 
 func (cbm *CircuitBreakerManager) RecordFailure(gctx *GatewayContext, ep *Endpoint, err error) {
 	if gctx.Policy == nil || len(gctx.Policy.CircuitBreakPolicies) == 0 {
+		cbm.releasePermitsWithoutPolicy(ep)
 		return
 	}
 

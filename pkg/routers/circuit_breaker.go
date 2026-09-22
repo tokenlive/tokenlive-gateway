@@ -39,6 +39,19 @@ func (r *CircuitBreakerRouter) Route(gctx *core.GatewayContext, endpoints []*cor
 		r.cbManager.GetEntryWithModel(ep.ID, ep.Model)
 	}
 
+	// Policies removed/disabled: stop filtering and recover breakers that the
+	// old policies left Open/HalfOpen. Without this reset the stale breaker
+	// state would keep dropping endpoints forever, since no policy is left to
+	// drive the state machine back to Closed.
+	if gctx.Policy == nil || len(gctx.Policy.CircuitBreakPolicies) == 0 {
+		for _, ep := range endpoints {
+			serviceKey := ep.Provider + ":" + ep.Model
+			r.cbManager.Reset(serviceKey)
+			r.cbManager.Reset(ep.ID)
+		}
+		return endpoints
+	}
+
 	if gctx.Policy != nil && len(gctx.Policy.CircuitBreakPolicies) > 0 {
 		for _, p := range gctx.Policy.CircuitBreakPolicies {
 			if p == nil {
