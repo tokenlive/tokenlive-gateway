@@ -574,7 +574,84 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 	}
 }
 
-func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
+	func TestOpenAIResponses_Native_StripsToolSearchDescription(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/responses" {
+				t.Errorf("unexpected path: %s", r.URL.Path)
+			}
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatalf("failed to unmarshal request: %v", err)
+			}
+			tools, ok := req["tools"].([]interface{})
+			if !ok || len(tools) != 2 {
+				t.Fatalf("expected tools length 2, got %v", req["tools"])
+			}
+			var toolSearch map[string]interface{}
+			for _, item := range tools {
+				tool, ok := item.(map[string]interface{})
+				if !ok {
+					t.Fatalf("expected tool to be a map")
+				}
+				if tool["type"] == "tool_search" {
+					toolSearch = tool
+				}
+			}
+			if toolSearch == nil {
+				t.Fatal("expected tool_search to be forwarded alongside namespace")
+			}
+			if _, exists := toolSearch["description"]; exists {
+				t.Errorf("tool_search.description must be stripped, got %v", toolSearch)
+			}
+			if toolSearch["execution"] != "server" {
+				t.Errorf("expected execution=server to be preserved, got %v", toolSearch["execution"])
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"resp_toolSearch","object":"response","output":[]}`))
+		}))
+		defer server.Close()
+
+		ep := &core.Endpoint{
+			ID:           "ep-native-tool-search",
+			Provider:     "openai",
+			Model:        "gpt-6",
+			RequestTypes: []core.RequestType{core.RequestTypeResponses},
+		}
+		p := NewOpenAIProvider("test-openai-tool-search", server.URL, "test-key", []string{"gpt-6"})
+		reqBody := `{
+			"model": "gpt-6",
+			"input": "hi",
+			"tools": [
+				{
+					"type": "namespace",
+					"name": "codex",
+					"tools": [{"type": "function", "name": "shell", "parameters": {"type": "object"}}]
+				},
+				{
+					"type": "tool_search",
+					"description": "Search deferred tools",
+					"execution": "server"
+				}
+			]
+		}`
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
+		w := httptest.NewRecorder()
+		gctx := core.AcquireContext(w, req)
+		defer core.ReleaseContext(gctx)
+		gctx.RequestType = core.RequestTypeResponses
+		gctx.RawBody = []byte(reqBody)
+		gctx.Model = "gpt-6"
+		gctx.SelectedEndpoint = ep
+
+		if err := (&openaiResponsesInvoker{}).Invoke(gctx, p); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+	}
+
+	func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
 	// 1. 模拟原生支持 /responses 的上游
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {

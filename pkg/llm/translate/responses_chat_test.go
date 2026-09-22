@@ -374,6 +374,55 @@ func TestCorrectNativeResponsesRequest_Namespace(t *testing.T) {
 	}
 }
 
+func TestStripToolSearchDescription(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-6",
+		"tools": [
+			{"type": "function", "name": "shell", "description": "keep me"},
+			{"type": "tool_search", "description": "drop me", "execution": "server"},
+			{"type": "namespace", "name": "codex", "tools": [
+				{"type": "tool_search", "description": "nested drop", "execution": "server"}
+			]}
+		]
+	}`)
+	body, stripped, err := StripToolSearchDescription(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stripped {
+		t.Fatal("expected description to be stripped")
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	tools := payload["tools"].([]interface{})
+	fn := tools[0].(map[string]interface{})
+	if fn["description"] != "keep me" {
+		t.Errorf("function description = %v", fn["description"])
+	}
+	search := tools[1].(map[string]interface{})
+	if _, exists := search["description"]; exists {
+		t.Errorf("tool_search description still present: %v", search)
+	}
+	if search["execution"] != "server" {
+		t.Errorf("execution = %v", search["execution"])
+	}
+	nested := tools[2].(map[string]interface{})["tools"].([]interface{})[0].(map[string]interface{})
+	if _, exists := nested["description"]; exists {
+		t.Errorf("nested tool_search description still present: %v", nested)
+	}
+
+	unchanged, stripped, err := StripToolSearchDescription([]byte(`{"tools":[{"type":"function","name":"shell"}]}`))
+	if err != nil || stripped || string(unchanged) != `{"tools":[{"type":"function","name":"shell"}]}` {
+		t.Fatalf("expected untouched body, stripped=%v err=%v body=%s", stripped, err, unchanged)
+	}
+	bad, stripped, err := StripToolSearchDescription([]byte(`not-json`))
+	if err != nil || stripped || string(bad) != `not-json` {
+		t.Fatalf("expected invalid JSON to pass through, stripped=%v err=%v", stripped, err)
+	}
+}
+
 func TestCorrectNativeResponsesRequest_IsolatedToolSearchStripped(t *testing.T) {
 	raw := []byte(`{
 		"input": [{"role": "user", "content": "hi"}],

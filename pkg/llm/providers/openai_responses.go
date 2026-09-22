@@ -39,8 +39,16 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 		}
 	}
 
-	// Branch A: native same-name forwarding (pure transparent proxying)
+	// Branch A: native same-name forwarding.
+	// Codex sends a client-side description on server-executed tool_search.
+	// OpenAI rejects that field with 400 invalid_request_error; strip only it.
 	if hasResponseCapability {
+		if body, stripped, err := translate.StripToolSearchDescription(gctx.RawBody); err != nil {
+			gctx.Logger(zap.L()).Warn("failed to strip tool_search description", zap.Error(err))
+		} else if stripped {
+			gctx.RawBody = body
+			gctx.Logger(zap.L()).Debug("stripped tool_search description for native responses")
+		}
 		endpoint := op.baseURL + "/responses"
 		return op.doRequest(gctx, endpoint)
 	}

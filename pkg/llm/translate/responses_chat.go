@@ -498,6 +498,50 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 	}, nil
 }
 
+// StripToolSearchDescription removes description from server-executed tool_search
+// tools. OpenAI rejects tools.tool_search.description with 400 invalid_request_error.
+// Other tools and other tool_search fields are left untouched. stripped is false
+// when the body has no such field, including when the body is not valid JSON.
+func StripToolSearchDescription(rawBody []byte) (body []byte, stripped bool, err error) {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return rawBody, false, nil
+	}
+	if !stripToolSearchDescription(payload["tools"]) {
+		return rawBody, false, nil
+	}
+	body, err = json.Marshal(payload)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal stripped body: %w", err)
+	}
+	return body, true, nil
+}
+
+func stripToolSearchDescription(toolsVal interface{}) bool {
+	tools, ok := toolsVal.([]interface{})
+	if !ok {
+		return false
+	}
+	stripped := false
+	for _, item := range tools {
+		tool, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		toolType, _ := tool["type"].(string)
+		if toolType == "tool_search" {
+			if _, exists := tool["description"]; exists {
+				delete(tool, "description")
+				stripped = true
+			}
+		}
+		if stripToolSearchDescription(tool["tools"]) {
+			stripped = true
+		}
+	}
+	return stripped
+}
+
 // CorrectNativeResponsesRequest sanitizes native /responses (roles/types + tools).
 // Returns body and final tools summary for logging.
 func CorrectNativeResponsesRequest(rawBody []byte) (body []byte, originalToolCount, finalToolCount int, toolSummary []string, err error) {
