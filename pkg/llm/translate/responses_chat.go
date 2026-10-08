@@ -435,7 +435,7 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 					toolName = chatToolLocalName(toolName)
 				}
 				outputList = append(outputList, map[string]interface{}{
-					"id":        tc.ID,
+					"id":        EnsureFunctionCallItemID(tc.ID),
 					"call_id":   tc.ID,
 					"type":      "function_call",
 					"status":    "completed",

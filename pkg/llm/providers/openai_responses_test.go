@@ -956,7 +956,7 @@ func TestOpenAIResponses_Translation_ToolCalls_NonStream(t *testing.T) {
 	}
 
 	item, _ := outputList[0].(map[string]interface{})
-	if item["type"] != "function_call" || item["id"] != "call_abc123" || item["name"] != "js" {
+	if item["type"] != "function_call" || item["id"] != "fc_abc123" || item["call_id"] != "call_abc123" || item["name"] != "js" {
 		t.Errorf("unexpected output item structure: %v", item)
 	}
 	if item["arguments"] != "{\"code\":\"console.log(1)\"}" {
@@ -1021,7 +1021,8 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream(t *testing.T) {
 		`event: response.output_item.added`,
 		`"type":"function_call"`,
 		`"name":"js"`,
-		`"id":"call_abc123"`,
+		`"id":"fc_abc123"`,
+		`"call_id":"call_abc123"`,
 		`event: response.function_call.arguments.delta`,
 		`"delta":"{\"code\""`,
 		`"delta":":\"log\"}"`,

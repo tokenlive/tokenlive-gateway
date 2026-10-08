@@ -238,7 +238,7 @@ func TestChatCompletionToResponses_Tools(t *testing.T) {
 		t.Fatalf("output len = %d", len(out))
 	}
 	item := out[0].(map[string]interface{})
-	if item["type"] != "function_call" || item["name"] != "fn" || item["call_id"] != "call_1" {
+	if item["type"] != "function_call" || item["id"] != "fc_1" || item["name"] != "fn" || item["call_id"] != "call_1" {
 		t.Errorf("item = %v", item)
 	}
 }
@@ -1055,3 +1055,26 @@ func TestResponsesRequestToChat_ReasoningFlexibleFormats(t *testing.T) {
 		t.Errorf("expected plain string thinking, got %v", assistant["reasoning_content"])
 	}
 }
+
+func TestEnsureFunctionCallItemID(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "fc_mock"},
+		{"call_abc123", "fc_abc123"},
+		{"fc_abc123", "fc_abc123"},
+		{"toolu_01xyz", "fc_01xyz"},
+		{"toolu-01xyz", "fc_01xyz"},
+		{"call_", "fc_mock"},
+		{"custom_999", "fc_custom_999"},
+	}
+
+	for _, tc := range tests {
+		actual := EnsureFunctionCallItemID(tc.input)
+		if actual != tc.expected {
+			t.Errorf("EnsureFunctionCallItemID(%q) = %q, want %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+

@@ -248,7 +248,7 @@ func (p *JoyCodeProvider) callAnthropic(gctx *core.GatewayContext, body []byte, 
 		Client: p.client,
 		URL:    endpoint,
 		Body:   body,
-		Header: joyCodeAuthHeaders(gctx, p.apiKey, true),
+		Header: joyCodeAuthHeaders(gctx, p.getEffectiveAPIKey(gctx), true),
 		Stream: streamMode,
 	})
 }
@@ -463,7 +463,7 @@ func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, functionID 
 		Client: p.client,
 		URL:    endpoint,
 		Body:   reqBody,
-		Header: joyCodeAuthHeaders(gctx, p.apiKey, false),
+		Header: joyCodeAuthHeaders(gctx, p.getEffectiveAPIKey(gctx), false),
 		Stream: upstream.Consume,
 	})
 	if err != nil {
@@ -481,6 +481,13 @@ func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, functionID 
 		gctx.TriggerFirstByte()
 	}
 	return nil
+}
+
+func (p *JoyCodeProvider) getEffectiveAPIKey(gctx *core.GatewayContext) string {
+	if gctx != nil && gctx.SelectedEndpoint != nil && gctx.SelectedEndpoint.APIKey != "" {
+		return gctx.SelectedEndpoint.APIKey
+	}
+	return p.apiKey
 }
 
 // invokeOpenAI sends a request to the standard OpenAI /v2 endpoint and handles the response
@@ -843,12 +850,8 @@ func injectJoyCodePayload(rawBody []byte) []byte {
 		return rawBody
 	}
 
-	if clientVal, ok := m["client"].(string); !ok || clientVal == "" || clientVal == "JoyCodeIDE" {
-		m["client"] = "JoyCode IDE"
-	}
-	if versionVal, ok := m["clientVersion"].(string); !ok || versionVal == "" {
-		m["clientVersion"] = "3.0.10"
-	}
+	m["client"] = "JoyCodeIDE"
+	m["clientVersion"] = "3.8.61"
 
 	// In thinking mode, upstream protocols enforce that every assistant message in history
 	// must contain reasoning_content (even if empty string) to prevent 400 rejection.

@@ -43,6 +43,23 @@ func NormalizeToolUseID(id string) string {
 	return "toolu_" + res
 }
 
+// EnsureFunctionCallItemID normalizes a tool call ID to the OpenAI Responses fc_ prefix for item IDs.
+func EnsureFunctionCallItemID(id string) string {
+	if id == "" {
+		return "fc_mock"
+	}
+	if strings.HasPrefix(id, "fc_") {
+		return id
+	}
+	res := strings.TrimPrefix(id, "call_")
+	res = strings.TrimPrefix(res, "toolu_")
+	res = strings.TrimPrefix(res, "toolu-")
+	if res == "" {
+		return "fc_mock"
+	}
+	return "fc_" + res
+}
+
 func cleanJSONSchema(m map[string]interface{}, removeAdditionalProps bool) map[string]interface{} {
 	if m == nil {
 		return m

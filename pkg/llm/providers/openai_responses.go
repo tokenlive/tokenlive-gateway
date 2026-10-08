@@ -406,6 +406,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 
 	type localToolCall struct {
 		ID          string
+		CallID      string
 		Name        string
 		Namespace   string
 		Arguments   strings.Builder
@@ -681,15 +682,20 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 							localTC, exist := localToolCalls[tc.Index]
 							if !exist {
 								localTC = &localToolCall{}
-								if tc.ID != "" {
-									localTC.ID = tc.ID
-								} else {
-									localTC.ID = fmt.Sprintf("call_%s_%d", msgID, tc.Index)
+								callID := tc.ID
+								if callID == "" {
+									callID = fmt.Sprintf("call_%s_%d", msgID, tc.Index)
 								}
+								localTC.CallID = callID
+								localTC.ID = translate.EnsureFunctionCallItemID(callID)
 								localTC.Name = tc.Function.Name
 								localTC.OutputIndex = currentOutputIndex
 								currentOutputIndex++
 								localToolCalls[tc.Index] = localTC
+							}
+							if tc.ID != "" && localTC.CallID == "" {
+								localTC.CallID = tc.ID
+								localTC.ID = translate.EnsureFunctionCallItemID(tc.ID)
 							}
 							if tc.Function.Name != "" && localTC.Name == "" {
 								localTC.Name = tc.Function.Name
@@ -713,7 +719,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 								evTCAdded.ResponseID = respID
 								evTCAdded.OutputIndex = localTC.OutputIndex
 								evTCAdded.Item.ID = localTC.ID
-								evTCAdded.Item.CallID = localTC.ID
+								evTCAdded.Item.CallID = localTC.CallID
 								evTCAdded.Item.Type = "function_call"
 								evTCAdded.Item.Status = "in_progress"
 								evTCAdded.Item.Name = localTC.Name
@@ -732,7 +738,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 							evTCDelta.Type = "response.function_call.arguments.delta"
 							evTCDelta.ResponseID = respID
 							evTCDelta.ItemID = localTC.ID
-							evTCDelta.CallID = localTC.ID
+							evTCDelta.CallID = localTC.CallID
 							evTCDelta.OutputIndex = localTC.OutputIndex
 							evTCDelta.Delta = argDelta
 							if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.delta", evTCDelta); err != nil {
@@ -960,7 +966,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 			evTCDone.Type = "response.function_call.arguments.done"
 			evTCDone.ResponseID = respID
 			evTCDone.ItemID = tc.ID
-			evTCDone.CallID = tc.ID
+			evTCDone.CallID = tc.CallID
 			evTCDone.OutputIndex = tc.OutputIndex
 			evTCDone.Arguments = finalArgs
 			if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.done", evTCDone); err != nil {
@@ -973,7 +979,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 			evTCItemDone.ResponseID = respID
 			evTCItemDone.OutputIndex = tc.OutputIndex
 			evTCItemDone.Item.ID = tc.ID
-			evTCItemDone.Item.CallID = tc.ID
+			evTCItemDone.Item.CallID = tc.CallID
 			evTCItemDone.Item.Type = "function_call"
 			evTCItemDone.Item.Status = "completed"
 			evTCItemDone.Item.Name = tc.Name
@@ -985,7 +991,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 
 			outputs = append(outputs, map[string]interface{}{
 				"id":        tc.ID,
-				"call_id":   tc.ID,
+				"call_id":   tc.CallID,
 				"type":      "function_call",
 				"status":    "completed",
 				"name":      tc.Name,

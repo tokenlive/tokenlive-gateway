@@ -76,6 +76,49 @@ func TestJoyCodeResponses_NativeEndpointKeepsResponsesBody(t *testing.T) {
 	}
 }
 
+func TestJoyCode_EffectiveAPIKeyAndPayloadClient(t *testing.T) {
+	var receivedHeader http.Header
+	var receivedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Clone()
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_2","object":"response","status":"completed","model":"native","output":[]}`)
+	}))
+	defer server.Close()
+
+	p := NewJoyCodeProvider("joycode", server.URL, "provider-default-key", nil)
+	reqBody := `{"model":"native","input":"hello"}`
+	gctx := core.AcquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody)))
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType, gctx.RawBody, gctx.Model = core.RequestTypeResponses, []byte(reqBody), "native"
+	gctx.SelectedEndpoint = &core.Endpoint{
+		RequestTypes: []core.RequestType{core.RequestTypeResponses},
+		APIKey:       "endpoint-override-key",
+	}
+
+	if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+
+	if ptKey := receivedHeader.Get("ptKey"); ptKey != "endpoint-override-key" {
+		t.Errorf("expected ptKey to be endpoint-override-key, got %q", ptKey)
+	}
+	if clientHeader := receivedHeader.Get("client"); clientHeader != "JoyCodeIDE" {
+		t.Errorf("expected client header to be JoyCodeIDE, got %q", clientHeader)
+	}
+	if verHeader := receivedHeader.Get("clientVersion"); verHeader != "3.8.61" {
+		t.Errorf("expected clientVersion header to be 3.8.61, got %q", verHeader)
+	}
+
+	if bodyClient, _ := receivedBody["client"].(string); bodyClient != "JoyCodeIDE" {
+		t.Errorf("expected body client to be JoyCodeIDE, got %q", bodyClient)
+	}
+	if bodyVer, _ := receivedBody["clientVersion"].(string); bodyVer != "3.8.61" {
+		t.Errorf("expected body clientVersion to be 3.8.61, got %q", bodyVer)
+	}
+}
+
 func TestJoyCodeResponses_NativeStreamUnwrapsDoubleWrappedSSE(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
