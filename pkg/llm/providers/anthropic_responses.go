@@ -169,7 +169,7 @@ func handleAnthropicResponsesStream(gctx *core.GatewayContext, resp *http.Respon
 				}
 
 				for _, oe := range out {
-					if _, werr := fmt.Fprintf(gctx.ResponseWriter, "event: %s\ndata: %s\n\n", oe.Event, string(oe.Data)); werr != nil {
+					if werr := writeSSEEvent(gctx.ResponseWriter, oe.Event, oe.Data); werr != nil {
 						return werr
 					}
 				}
@@ -181,7 +181,7 @@ func handleAnthropicResponsesStream(gctx *core.GatewayContext, resp *http.Respon
 					// A terminal response event (completed/failed) was emitted above,
 					// so engine's premature-close detector must stay quiet.
 					gctx.Tags["response_completed_sent"] = "true"
-					_, _ = fmt.Fprintf(gctx.ResponseWriter, "data: [DONE]\n\n")
+					_ = writeSSEData(gctx.ResponseWriter, []byte("[DONE]"))
 					if hasFlusher {
 						flusher.Flush()
 					}

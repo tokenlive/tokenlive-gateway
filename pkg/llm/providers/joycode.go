@@ -665,7 +665,7 @@ func (p *JoyCodeProvider) handleAnthropicStreamToOpenAI(gctx *core.GatewayContex
 				}
 
 				for _, c := range chunks {
-					_, _ = fmt.Fprint(gctx.ResponseWriter, translate.FormatSSEData(c))
+					_ = writeSSEData(gctx.ResponseWriter, c)
 					if hasFlusher {
 						flusher.Flush()
 					}
@@ -853,40 +853,7 @@ func injectJoyCodePayload(rawBody []byte) []byte {
 	m["client"] = "JoyCodeIDE"
 	m["clientVersion"] = "3.8.61"
 
-	// In thinking mode, upstream protocols enforce that every assistant message in history
-	// must contain reasoning_content (even if empty string) to prevent 400 rejection.
-	// Detect thinking mode from request parameters or conversation history:
-	hasThinkingIntent := false
-	if re, ok := m["reasoning_effort"].(string); ok && re != "" && re != "none" {
-		hasThinkingIntent = true
-	}
-	if t, ok := m["thinking"].(map[string]interface{}); ok {
-		if tType, _ := t["type"].(string); tType != "" && tType != "disabled" {
-			hasThinkingIntent = true
-		}
-	}
-	if msgs, ok := m["messages"].([]interface{}); ok {
-		hasReasoningInHistory := false
-		for _, msg := range msgs {
-			if msgMap, ok := msg.(map[string]interface{}); ok {
-				if rc, exists := msgMap["reasoning_content"]; exists && rc != nil {
-					hasReasoningInHistory = true
-					break
-				}
-			}
-		}
-		if hasThinkingIntent || hasReasoningInHistory {
-			for _, msg := range msgs {
-				if msgMap, ok := msg.(map[string]interface{}); ok {
-					if role, _ := msgMap["role"].(string); role == "assistant" {
-						if _, hasRC := msgMap["reasoning_content"]; !hasRC {
-							msgMap["reasoning_content"] = ""
-						}
-					}
-				}
-			}
-		}
-	}
+	translate.EnsureChatReasoningHistory(m)
 
 	if out, err := json.Marshal(m); err == nil {
 		return out

@@ -7,24 +7,6 @@ import (
 	"time"
 )
 
-// Defaults for Responses→Messages request translation.
-const (
-	// DefaultMessagesMaxTokens is the max_tokens fallback when the client sends
-	// no max_output_tokens (Anthropic requires max_tokens on every request).
-	DefaultMessagesMaxTokens = 8192
-	// MinThinkingBudget is Anthropic's minimum thinking budget_tokens; when the
-	// client's max_output_tokens cannot fit budget + output, thinking is dropped.
-	MinThinkingBudget = 1024
-)
-
-// reasoningEffortBudget maps Responses reasoning.effort to Anthropic thinking budget_tokens.
-var reasoningEffortBudget = map[string]int{
-	"minimal": MinThinkingBudget,
-	"low":     MinThinkingBudget,
-	"medium":  4096,
-	"high":    16384,
-}
-
 // ResponsesToMessagesResult is the Responses→Messages request translation result.
 type ResponsesToMessagesResult struct {
 	Body            []byte
@@ -139,61 +121,6 @@ func ResponsesRequestToMessages(rawBody []byte, model string, maxOutputTokens ..
 	return res, nil
 }
 
-// resolveThinking maps reasoning.effort → thinking config and resolves max_tokens:
-//   - no effort: max_tokens = max_output_tokens or DefaultMessagesMaxTokens
-//   - effort without client cap: max_tokens = budget + DefaultMessagesMaxTokens
-//   - effort with client cap: budget clamps to max_tokens-MinThinkingBudget;
-//     if even MinThinkingBudget cannot fit, thinking is disabled entirely.
-func resolveThinking(payload map[string]interface{}, maxOutputTokens ...int) (thinking map[string]interface{}, maxTokens int, warnings []string) {
-	defaultMax := DefaultMessagesMaxTokens
-	limit := 0
-	if len(maxOutputTokens) > 0 && maxOutputTokens[0] > 0 {
-		defaultMax = maxOutputTokens[0]
-		limit = maxOutputTokens[0]
-	}
-
-	effort := ""
-	if r, ok := payload["reasoning"].(map[string]interface{}); ok {
-		effort, _ = r["effort"].(string)
-	}
-	budget, hasBudget := reasoningEffortBudget[effort]
-
-	clientMax, hasClientMax := payload["max_output_tokens"].(float64)
-
-	if !hasBudget {
-		if hasClientMax && clientMax > 0 {
-			res := int(clientMax)
-			if limit > 0 && res > limit {
-				res = limit
-			}
-			return nil, res, nil
-		}
-		return nil, defaultMax, nil
-	}
-
-	if !hasClientMax || clientMax <= 0 {
-		maxTokens = budget + defaultMax
-		if limit > 0 && maxTokens > limit {
-			maxTokens = limit
-		}
-	} else {
-		maxTokens = int(clientMax)
-		if limit > 0 && maxTokens > limit {
-			maxTokens = limit
-		}
-		if budget > maxTokens-MinThinkingBudget {
-			budget = maxTokens - MinThinkingBudget
-		}
-		if budget < MinThinkingBudget {
-			warnings = append(warnings, fmt.Sprintf(
-				"thinking disabled: max_output_tokens %d cannot fit budget + %d output tokens",
-				maxTokens, MinThinkingBudget))
-			return nil, maxTokens, warnings
-		}
-	}
-	return map[string]interface{}{"type": "enabled", "budget_tokens": budget}, maxTokens, warnings
-}
-
 // responsesInputToMessages converts the Responses input field to Anthropic messages.
 // Returns extra system parts collected from developer/system role items.
 func responsesInputToMessages(input interface{}) (messages []map[string]interface{}, systemParts []string, warnings []string, err error) {
@@ -300,29 +227,9 @@ func responsesInputToMessages(input interface{}) (messages []map[string]interfac
 			})
 
 		case "reasoning":
-			// Round-trip: our response-side conversion stores the Anthropic thinking
-			// signature in encrypted_content; without it the block cannot be replayed.
-			sig, _ := itemMap["encrypted_content"].(string)
-			if sig == "" {
-				continue
+			if block := responsesReasoningToThinking(itemMap); block != nil {
+				appendBlock("assistant", block)
 			}
-			var text string
-			if summary, ok := itemMap["summary"].([]interface{}); ok {
-				var parts []string
-				for _, p := range summary {
-					if pm, ok := p.(map[string]interface{}); ok {
-						if t, ok := pm["text"].(string); ok {
-							parts = append(parts, t)
-						}
-					}
-				}
-				text = strings.Join(parts, "\n")
-			}
-			appendBlock("assistant", map[string]interface{}{
-				"type":      "thinking",
-				"thinking":  text,
-				"signature": sig,
-			})
 
 		default:
 			warnings = append(warnings, fmt.Sprintf("input item type %q dropped", itemType))
@@ -555,28 +462,14 @@ func MessagesResponseToResponses(anthropicBody []byte, model string) (MessagesTo
 			}
 			switch blockType, _ := blockMap["type"].(string); blockType {
 			case "thinking":
-				thinking, _ := blockMap["thinking"].(string)
-				item := map[string]interface{}{
-					"id":   fmt.Sprintf("rs_%s_%d", stripMsgPrefix(rawID), i),
-					"type": "reasoning",
-					"summary": []interface{}{
-						map[string]interface{}{"type": "summary_text", "text": thinking},
-					},
-				}
-				if sig, _ := blockMap["signature"].(string); sig != "" {
-					item["encrypted_content"] = sig
-				}
-				output = append(output, item)
+				signature, _ := blockMap["signature"].(string)
+				output = append(output, responsesReasoningItem(
+					fmt.Sprintf("rs_%s_%d", stripMsgPrefix(rawID), i),
+					reasoningSummary(thinkingText(blockMap)), signature))
 			case "redacted_thinking":
-				item := map[string]interface{}{
-					"id":      fmt.Sprintf("rs_%s_%d", stripMsgPrefix(rawID), i),
-					"type":    "reasoning",
-					"summary": []interface{}{},
-				}
-				if data, _ := blockMap["data"].(string); data != "" {
-					item["encrypted_content"] = data
-				}
-				output = append(output, item)
+				data, _ := blockMap["data"].(string)
+				output = append(output, responsesReasoningItem(
+					fmt.Sprintf("rs_%s_%d", stripMsgPrefix(rawID), i), []interface{}{}, data))
 			case "text":
 				text, _ := blockMap["text"].(string)
 				output = append(output, map[string]interface{}{
@@ -597,16 +490,17 @@ func MessagesResponseToResponses(anthropicBody []byte, model string) (MessagesTo
 				} else {
 					arguments = "{}"
 				}
+				namespace, localName := splitChatToolName(name)
 				item := map[string]interface{}{
 					"id":        fmt.Sprintf("fc_%s", stripToolUsePrefix(toolID)),
 					"call_id":   toolID,
 					"type":      "function_call",
 					"status":    "completed",
-					"name":      chatToolLocalName(name),
+					"name":      localName,
 					"arguments": arguments,
 				}
-				if ns := splitChatToolNamespace(name); ns != "" {
-					item["namespace"] = ns
+				if namespace != "" {
+					item["namespace"] = namespace
 				}
 				output = append(output, item)
 			}

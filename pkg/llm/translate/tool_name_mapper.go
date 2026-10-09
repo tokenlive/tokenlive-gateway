@@ -78,7 +78,7 @@ func (m *ToolNameMapper) Restore(sanitized string) (namespace, name string) {
 	if e, ok := m.reverse[sanitized]; ok {
 		return e.namespace, e.name
 	}
-	return splitChatToolNamespace(sanitized), chatToolLocalName(sanitized)
+	return splitChatToolName(sanitized)
 }
 
 // RegisterCustom marks a tool (by its local name, sanitized name, or original name) as a custom freeform tool.

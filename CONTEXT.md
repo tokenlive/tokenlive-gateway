@@ -61,12 +61,13 @@ _Avoid_: quota, limit, token pool
 **Protocol Translation (协议翻译/转换)**:
 指网关在 Provider / RequestInvoker 侧执行的跨协议格式转换（包括请求体翻译与响应体翻译）。短期以 **OpenAI Chat Completions 为中间枢纽（Chat hub）**，两对协议各自双向映射、不统一 content-block IR：
 1. **Messages ↔ Chat**（Anthropic Messages API ↔ Chat Completions）— 纯函数落点 `pkg/llm/translate`：`MessagesRequestToChat` / `ChatRequestToMessages` / `ChatCompletionToMessages` / `MessagesToChatCompletion`。OpenAI Provider 的 messages 路径与 JoyCode 的 Claude 路径共用同一内核。
-2. **Responses ↔ Chat**（OpenAI Responses API ↔ Chat Completions）— 纯函数落点 `pkg/llm/translate`：`ResponsesRequestToChat` / `ChatCompletionToResponses` / `CorrectNativeResponsesRequest`（含 tools 规范化）。流状态机 `handleResponsesStream` 仍在 Provider 侧。
-流式：Messages→Chat 由 `translate.MessagesToChatStream`（含 tool_use / input_json_delta / finish_reason）；Chat→Messages / Responses 流状态机仍在 Provider 侧。
+2. **Responses ↔ Chat**（OpenAI Responses API ↔ Chat Completions）— 纯函数落点 `pkg/llm/translate`：`ResponsesRequestToChat` / `ChatCompletionToResponses` / `CorrectNativeResponsesRequest`（含 tools 规范化）。
+流式翻译状态机落点 `pkg/llm/translate`：Messages→Chat 由 `MessagesToChatStream`；Chat→Messages / Responses 由 `ChatToMessagesStream` / `ChatToResponsesStream`。后两者通过 `FeedJSON` 消费完整 JSON 帧，通过显式 `Finish` 生成收尾事件；事件、usage、字符增量和诊断信息由返回值传递，不依赖 `GatewayContext`。Provider adapter 仍拥有翻译决策、SSE 拆帧、读取错误处理、HTTP header、首字计时、flush 和 body 关闭；完成 tag 只在收尾事件成功写出后设置。
+共同的 ID、工具名拆分和结束原因映射由 translate 的私有 helper 复用；reasoning module 集中路径专属的别名优先级、assistant 历史补空、摘要和 thinking 构造、effort 预算解析，不统一不同协议的字段接受集合、签名要求、空摘要或分隔规则。轮次关联和事件排序留在各 translator/FSM，JoyCode 的协议特化与请求体生命周期留在 Provider adapter；SSE 字节封装由 providers 共享，flush、错误和计数策略仍由 caller 决定。
 _Avoid_: 统一 IR、在 Pipeline Filter 做翻译
 
 **SSE Stream Translation (流式事件翻译)**:
-指在流式（SSE）传输过程中，网关通过 `SSEParser` 拦截并实时解包上游的 SSE 事件对象，经过结构映射和字段翻译后，重新序列化并逐帧下发给客户端，以维持客户端的协议契约与流式低时延体验。
+指在流式（SSE）传输过程中，对上游事件做结构映射与字段翻译，生成目标协议事件，以维持客户端的协议契约与流式低时延体验。SSE 拆帧与网络写入属于 Provider adapter，协议状态属于翻译 module；上游完成信号、生成收尾事件、收尾事件成功写出是三个不同阶段，不能用一个完成标记替代。
 
 **Upstream Call (上游调用)**:
 指 Provider / RequestInvoker 打向上游 LLM 物理端点的统一 HTTP 传输模块（落点 `pkg/llm/upstream`）。职责边界：**只到拿到成功的 `*http.Response`**——解析 Policy 超时（Total / first-byte / Idle）、合并 UA + Endpoint.Headers + InjectedHeaders、执行 POST、写入 `gctx.UpstreamResponse`、对 status≥400 读 body 写入 `gctx.UpstreamBody` 并返回错误、流式时校验 SSE content-type。**不负责**协议鉴权头（由调用方填入 `Request.Header`）、请求体协议特化（如 `stream_options`）、以及响应体消费（透传流 / 协议翻译 / Token 提取）。流式 body 生命周期由 `StreamDisposition` 表达：`Consume` 表示调用方会读完并关闭；`Handoff` 表示 body 移交给翻译 invoker，cancel 绑定到 `Close`，传输层不 defer 关闭。一期覆盖 OpenAI / Anthropic / Gemini；JoyCode 后置挂接。

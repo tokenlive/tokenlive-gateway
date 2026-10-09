@@ -6,6 +6,26 @@ import (
 	"strings"
 )
 
+func chatResponsesID(id, prefix string) string {
+	if strings.HasPrefix(id, "chatcmpl-") {
+		return strings.Replace(id, "chatcmpl-", prefix, 1)
+	}
+	if id == "" {
+		return prefix + "mock"
+	}
+	if !strings.HasPrefix(id, prefix) {
+		return prefix + id
+	}
+	return id
+}
+
+func splitChatToolName(name string) (namespace, localName string) {
+	if idx := strings.LastIndex(name, "."); idx > 0 && idx < len(name)-1 {
+		return name[:idx], name[idx+1:]
+	}
+	return "", name
+}
+
 // NormalizeAnthropicID normalizes an upstream id to the Anthropic msg_ prefix.
 func NormalizeAnthropicID(id string) string {
 	if id == "" {
@@ -144,7 +164,6 @@ func isObjectSchema(m map[string]interface{}) bool {
 	_, ok := m["properties"]
 	return ok
 }
-
 
 func degradeMessagesToTextOnly(msgs []interface{}) []interface{} {
 	var temp []interface{}

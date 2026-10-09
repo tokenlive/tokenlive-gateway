@@ -13,10 +13,22 @@ type StreamChunkMeta struct {
 	CachedTokens        int
 	CacheCreationTokens int
 	TransmittedChars    int
+	ResponseID          string
+	ResponseModel       string
+	// Completed indicates terminal events were returned, not that the caller wrote them.
+	Completed bool
 	// EmitDone true: caller should write data: [DONE]
 	EmitDone bool
 	// ErrorMessage non-empty: emit OpenAI error chunk (or equivalent)
-	ErrorMessage string
+	ErrorMessage  string
+	FinishReason  string
+	StopReason    string
+	SawDone       bool
+	TextChars     int
+	ThinkingChars int
+	HasToolUse    bool
+	// Flush requests a frame-end flush even when no output event was generated.
+	Flush bool
 }
 
 // MessagesToChatStream translates Anthropic Messages SSE to OpenAI Chat stream chunks.
@@ -153,7 +165,7 @@ func (s *MessagesToChatStream) FeedJSON(data string) (chunks [][]byte, meta Stre
 
 		switch dt {
 		case "thinking_delta":
-			thinking, _ := delta["thinking"].(string)
+			thinking := thinkingText(delta)
 			if thinking == "" {
 				return nil, meta
 			}

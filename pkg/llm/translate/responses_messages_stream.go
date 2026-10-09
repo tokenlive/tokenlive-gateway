@@ -11,6 +11,9 @@ import (
 type ResponsesStreamEvent struct {
 	Event string
 	Data  []byte
+	// TransmittedChars is applied only after the caller successfully writes this event.
+	TransmittedChars int
+	Flush            bool
 }
 
 // responsesStreamItem tracks one in-flight output item (per Anthropic content block).
@@ -142,7 +145,7 @@ func (s *MessagesToResponsesStream) FeedJSON(data string) (events []ResponsesStr
 		}
 		switch dt, _ := delta["type"].(string); dt {
 		case "thinking_delta":
-			thinking, _ := delta["thinking"].(string)
+			thinking := thinkingText(delta)
 			if thinking == "" {
 				return nil, meta
 			}
@@ -270,11 +273,7 @@ func (s *MessagesToResponsesStream) emitItemAdded(item *responsesStreamItem) []R
 	var itemPayload map[string]interface{}
 	switch item.kind {
 	case "thinking", "redacted_thinking":
-		itemPayload = map[string]interface{}{
-			"id":      item.itemID,
-			"type":    "reasoning",
-			"summary": []interface{}{},
-		}
+		itemPayload = responsesReasoningItem(item.itemID, []interface{}{}, "")
 	case "text":
 		itemPayload = map[string]interface{}{
 			"id":      item.itemID,
@@ -284,16 +283,17 @@ func (s *MessagesToResponsesStream) emitItemAdded(item *responsesStreamItem) []R
 			"content": []interface{}{},
 		}
 	case "tool_use":
+		namespace, localName := splitChatToolName(item.name)
 		itemPayload = map[string]interface{}{
 			"id":        item.itemID,
 			"call_id":   item.callID,
 			"type":      "function_call",
 			"status":    "in_progress",
-			"name":      chatToolLocalName(item.name),
+			"name":      localName,
 			"arguments": "",
 		}
-		if ns := splitChatToolNamespace(item.name); ns != "" {
-			itemPayload["namespace"] = ns
+		if namespace != "" {
+			itemPayload["namespace"] = namespace
 		}
 	}
 	events = append(events, s.event("response.output_item.added", map[string]interface{}{
@@ -311,7 +311,7 @@ func (s *MessagesToResponsesStream) emitItemAdded(item *responsesStreamItem) []R
 			"item_id":       item.itemID,
 			"output_index":  item.outputIndex,
 			"summary_index": 0,
-			"part":          map[string]interface{}{"type": "summary_text", "text": ""},
+			"part":          reasoningSummaryPart(""),
 		}))
 	case "text":
 		events = append(events, s.event("response.content_part.added", map[string]interface{}{
@@ -354,22 +354,15 @@ func (s *MessagesToResponsesStream) closeItem(item *responsesStreamItem) []Respo
 					"item_id":       item.itemID,
 					"output_index":  item.outputIndex,
 					"summary_index": 0,
-					"part":          map[string]interface{}{"type": "summary_text", "text": item.text},
+					"part":          reasoningSummaryPart(item.text),
 				}),
 			)
 		}
 		summary := []interface{}{}
 		if item.text != "" {
-			summary = append(summary, map[string]interface{}{"type": "summary_text", "text": item.text})
+			summary = reasoningSummary(item.text)
 		}
-		doneItem = map[string]interface{}{
-			"id":      item.itemID,
-			"type":    "reasoning",
-			"summary": summary,
-		}
-		if item.signature != "" {
-			doneItem["encrypted_content"] = item.signature
-		}
+		doneItem = responsesReasoningItem(item.itemID, summary, item.signature)
 		events = append(events, s.itemDoneEvent(item, doneItem))
 
 	case "text":
@@ -412,16 +405,17 @@ func (s *MessagesToResponsesStream) closeItem(item *responsesStreamItem) []Respo
 				"arguments":    item.text,
 			}),
 		)
+		namespace, localName := splitChatToolName(item.name)
 		doneItem = map[string]interface{}{
 			"id":        item.itemID,
 			"call_id":   item.callID,
 			"type":      "function_call",
 			"status":    "completed",
-			"name":      chatToolLocalName(item.name),
+			"name":      localName,
 			"arguments": item.text,
 		}
-		if ns := splitChatToolNamespace(item.name); ns != "" {
-			doneItem["namespace"] = ns
+		if namespace != "" {
+			doneItem["namespace"] = namespace
 		}
 		events = append(events, s.itemDoneEvent(item, doneItem))
 	}

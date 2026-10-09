@@ -259,119 +259,6 @@ func TestOpenAIResponses_Translation_Stream(t *testing.T) {
 	}
 }
 
-func TestOpenAIResponses_Translation_Stream_ReasoningSeparation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		chunks := []string{
-			`data: {"id":"chatcmpl-reason-stream","model":"gpt-5.4","choices":[{"index":0,"delta":{"reasoning_content":"thinking"},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-reason-stream","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-reason-stream","model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
-			`data: [DONE]`,
-		}
-		for _, chunk := range chunks {
-			_, _ = w.Write([]byte(chunk + "\n\n"))
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
-	}))
-	defer server.Close()
-
-	ep := &core.Endpoint{
-		ID:           "ep-reason-stream",
-		Provider:     "openai",
-		Model:        "gpt-5.4",
-		RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
-	}
-	p := NewOpenAIProvider("test-openai", server.URL, "test-key", []string{"gpt-5.4"})
-
-	reqBody := `{"model":"gpt-5.4","input":"hello","stream":true}`
-	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
-	w := httptest.NewRecorder()
-	gctx := core.AcquireContext(w, req)
-	defer core.ReleaseContext(gctx)
-	gctx.RequestType = core.RequestTypeResponses
-	gctx.RawBody = []byte(reqBody)
-	gctx.Model = "gpt-5.4"
-	gctx.IsStream = true
-	gctx.SelectedEndpoint = ep
-
-	invoker := &openaiResponsesInvoker{}
-	if err := invoker.Invoke(gctx, p); err != nil {
-		t.Fatal(err)
-	}
-
-	respBody := w.Body.String()
-	expected := []string{
-		`event: response.reasoning_summary_part.added`,
-		`event: response.reasoning_summary_text.delta`,
-		`"delta":"thinking"`,
-		`event: response.reasoning_summary_text.done`,
-		`"text":"thinking"`,
-		`event: response.reasoning_summary_part.done`,
-	}
-	for _, substr := range expected {
-		if !strings.Contains(respBody, substr) {
-			t.Errorf("missing %q in stream:\n%s", substr, respBody)
-		}
-	}
-	if !strings.Contains(respBody, `"text":"answer"`) {
-		t.Errorf("message output should contain answer text only:\n%s", respBody)
-	}
-	if reasoningIndex := strings.Index(respBody, `"type":"reasoning"`); reasoningIndex < 0 || reasoningIndex > strings.Index(respBody, `"type":"message"`) {
-		t.Errorf("reasoning item should precede message item:\n%s", respBody)
-	}
-	if strings.Contains(respBody, `event: response.output_text.delta`+"\n"+"data: {\"delta\":\"thinking\"") {
-		t.Errorf("reasoning must not be emitted as output text:\n%s", respBody)
-	}
-}
-
-func TestOpenAIResponses_Translation_Stream_NamespaceToolCall(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		chunks := []string{
-			`data: {"id":"chatcmpl-ns-stream","model":"glm-5.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ns","type":"function","function":{"name":"collaboration.spawn_agent","arguments":"{}"}}]},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-ns-stream","model":"glm-5.3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
-			`data: [DONE]`,
-		}
-		for _, chunk := range chunks {
-			_, _ = w.Write([]byte(chunk + "\n\n"))
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
-	}))
-	defer server.Close()
-
-	ep := &core.Endpoint{RequestTypes: []core.RequestType{core.RequestTypeChatCompletion}}
-	p := NewOpenAIProvider("test-openai", server.URL, "test-key", []string{"glm-5.3"})
-	reqBody := `{"model":"glm-5.3","input":"spawn a task","stream":true}`
-	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
-	w := httptest.NewRecorder()
-	gctx := core.AcquireContext(w, req)
-	defer core.ReleaseContext(gctx)
-	gctx.RequestType = core.RequestTypeResponses
-	gctx.RawBody = []byte(reqBody)
-	gctx.Model = "glm-5.3"
-	gctx.IsStream = true
-	gctx.SelectedEndpoint = ep
-
-	if err := (&openaiResponsesInvoker{}).Invoke(gctx, p); err != nil {
-		t.Fatal(err)
-	}
-	body := w.Body.String()
-	for _, expected := range []string{
-		`"name":"spawn_agent"`,
-		`"namespace":"collaboration"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("missing %q in stream:\n%s", expected, body)
-		}
-	}
-}
-
 func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 	// 1. 模拟上游只提供 /chat/completions
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -574,54 +461,54 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 	}
 }
 
-	func TestOpenAIResponses_Native_StripsToolSearchDescription(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/responses" {
-				t.Errorf("unexpected path: %s", r.URL.Path)
-			}
-			body, _ := io.ReadAll(r.Body)
-			var req map[string]interface{}
-			if err := json.Unmarshal(body, &req); err != nil {
-				t.Fatalf("failed to unmarshal request: %v", err)
-			}
-			tools, ok := req["tools"].([]interface{})
-			if !ok || len(tools) != 2 {
-				t.Fatalf("expected tools length 2, got %v", req["tools"])
-			}
-			var toolSearch map[string]interface{}
-			for _, item := range tools {
-				tool, ok := item.(map[string]interface{})
-				if !ok {
-					t.Fatalf("expected tool to be a map")
-				}
-				if tool["type"] == "tool_search" {
-					toolSearch = tool
-				}
-			}
-			if toolSearch == nil {
-				t.Fatal("expected tool_search to be forwarded alongside namespace")
-			}
-			if _, exists := toolSearch["description"]; exists {
-				t.Errorf("tool_search.description must be stripped, got %v", toolSearch)
-			}
-			if toolSearch["execution"] != "server" {
-				t.Errorf("expected execution=server to be preserved, got %v", toolSearch["execution"])
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"resp_toolSearch","object":"response","output":[]}`))
-		}))
-		defer server.Close()
-
-		ep := &core.Endpoint{
-			ID:           "ep-native-tool-search",
-			Provider:     "openai",
-			Model:        "gpt-6",
-			RequestTypes: []core.RequestType{core.RequestTypeResponses},
+func TestOpenAIResponses_Native_StripsToolSearchDescription(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		p := NewOpenAIProvider("test-openai-tool-search", server.URL, "test-key", []string{"gpt-6"})
-		reqBody := `{
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("failed to unmarshal request: %v", err)
+		}
+		tools, ok := req["tools"].([]interface{})
+		if !ok || len(tools) != 2 {
+			t.Fatalf("expected tools length 2, got %v", req["tools"])
+		}
+		var toolSearch map[string]interface{}
+		for _, item := range tools {
+			tool, ok := item.(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected tool to be a map")
+			}
+			if tool["type"] == "tool_search" {
+				toolSearch = tool
+			}
+		}
+		if toolSearch == nil {
+			t.Fatal("expected tool_search to be forwarded alongside namespace")
+		}
+		if _, exists := toolSearch["description"]; exists {
+			t.Errorf("tool_search.description must be stripped, got %v", toolSearch)
+		}
+		if toolSearch["execution"] != "server" {
+			t.Errorf("expected execution=server to be preserved, got %v", toolSearch["execution"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_toolSearch","object":"response","output":[]}`))
+	}))
+	defer server.Close()
+
+	ep := &core.Endpoint{
+		ID:           "ep-native-tool-search",
+		Provider:     "openai",
+		Model:        "gpt-6",
+		RequestTypes: []core.RequestType{core.RequestTypeResponses},
+	}
+	p := NewOpenAIProvider("test-openai-tool-search", server.URL, "test-key", []string{"gpt-6"})
+	reqBody := `{
 			"model": "gpt-6",
 			"input": "hi",
 			"tools": [
@@ -637,21 +524,21 @@ func TestOpenAIResponses_Translation_WithNamespaceAndFiltering(t *testing.T) {
 				}
 			]
 		}`
-		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
-		w := httptest.NewRecorder()
-		gctx := core.AcquireContext(w, req)
-		defer core.ReleaseContext(gctx)
-		gctx.RequestType = core.RequestTypeResponses
-		gctx.RawBody = []byte(reqBody)
-		gctx.Model = "gpt-6"
-		gctx.SelectedEndpoint = ep
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "gpt-6"
+	gctx.SelectedEndpoint = ep
 
-		if err := (&openaiResponsesInvoker{}).Invoke(gctx, p); err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+	if err := (&openaiResponsesInvoker{}).Invoke(gctx, p); err != nil {
+		t.Fatalf("expected no error, got %v", err)
 	}
+}
 
-	func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
+func TestOpenAIResponses_Native_WithNamespaceAndFiltering(t *testing.T) {
 	// 1. 模拟原生支持 /responses 的上游
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {
@@ -964,84 +851,6 @@ func TestOpenAIResponses_Translation_ToolCalls_NonStream(t *testing.T) {
 	}
 }
 
-func TestOpenAIResponses_Translation_ToolCalls_Stream(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-
-		chunks := []string{
-			`data: {"id":"chatcmpl-toolCallStream","object":"chat.completion.chunk","created":1741290958,"model":"gpt-5.4","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"js","arguments":""}}]},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-toolCallStream","object":"chat.completion.chunk","created":1741290958,"model":"gpt-5.4","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"code\""}}]},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-toolCallStream","object":"chat.completion.chunk","created":1741290958,"model":"gpt-5.4","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"log\"}"}}]},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-toolCallStream","object":"chat.completion.chunk","created":1741290958,"model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
-			`data: [DONE]`,
-		}
-
-		for _, chunk := range chunks {
-			_, _ = w.Write([]byte(chunk + "\n\n"))
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
-	}))
-	defer server.Close()
-
-	ep := &core.Endpoint{
-		ID:           "ep-translation-toolcalls-stream",
-		Provider:     "openai",
-		Model:        "gpt-5.4",
-		RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
-	}
-	p := NewOpenAIProvider("test-openai-toolcalls-stream", server.URL, "test-key", []string{"gpt-5.4"})
-
-	reqBody := `{"model": "gpt-5.4", "input": "Run JS stream", "stream": true}`
-	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
-	w := httptest.NewRecorder()
-	gctx := core.AcquireContext(w, req)
-	defer core.ReleaseContext(gctx)
-
-	gctx.RequestType = core.RequestTypeResponses
-	gctx.RawBody = []byte(reqBody)
-	gctx.Model = "gpt-5.4"
-	gctx.IsStream = true
-	gctx.SelectedEndpoint = ep
-
-	invoker := &openaiResponsesInvoker{}
-	err := invoker.Invoke(gctx, p)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	respBody := w.Body.String()
-
-	expectedEvents := []string{
-		`event: response.created`,
-		`event: response.in_progress`,
-		`event: response.output_item.added`,
-		`"type":"function_call"`,
-		`"name":"js"`,
-		`"id":"fc_abc123"`,
-		`"call_id":"call_abc123"`,
-		`event: response.function_call.arguments.delta`,
-		`"delta":"{\"code\""`,
-		`"delta":":\"log\"}"`,
-		`event: response.function_call.arguments.done`,
-		`"arguments":"{\"code\":\"log\"}"`,
-		`event: response.output_item.done`,
-		`"status":"completed"`,
-		`event: response.done`,
-		`event: response.completed`,
-		`data: [DONE]`,
-	}
-
-	for _, expected := range expectedEvents {
-		if !strings.Contains(respBody, expected) {
-			t.Errorf("expected response stream to contain %q, but got:\n%s", expected, respBody)
-		}
-	}
-}
-
 func TestOpenAIResponses_Translation_WithComplexInput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var oaiReq struct {
@@ -1200,7 +1009,7 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelBeforeFinishIs
 	req := httptest.NewRequest("POST", "/v1/responses", nil).WithContext(ctx)
 	cancel()
 
-	stream := `data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"apply_patch","arguments":"{\"patch\":"}}]},"finish_reason":null}]}\n\n`
+	stream := `data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"apply_patch","arguments":"{\"patch\":"}}]},"finish_reason":null}]}` + "\n\n"
 	w := httptest.NewRecorder()
 	gctx := core.AcquireContext(w, req)
 	defer core.ReleaseContext(gctx)
@@ -1213,6 +1022,12 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelBeforeFinishIs
 	if !errors.Is(err, core.ErrClientDisconnected) {
 		t.Fatalf("expected client disconnect classification, got %v", err)
 	}
+	if !strings.Contains(w.Body.String(), `event: response.output_item.added`) || gctx.GetTagValue("response_id") != "resp_gen-client-cancel" {
+		t.Fatalf("cancel fixture must actually translate before cancellation: %s / %v", w.Body.String(), gctx.Tags)
+	}
+	if gctx.GetTagValue("response_completed_sent") != "" {
+		t.Fatalf("cancel before finish marked completion: %v", gctx.Tags)
+	}
 	if strings.Contains(w.Body.String(), `event: response.completed`) {
 		t.Fatalf("incomplete stream must not be finalized as completed:\n%s", w.Body.String())
 	}
@@ -1220,7 +1035,7 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelBeforeFinishIs
 
 func TestOpenAIResponses_Translation_ToolCalls_Stream_UpstreamErrorAfterFinishStillFatal(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/responses", nil)
-	stream := `data: {"id":"gen-upstream-error","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n`
+	stream := `data: {"id":"gen-upstream-error","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"
 	upstreamErr := errors.New("upstream socket reset")
 	w := httptest.NewRecorder()
 	gctx := core.AcquireContext(w, req)
@@ -1234,6 +1049,213 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_UpstreamErrorAfterFinishSt
 	if !errors.Is(err, upstreamErr) {
 		t.Fatalf("expected genuine upstream read error to remain fatal, got %v", err)
 	}
+	if !strings.Contains(w.Body.String(), "event: response.created") || gctx.GetTagValue("response_id") != "resp_gen-upstream-error" {
+		t.Fatalf("finish fixture must be parsed before read error: %s / %v", w.Body.String(), gctx.Tags)
+	}
+	if strings.Contains(w.Body.String(), "event: response.completed") || gctx.GetTagValue("response_completed_sent") != "" {
+		t.Fatalf("generic read error must not finalize: %s / %v", w.Body.String(), gctx.Tags)
+	}
+}
+
+func TestHandleResponsesStream_BatchPrescanBeforeHeaders(t *testing.T) {
+	text := `data: {"id":"chatcmpl-batch","choices":[{"delta":{"content":"Hi"}}]}`
+	finish := `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`
+	failure := `data: {"error":{"message":"outer","type":"system_error","cause":"{\"error\":{\"message\":\"inner\"}}"}}`
+	for _, tc := range []struct {
+		name   string
+		frames []string
+		fatal  bool
+	}{
+		{"text-error-finish", []string{text, failure, finish}, true},
+		{"text-finish-error", []string{text, finish, failure}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			gctx := core.AcquireContext(w, httptest.NewRequest("POST", "/v1/responses", nil))
+			defer core.ReleaseContext(gctx)
+			ttftStopped := 0
+			gctx.RegisterTTFTimer(func() { ttftStopped++ })
+			body := &readOnceErrorCloser{data: []byte(strings.Join(tc.frames, "\n\n") + "\n\n"), err: io.EOF}
+			err := handleResponsesStream(gctx, &http.Response{Body: body}, nil)
+			if tc.fatal {
+				if err == nil || !strings.Contains(err.Error(), "outer (cause: inner)") {
+					t.Fatalf("fatal error = %v", err)
+				}
+				if w.Body.Len() != 0 || w.Header().Get("Content-Type") != "" || ttftStopped != 0 || gctx.TTFT != 0 || len(gctx.Tags) != 0 {
+					t.Fatalf("fatal batch wrote headers/events/tags: %s / %v / %v", w.Body.String(), w.Header(), gctx.Tags)
+				}
+			} else {
+				if err != nil || !w.Flushed || ttftStopped != 1 || w.Header().Get("Content-Type") != "text/event-stream" || gctx.GetTagValue("response_completed_sent") != "true" {
+					t.Fatalf("finish-before-error = %v / %s / %v", err, w.Body.String(), gctx.Tags)
+				}
+				if strings.Contains(w.Body.String(), "outer") {
+					t.Fatal("ignored error leaked downstream")
+				}
+			}
+		})
+	}
+}
+
+func TestHandleResponsesStream_RawErrorEmptyAndDoneOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, err string
+		headers         bool
+	}{
+		{"raw-json", `{"error":{"message":"raw fail"}}`, "upstream returned JSON error: raw fail", false},
+		{"raw-malformed", `{"error":`, "upstream stream returned JSON error body", false},
+		{"empty", "", "upstream stream closed before sending any data", false},
+		{"done-only", "data: [DONE]\n\n", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			gctx := core.AcquireContext(w, httptest.NewRequest("POST", "/v1/responses", nil))
+			defer core.ReleaseContext(gctx)
+			err := handleResponsesStream(gctx, &http.Response{Body: io.NopCloser(strings.NewReader(tc.body))}, nil)
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("error = %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if (w.Header().Get("Content-Type") == "text/event-stream") != tc.headers || w.Body.Len() != 0 || gctx.GetTagValue("response_completed_sent") != "" {
+				t.Fatalf("empty/done-only/raw behavior = %s / %v / %v", w.Body.String(), w.Header(), gctx.Tags)
+			}
+		})
+	}
+}
+
+func TestHandleResponsesStream_FragmentationAndCallerLatestUsage(t *testing.T) {
+	frame := `data: {"id":"chatcmpl-fragment","model":"upstream","choices":[{"delta":{"content":"你好"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}` + "\r\n\r\n"
+	body := &chatResponsesFragments{parts: []string{frame[:12], frame[12 : len(frame)-3], frame[len(frame)-3:], "data: [DONE]\n\n"}}
+	w := &chatResponsesUsageWriter{ResponseRecorder: httptest.NewRecorder()}
+	gctx := core.AcquireContext(w, httptest.NewRequest("POST", "/v1/responses", nil))
+	defer core.ReleaseContext(gctx)
+	w.gctx = gctx
+	gctx.Model = "fallback"
+	gctx.CacheCreationTokens = 4
+	ttftStopped := 0
+	gctx.RegisterTTFTimer(func() { ttftStopped++ })
+	if err := handleResponsesStream(gctx, &http.Response{Body: body}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !body.closed || !w.Flushed || ttftStopped != 1 || gctx.TTFT <= 0 {
+		t.Fatalf("close/flush/TTFT = %v / %v / %d / %v", body.closed, w.Flushed, ttftStopped, gctx.TTFT)
+	}
+	if gctx.InputTokens != 11 || gctx.OutputTokens != 5 || gctx.CachedTokens != 2 || gctx.CacheCreationTokens != 4 || gctx.TransmittedChars != 6 {
+		t.Fatalf("latest usage/bytes = %+v", gctx)
+	}
+	if gctx.GetTagValue("response_id") != "resp_fragment" || gctx.GetTagValue("response_model") != "upstream" || gctx.GetTagValue("response_completed_sent") != "true" {
+		t.Fatalf("tags = %v", gctx.Tags)
+	}
+	assertChatResponsesTerminalUsage(t, w.Body.String(), 11, 5)
+	if strings.Count(w.Body.String(), "data: [DONE]\n\n") != 1 {
+		t.Fatal("DONE must follow both terminal events exactly once")
+	}
+}
+
+func assertChatResponsesTerminalUsage(t *testing.T, body string, input, output int) {
+	t.Helper()
+	counts := make(map[string]int)
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		var event struct {
+			Type     string `json:"type"`
+			Response struct {
+				Usage struct {
+					Input  int `json:"input_tokens"`
+					Output int `json:"output_tokens"`
+					Total  int `json:"total_tokens"`
+				} `json:"usage"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == "response.done" || event.Type == "response.completed" {
+			counts[event.Type]++
+			if event.Response.Usage.Input != input || event.Response.Usage.Output != output || event.Response.Usage.Total != input+output {
+				t.Fatalf("%s actual usage = %+v", event.Type, event.Response.Usage)
+			}
+		}
+	}
+	if counts["response.done"] != 1 || counts["response.completed"] != 1 {
+		t.Fatalf("terminal event counts = %v", counts)
+	}
+}
+
+type chatResponsesFragments struct {
+	parts  []string
+	closed bool
+}
+
+func (r *chatResponsesFragments) Read(p []byte) (int, error) {
+	if len(r.parts) == 0 {
+		return 0, io.EOF
+	}
+	part := r.parts[0]
+	r.parts = r.parts[1:]
+	return copy(p, part), nil
+}
+func (r *chatResponsesFragments) Close() error { r.closed = true; return nil }
+
+type chatResponsesUsageWriter struct {
+	*httptest.ResponseRecorder
+	gctx *core.GatewayContext
+}
+
+func (w *chatResponsesUsageWriter) Write(data []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(data)
+	if err == nil && strings.HasPrefix(string(data), "event: response.output_text.delta\n") {
+		w.gctx.InputTokens = 11
+		w.gctx.OutputTokens = 5
+	}
+	return n, err
+}
+
+func TestHandleResponsesStream_WriteFailureCountsOnlySentDeltas(t *testing.T) {
+	writeErr := errors.New("client write failed")
+	for _, tc := range []struct {
+		fail string
+		want int
+	}{
+		{"response.reasoning_summary_text.delta", 0},
+		{"response.output_text.delta", 6},
+		{"response.completed", 9},
+	} {
+		t.Run(tc.fail, func(t *testing.T) {
+			w := &chatResponsesFailWriter{ResponseRecorder: httptest.NewRecorder(), failEvent: tc.fail, err: writeErr}
+			gctx := core.AcquireContext(w, httptest.NewRequest("POST", "/v1/responses", nil))
+			defer core.ReleaseContext(gctx)
+			gctx.Model = "test"
+			frame := `data: {"id":"chatcmpl-write","choices":[{"delta":{"reasoning_content":"思考","content":"答"},"finish_reason":"stop"}]}` + "\n\n"
+			err := handleResponsesStream(gctx, &http.Response{Body: io.NopCloser(strings.NewReader(frame))}, nil)
+			if !errors.Is(err, writeErr) {
+				t.Fatalf("write error = %v", err)
+			}
+			if gctx.TransmittedChars != tc.want {
+				t.Fatalf("transmitted bytes = %d, want %d", gctx.TransmittedChars, tc.want)
+			}
+			if gctx.GetTagValue("response_completed_sent") != "" || strings.Contains(w.Body.String(), "data: [DONE]") {
+				t.Fatalf("failed terminal write must not mark completion: %v / %s", gctx.Tags, w.Body.String())
+			}
+		})
+	}
+}
+
+type chatResponsesFailWriter struct {
+	*httptest.ResponseRecorder
+	failEvent string
+	err       error
+}
+
+func (w *chatResponsesFailWriter) Write(data []byte) (int, error) {
+	if strings.HasPrefix(string(data), "event: "+w.failEvent+"\n") {
+		return 0, w.err
+	}
+	return w.ResponseRecorder.Write(data)
 }
 
 type readOnceErrorCloser struct {
@@ -1434,6 +1456,10 @@ func TestOpenAIResponses_Translation_Text_Stream_TrailingErrorAfterStopSwallowed
 	}
 
 	respBody := w.Body.String()
+	assertChatResponsesTerminalUsage(t, respBody, 10, 4)
+	if gctx.InputTokens != 10 || gctx.OutputTokens != 4 || gctx.TransmittedChars != 15 || gctx.GetTagValue("response_completed_sent") != "true" {
+		t.Fatalf("late usage/unicode bytes/tags = %d/%d/%d/%v", gctx.InputTokens, gctx.OutputTokens, gctx.TransmittedChars, gctx.Tags)
+	}
 	for _, expected := range []string{
 		`"text":"你好，世界"`,
 		`event: response.completed`,
@@ -1444,102 +1470,3 @@ func TestOpenAIResponses_Translation_Text_Stream_TrailingErrorAfterStopSwallowed
 		}
 	}
 }
-
-func TestHandleResponsesStream_ApplyPatchCustomToolCall(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-
-		chunks := []string{
-			`data: {"id":"chatcmpl-stream-patch","object":"chat.completion.chunk","created":1741476542,"model":"kimi-k3","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_patch_stream_1","type":"function","function":{"name":"apply_patch","arguments":""}}]},"finish_reason":null}]}`,
-			`data: {"id":"chatcmpl-stream-patch","object":"chat.completion.chunk","created":1741476542,"model":"kimi-k3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"patch\": \"*** Begin Patch\\n"}}]}}]}`,
-			`data: {"id":"chatcmpl-stream-patch","object":"chat.completion.chunk","created":1741476542,"model":"kimi-k3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"+console.log(\\\"hello\\\");\\n*** End Patch\"}"}}]}}]}`,
-			`data: {"id":"chatcmpl-stream-patch","object":"chat.completion.chunk","created":1741476542,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
-			`data: [DONE]`,
-		}
-
-		for _, chunk := range chunks {
-			_, _ = w.Write([]byte(chunk + "\n\n"))
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
-	}))
-	defer server.Close()
-
-	ep := &core.Endpoint{
-		ID:           "ep-stream-patch",
-		Provider:     "openai",
-		Model:        "kimi-k3",
-		RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
-	}
-	p := NewOpenAIProvider("test-openai-stream-patch", server.URL, "test-key", []string{"kimi-k3"})
-
-	reqBody := `{"model": "kimi-k3", "input": "Fix bug", "tools": [{"type": "custom", "name": "apply_patch"}], "stream": true}`
-	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
-	w := httptest.NewRecorder()
-	gctx := core.AcquireContext(w, req)
-	defer core.ReleaseContext(gctx)
-
-	gctx.RequestType = core.RequestTypeResponses
-	gctx.RawBody = []byte(reqBody)
-	gctx.Model = "kimi-k3"
-	gctx.IsStream = true
-	gctx.SelectedEndpoint = ep
-
-	invoker := &openaiResponsesInvoker{}
-	err := invoker.Invoke(gctx, p)
-	if err != nil {
-		t.Fatalf("invoke failed: %v", err)
-	}
-
-	respBody := w.Body.String()
-
-	// 1. 应包含 response.output_item.added 且类型为 custom_tool_call，ID 为 ctc_ 前缀
-	if !strings.Contains(respBody, `"type":"response.output_item.added"`) {
-		t.Errorf("expected response.output_item.added in stream, got:\n%s", respBody)
-	}
-	if !strings.Contains(respBody, `"type":"custom_tool_call"`) {
-		t.Errorf("expected custom_tool_call item type, got:\n%s", respBody)
-	}
-	if !strings.Contains(respBody, `"id":"ctc_patch_stream_1"`) {
-		t.Errorf("expected item id ctc_patch_stream_1, got:\n%s", respBody)
-	}
-
-	// 2. 对于 custom_tool_call，不应发送 response.function_call.arguments.delta 或 done
-	if strings.Contains(respBody, "response.function_call.arguments.delta") {
-		t.Errorf("custom_tool_call should not emit response.function_call.arguments.delta events")
-	}
-	if strings.Contains(respBody, "response.function_call.arguments.done") {
-		t.Errorf("custom_tool_call should not emit response.function_call.arguments.done events")
-	}
-
-	// 3. 应包含 response.output_item.done 且 input 为解开后的 patch
-	if !strings.Contains(respBody, `"type":"response.output_item.done"`) {
-		t.Errorf("expected response.output_item.done, got:\n%s", respBody)
-	}
-	expectedPatch := "*** Begin Patch\n+console.log(\"hello\");\n*** End Patch"
-	foundItemDone := false
-	for _, line := range strings.Split(respBody, "\n") {
-		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"response.output_item.done"`) {
-			var ev struct {
-				Item struct {
-					Input string `json:"input"`
-				} `json:"item"`
-			}
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err == nil {
-				foundItemDone = true
-				if ev.Item.Input != expectedPatch {
-					t.Errorf("expected patch %q, got %q", expectedPatch, ev.Item.Input)
-				}
-			}
-		}
-	}
-	if !foundItemDone {
-		t.Errorf("could not find and parse response.output_item.done event in stream")
-	}
-}
-

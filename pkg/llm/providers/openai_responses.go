@@ -8,9 +8,7 @@ import (
 	"io"
 	"net/http"
 	"runtime/debug"
-	"sort"
 	"strings"
-	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
@@ -97,307 +95,6 @@ func translateResponsesNonStreamResponse(gctx *core.GatewayContext, toolMapper *
 	return nil
 }
 
-type responseCreatedEvent struct {
-	Type     string `json:"type"`
-	Response struct {
-		ID        string        `json:"id"`
-		Object    string        `json:"object"`
-		CreatedAt int64         `json:"created_at"`
-		Status    string        `json:"status"`
-		Model     string        `json:"model"`
-		Output    []interface{} `json:"output"`
-	} `json:"response"`
-}
-
-type responseInProgressEvent struct {
-	Type     string `json:"type"`
-	Response struct {
-		ID        string        `json:"id"`
-		Object    string        `json:"object"`
-		CreatedAt int64         `json:"created_at"`
-		Status    string        `json:"status"`
-		Model     string        `json:"model"`
-		Output    []interface{} `json:"output"`
-	} `json:"response"`
-}
-
-type responseOutputItemAddedEvent struct {
-	Type        string `json:"type"`
-	ResponseID  string `json:"response_id"`
-	OutputIndex int    `json:"output_index"`
-	Item        struct {
-		ID      string        `json:"id"`
-		Type    string        `json:"type"`
-		Status  string        `json:"status"`
-		Role    string        `json:"role"`
-		Content []interface{} `json:"content"`
-	} `json:"item"`
-}
-
-type responseContentPartAddedEvent struct {
-	Type         string `json:"type"`
-	ResponseID   string `json:"response_id"`
-	ItemID       string `json:"item_id"`
-	OutputIndex  int    `json:"output_index"`
-	ContentIndex int    `json:"content_index"`
-	Part         struct {
-		Type        string        `json:"type"`
-		Text        string        `json:"text"`
-		Annotations []interface{} `json:"annotations"`
-	} `json:"part"`
-}
-
-type responseOutputTextDeltaEvent struct {
-	Type         string `json:"type"`
-	ResponseID   string `json:"response_id"`
-	ItemID       string `json:"item_id"`
-	OutputIndex  int    `json:"output_index"`
-	ContentIndex int    `json:"content_index"`
-	Delta        string `json:"delta"`
-}
-
-type responseOutputTextDoneEvent struct {
-	Type         string `json:"type"`
-	ResponseID   string `json:"response_id"`
-	ItemID       string `json:"item_id"`
-	OutputIndex  int    `json:"output_index"`
-	ContentIndex int    `json:"content_index"`
-	Text         string `json:"text"`
-}
-
-type responseContentPartDoneEvent struct {
-	Type         string `json:"type"`
-	ResponseID   string `json:"response_id"`
-	ItemID       string `json:"item_id"`
-	OutputIndex  int    `json:"output_index"`
-	ContentIndex int    `json:"content_index"`
-	Part         struct {
-		Type        string        `json:"type"`
-		Text        string        `json:"text"`
-		Annotations []interface{} `json:"annotations"`
-	} `json:"part"`
-}
-
-type responseOutputItemDoneEvent struct {
-	Type        string `json:"type"`
-	ResponseID  string `json:"response_id"`
-	OutputIndex int    `json:"output_index"`
-	Item        struct {
-		ID      string        `json:"id"`
-		Type    string        `json:"type"`
-		Status  string        `json:"status"`
-		Role    string        `json:"role"`
-		Content []interface{} `json:"content"`
-	} `json:"item"`
-}
-
-type responseDoneEvent struct {
-	Type     string `json:"type"`
-	Response struct {
-		ID        string        `json:"id"`
-		Object    string        `json:"object"`
-		CreatedAt int64         `json:"created_at"`
-		Status    string        `json:"status"`
-		Model     string        `json:"model"`
-		Output    []interface{} `json:"output"`
-		Usage     struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			TotalTokens  int `json:"total_tokens"`
-		} `json:"usage"`
-	} `json:"response"`
-}
-
-type responseOutputItemAddedFunctionCallEvent struct {
-	Type        string `json:"type"`
-	ResponseID  string `json:"response_id"`
-	OutputIndex int    `json:"output_index"`
-	Item        struct {
-		ID        string `json:"id"`
-		CallID    string `json:"call_id"`
-		Type      string `json:"type"`
-		Status    string `json:"status"`
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-		Namespace string `json:"namespace,omitempty"`
-	} `json:"item"`
-}
-
-type responseFunctionCallArgumentsDeltaEvent struct {
-	Type        string `json:"type"`
-	ResponseID  string `json:"response_id"`
-	ItemID      string `json:"item_id"`
-	CallID      string `json:"call_id"`
-	OutputIndex int    `json:"output_index"`
-	Delta       string `json:"delta"`
-}
-
-type responseFunctionCallArgumentsDoneEvent struct {
-	Type        string `json:"type"`
-	ResponseID  string `json:"response_id"`
-	ItemID      string `json:"item_id"`
-	CallID      string `json:"call_id"`
-	OutputIndex int    `json:"output_index"`
-	Arguments   string `json:"arguments"`
-}
-
-type responseOutputItemDoneFunctionCallEvent struct {
-	Type        string `json:"type"`
-	ResponseID  string `json:"response_id"`
-	OutputIndex int    `json:"output_index"`
-	Item        struct {
-		ID        string `json:"id"`
-		CallID    string `json:"call_id"`
-		Type      string `json:"type"`
-		Status    string `json:"status"`
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-		Namespace string `json:"namespace,omitempty"`
-	} `json:"item"`
-}
-
-type responseOutputItemAddedCustomToolCallEvent struct {
-	Type        string `json:"type"`
-	ResponseID  string `json:"response_id"`
-	OutputIndex int    `json:"output_index"`
-	Item        struct {
-		ID        string `json:"id"`
-		CallID    string `json:"call_id"`
-		Type      string `json:"type"`
-		Status    string `json:"status"`
-		Name      string `json:"name"`
-		Input     string `json:"input"`
-		Namespace string `json:"namespace,omitempty"`
-	} `json:"item"`
-}
-
-type responseOutputItemDoneCustomToolCallEvent struct {
-	Type        string `json:"type"`
-	ResponseID  string `json:"response_id"`
-	OutputIndex int    `json:"output_index"`
-	Item        struct {
-		ID        string `json:"id"`
-		CallID    string `json:"call_id"`
-		Type      string `json:"type"`
-		Status    string `json:"status"`
-		Name      string `json:"name"`
-		Input     string `json:"input"`
-		Namespace string `json:"namespace,omitempty"`
-	} `json:"item"`
-}
-
-func writeResponseEvent(w io.Writer, eventType string, data interface{}) error {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, string(jsonData))
-	return err
-}
-
-func sendPlainResponsesText(gctx *core.GatewayContext, respID string, txt string, msgID string, messageAdded *bool, textOutputIndex *int, currentOutputIndex *int) error {
-	if !*messageAdded {
-		*messageAdded = true
-		*textOutputIndex = *currentOutputIndex
-		// response.output_item.added (text message)
-		var evItemAdded responseOutputItemAddedEvent
-		evItemAdded.Type = "response.output_item.added"
-		evItemAdded.ResponseID = respID
-		evItemAdded.OutputIndex = *textOutputIndex
-		evItemAdded.Item.ID = msgID
-		evItemAdded.Item.Type = "message"
-		evItemAdded.Item.Status = "in_progress"
-		evItemAdded.Item.Role = "assistant"
-		evItemAdded.Item.Content = []interface{}{}
-		if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", evItemAdded); err != nil {
-			return err
-		}
-
-		// response.content_part.added (output_text)
-		var evPartAdded responseContentPartAddedEvent
-		evPartAdded.Type = "response.content_part.added"
-		evPartAdded.ResponseID = respID
-		evPartAdded.ItemID = msgID
-		evPartAdded.OutputIndex = *textOutputIndex
-		evPartAdded.ContentIndex = 0
-		evPartAdded.Part.Type = "output_text"
-		evPartAdded.Part.Text = ""
-		evPartAdded.Part.Annotations = []interface{}{}
-		if err := writeResponseEvent(gctx.ResponseWriter, "response.content_part.added", evPartAdded); err != nil {
-			return err
-		}
-
-		*currentOutputIndex++
-	}
-
-	var evDelta responseOutputTextDeltaEvent
-	evDelta.Type = "response.output_text.delta"
-	evDelta.ResponseID = respID
-	evDelta.ItemID = msgID
-	evDelta.OutputIndex = *textOutputIndex
-	evDelta.ContentIndex = 0
-	evDelta.Delta = txt
-
-	return writeResponseEvent(gctx.ResponseWriter, "response.output_text.delta", evDelta)
-}
-
-func sendResponsesReasoningDelta(gctx *core.GatewayContext, respID, reasoningID, delta string, reasoningAdded *bool, reasoningOutputIndex *int, currentOutputIndex *int) error {
-	if !*reasoningAdded {
-		*reasoningAdded = true
-		*reasoningOutputIndex = *currentOutputIndex
-		*currentOutputIndex++
-
-		err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", map[string]interface{}{
-			"type":         "response.output_item.added",
-			"response_id":  respID,
-			"output_index": *reasoningOutputIndex,
-			"item": map[string]interface{}{
-				"id":      reasoningID,
-				"type":    "reasoning",
-				"summary": []interface{}{},
-			},
-		})
-		if err != nil {
-			return err
-		}
-
-		err = writeResponseEvent(gctx.ResponseWriter, "response.reasoning_summary_part.added", map[string]interface{}{
-			"type":          "response.reasoning_summary_part.added",
-			"response_id":   respID,
-			"item_id":       reasoningID,
-			"output_index":  *reasoningOutputIndex,
-			"summary_index": 0,
-			"part":          map[string]interface{}{"type": "summary_text", "text": ""},
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	return writeResponseEvent(gctx.ResponseWriter, "response.reasoning_summary_text.delta", map[string]interface{}{
-		"type":          "response.reasoning_summary_text.delta",
-		"response_id":   respID,
-		"item_id":       reasoningID,
-		"output_index":  *reasoningOutputIndex,
-		"summary_index": 0,
-		"delta":         delta,
-	})
-}
-
-func splitChatToolNamespace(name string) string {
-	if idx := strings.LastIndex(name, "."); idx > 0 && idx < len(name)-1 {
-		return name[:idx]
-	}
-	return ""
-}
-
-func chatToolLocalName(name string) string {
-	if idx := strings.LastIndex(name, "."); idx > 0 && idx < len(name)-1 {
-		return name[idx+1:]
-	}
-	return name
-}
-
 func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolMapper *translate.ToolNameMapper) error {
 	defer resp.Body.Close()
 
@@ -415,36 +112,16 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 
 	parser := llm.NewSSEParser()
 	buf := make([]byte, 4096)
-	started := false
+	stream := translate.NewChatToResponsesStream(gctx.Model, toolMapper, translate.TokenUsage{
+		InputTokens: gctx.InputTokens, OutputTokens: gctx.OutputTokens,
+		CachedTokens: gctx.CachedTokens, CacheCreationTokens: gctx.CacheCreationTokens,
+	})
 
 	// Set once an upstream chat-completion frame carries a non-null finish_reason.
 	// Some aggregated backends (e.g. JoyCode gen- pool) emit a spurious SSE error
 	// event after the turn is already complete; that must not abort the translated
 	// Responses stream.
 	turnCompleted := false
-
-	var fullText strings.Builder
-	var lastResponseID string
-	var lastModelName string
-
-	messageAdded := false
-	textOutputIndex := -1
-	currentOutputIndex := 0
-	reasoningAdded := false
-	reasoningOutputIndex := -1
-	var fullReasoning strings.Builder
-
-	type localToolCall struct {
-		ID          string
-		CallID      string
-		Name        string
-		Namespace   string
-		Arguments   strings.Builder
-		OutputIndex int
-		Added       bool
-		IsCustom    bool
-	}
-	var localToolCalls = make(map[int]*localToolCall)
 
 	headersSent := false
 
@@ -551,260 +228,26 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 			hasDone := false
 			for _, ev := range events {
 				if ev.Done {
+					stream.FeedJSON(ev.Data)
 					hasDone = true
 					break
 				}
 
-				if ev.InputTokens > 0 {
-					gctx.InputTokens = ev.InputTokens
-				}
-				if ev.OutputTokens > 0 {
-					gctx.OutputTokens = ev.OutputTokens
-				}
-				if ev.CachedTokens > 0 {
-					gctx.CachedTokens = ev.CachedTokens
-				}
-				if ev.CacheCreationTokens > 0 {
-					gctx.CacheCreationTokens = ev.CacheCreationTokens
-				}
-
-				var chunk struct {
-					ID      string `json:"id"`
-					Model   string `json:"model"`
-					Choices []struct {
-						Delta struct {
-							Content          string `json:"content"`
-							ReasoningContent string `json:"reasoning_content"`
-							Reasoning        string `json:"reasoning"`
-							ToolCalls        []struct {
-								Index    int    `json:"index"`
-								ID       string `json:"id"`
-								Type     string `json:"type"`
-								Function struct {
-									Name      string `json:"name"`
-									Arguments string `json:"arguments"`
-								} `json:"function"`
-							} `json:"tool_calls"`
-						} `json:"delta"`
-					} `json:"choices"`
-				}
-
-				if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
-					continue
-				}
-
-				if chunk.ID != "" {
-					lastResponseID = chunk.ID
-					if gctx.Tags == nil {
-						gctx.Tags = make(map[string]string)
-					}
-					respID := chunk.ID
-					if strings.HasPrefix(respID, "chatcmpl-") {
-						respID = strings.Replace(respID, "chatcmpl-", "resp_", 1)
-					} else if !strings.HasPrefix(respID, "resp_") {
-						respID = "resp_" + respID
-					}
-					gctx.Tags["response_id"] = respID
-				}
-				if chunk.Model != "" {
-					lastModelName = chunk.Model
-					if gctx.Tags == nil {
-						gctx.Tags = make(map[string]string)
-					}
-					gctx.Tags["response_model"] = chunk.Model
-				}
-
-				respID := lastResponseID
-				if strings.HasPrefix(respID, "chatcmpl-") {
-					respID = strings.Replace(respID, "chatcmpl-", "resp_", 1)
-				} else if respID == "" {
-					respID = "resp_mock"
-				} else if !strings.HasPrefix(respID, "resp_") {
-					respID = "resp_" + respID
-				}
-
-				msgID := lastResponseID
-				if strings.HasPrefix(msgID, "chatcmpl-") {
-					msgID = strings.Replace(msgID, "chatcmpl-", "msg_", 1)
-				} else if msgID == "" {
-					msgID = "msg_mock"
-				} else if !strings.HasPrefix(msgID, "msg_") {
-					msgID = "msg_" + msgID
-				}
-
-				reasoningID := lastResponseID
-				if strings.HasPrefix(reasoningID, "chatcmpl-") {
-					reasoningID = strings.Replace(reasoningID, "chatcmpl-", "rs_", 1)
-				} else if reasoningID == "" {
-					reasoningID = "rs_mock"
-				} else if !strings.HasPrefix(reasoningID, "rs_") {
-					reasoningID = "rs_" + reasoningID
-				}
-
-				modelName := lastModelName
-				if modelName == "" {
-					modelName = gctx.Model
-				}
-
-				if !started {
-					started = true
-					now := time.Now().Unix()
-
-					// 1. response.created
-					var evCreated responseCreatedEvent
-					evCreated.Type = "response.created"
-					evCreated.Response.ID = respID
-					evCreated.Response.Object = "response"
-					evCreated.Response.CreatedAt = now
-					evCreated.Response.Status = "in_progress"
-					evCreated.Response.Model = modelName
-					evCreated.Response.Output = []interface{}{}
-					if err := writeResponseEvent(gctx.ResponseWriter, "response.created", evCreated); err != nil {
+				translated, meta := stream.FeedJSON(ev.Data)
+				applyChatResponsesMeta(gctx, meta)
+				for _, event := range translated {
+					if err := writeSSEEvent(gctx.ResponseWriter, event.Event, event.Data); err != nil {
 						return err
 					}
-
-					// 2. response.in_progress
-					var evInProgress responseInProgressEvent
-					evInProgress.Type = "response.in_progress"
-					evInProgress.Response.ID = respID
-					evInProgress.Response.Object = "response"
-					evInProgress.Response.CreatedAt = now
-					evInProgress.Response.Status = "in_progress"
-					evInProgress.Response.Model = modelName
-					evInProgress.Response.Output = []interface{}{}
-					if err := writeResponseEvent(gctx.ResponseWriter, "response.in_progress", evInProgress); err != nil {
-						return err
-					}
-
-					if hasFlusher {
+					gctx.TransmittedChars += event.TransmittedChars
+					if event.Flush && hasFlusher {
 						flusher.Flush()
 					}
 				}
-
-				if len(chunk.Choices) > 0 {
-					choice := chunk.Choices[0]
-
-					// Process reasoning text (thinking process)
-					reasoning := choice.Delta.ReasoningContent
-					if reasoning == "" {
-						reasoning = choice.Delta.Reasoning
-					}
-					if reasoning != "" {
-						if err := sendResponsesReasoningDelta(gctx, respID, reasoningID, reasoning, &reasoningAdded, &reasoningOutputIndex, &currentOutputIndex); err != nil {
-							return err
-						}
-						fullReasoning.WriteString(reasoning)
-						gctx.TransmittedChars += len(reasoning)
-					}
-
-					// Process text
-					txt := choice.Delta.Content
-					if txt != "" {
-						if err := sendPlainResponsesText(gctx, respID, txt, msgID, &messageAdded, &textOutputIndex, &currentOutputIndex); err != nil {
-							return err
-						}
-						fullText.WriteString(txt)
-						gctx.TransmittedChars += len(txt)
-					}
-
-					// Process tool calls
-					if len(choice.Delta.ToolCalls) > 0 {
-						for _, tc := range choice.Delta.ToolCalls {
-							localTC, exist := localToolCalls[tc.Index]
-							if !exist {
-								localTC = &localToolCall{}
-								callID := tc.ID
-								if callID == "" {
-									callID = fmt.Sprintf("call_%s_%d", msgID, tc.Index)
-								}
-								localTC.CallID = callID
-								localTC.ID = translate.EnsureFunctionCallItemID(callID)
-								localTC.Name = tc.Function.Name
-								localTC.OutputIndex = currentOutputIndex
-								currentOutputIndex++
-								localToolCalls[tc.Index] = localTC
-							}
-							if tc.ID != "" && localTC.CallID == "" {
-								localTC.CallID = tc.ID
-								localTC.ID = translate.EnsureFunctionCallItemID(tc.ID)
-							}
-							if tc.Function.Name != "" && localTC.Name == "" {
-								localTC.Name = tc.Function.Name
-							}
-							if localTC.Namespace == "" {
-								if toolMapper != nil {
-									localTC.Namespace, localTC.Name = toolMapper.Restore(localTC.Name)
-								} else {
-									localTC.Namespace = splitChatToolNamespace(localTC.Name)
-									if localTC.Namespace != "" {
-										localTC.Name = chatToolLocalName(localTC.Name)
-									}
-								}
-							}
-							if localTC.Name == "apply_patch" || (toolMapper != nil && toolMapper.IsCustom(localTC.Name)) {
-								localTC.IsCustom = true
-								localTC.ID = translate.EnsureCustomToolCallItemID(localTC.CallID)
-							}
-
-							// Once we have a tool name and haven't sent the added event yet, send it immediately
-							if localTC.Name != "" && !localTC.Added {
-								localTC.Added = true
-								if localTC.IsCustom {
-									var evTCAdded responseOutputItemAddedCustomToolCallEvent
-									evTCAdded.Type = "response.output_item.added"
-									evTCAdded.ResponseID = respID
-									evTCAdded.OutputIndex = localTC.OutputIndex
-									evTCAdded.Item.ID = localTC.ID
-									evTCAdded.Item.CallID = localTC.CallID
-									evTCAdded.Item.Type = "custom_tool_call"
-									evTCAdded.Item.Status = "in_progress"
-									evTCAdded.Item.Name = localTC.Name
-									evTCAdded.Item.Namespace = localTC.Namespace
-									evTCAdded.Item.Input = ""
-									if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", evTCAdded); err != nil {
-										return err
-									}
-								} else {
-									var evTCAdded responseOutputItemAddedFunctionCallEvent
-									evTCAdded.Type = "response.output_item.added"
-									evTCAdded.ResponseID = respID
-									evTCAdded.OutputIndex = localTC.OutputIndex
-									evTCAdded.Item.ID = localTC.ID
-									evTCAdded.Item.CallID = localTC.CallID
-									evTCAdded.Item.Type = "function_call"
-									evTCAdded.Item.Status = "in_progress"
-									evTCAdded.Item.Name = localTC.Name
-									evTCAdded.Item.Namespace = localTC.Namespace
-									evTCAdded.Item.Arguments = ""
-									if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", evTCAdded); err != nil {
-										return err
-									}
-								}
-							}
-
-							argDelta := tc.Function.Arguments
-							localTC.Arguments.WriteString(argDelta)
-
-							// Send arguments delta only for standard function calls
-							if !localTC.IsCustom {
-								var evTCDelta responseFunctionCallArgumentsDeltaEvent
-								evTCDelta.Type = "response.function_call.arguments.delta"
-								evTCDelta.ResponseID = respID
-								evTCDelta.ItemID = localTC.ID
-								evTCDelta.CallID = localTC.CallID
-								evTCDelta.OutputIndex = localTC.OutputIndex
-								evTCDelta.Delta = argDelta
-								if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.delta", evTCDelta); err != nil {
-									return err
-								}
-							}
-						}
-					}
-
-					if hasFlusher {
-						flusher.Flush()
-					}
+				if meta.Flush && hasFlusher {
+					flusher.Flush()
 				}
+
 			}
 			if hasDone {
 				break
@@ -836,286 +279,45 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 		gctx.TriggerFirstByte()
 	}
 
-	if started {
-		respID := lastResponseID
-		if strings.HasPrefix(respID, "chatcmpl-") {
-			respID = strings.Replace(respID, "chatcmpl-", "resp_", 1)
-		} else if respID == "" {
-			respID = "resp_mock"
-		} else if !strings.HasPrefix(respID, "resp_") {
-			respID = "resp_" + respID
-		}
-
-		msgID := lastResponseID
-		if strings.HasPrefix(msgID, "chatcmpl-") {
-			msgID = strings.Replace(msgID, "chatcmpl-", "msg_", 1)
-		} else if msgID == "" {
-			msgID = "msg_mock"
-		} else if !strings.HasPrefix(msgID, "msg_") {
-			msgID = "msg_" + msgID
-		}
-
-		reasoningID := lastResponseID
-		if strings.HasPrefix(reasoningID, "chatcmpl-") {
-			reasoningID = strings.Replace(reasoningID, "chatcmpl-", "rs_", 1)
-		} else if reasoningID == "" {
-			reasoningID = "rs_mock"
-		} else if !strings.HasPrefix(reasoningID, "rs_") {
-			reasoningID = "rs_" + reasoningID
-		}
-
-		modelName := lastModelName
-		if modelName == "" {
-			modelName = gctx.Model
-		}
-
-		now := time.Now().Unix()
-
-		// Finalize reasoning item
-		if reasoningAdded {
-			finalReasoning := fullReasoning.String()
-			reasoningDoneItem := map[string]interface{}{
-				"id":     reasoningID,
-				"type":   "reasoning",
-				"status": "completed",
-				"summary": []interface{}{
-					map[string]interface{}{"type": "summary_text", "text": finalReasoning},
-				},
-			}
-			reasoningEvents := []struct {
-				name    string
-				payload map[string]interface{}
-			}{
-				{
-					name: "response.reasoning_summary_text.done",
-					payload: map[string]interface{}{
-						"type":          "response.reasoning_summary_text.done",
-						"response_id":   respID,
-						"item_id":       reasoningID,
-						"output_index":  reasoningOutputIndex,
-						"summary_index": 0,
-						"text":          finalReasoning,
-					},
-				},
-				{
-					name: "response.reasoning_summary_part.done",
-					payload: map[string]interface{}{
-						"type":          "response.reasoning_summary_part.done",
-						"response_id":   respID,
-						"item_id":       reasoningID,
-						"output_index":  reasoningOutputIndex,
-						"summary_index": 0,
-						"part":          map[string]interface{}{"type": "summary_text", "text": finalReasoning},
-					},
-				},
-				{
-					name: "response.output_item.done",
-					payload: map[string]interface{}{
-						"type":         "response.output_item.done",
-						"response_id":  respID,
-						"output_index": reasoningOutputIndex,
-						"item":         reasoningDoneItem,
-					},
-				},
-			}
-			for _, ev := range reasoningEvents {
-				if err := writeResponseEvent(gctx.ResponseWriter, ev.name, ev.payload); err != nil {
-					return err
-				}
-			}
-		}
-
-		// Finalize text message
-		if messageAdded {
-			finalText := fullText.String()
-
-			// 5. response.output_text.done
-			var evTextDone responseOutputTextDoneEvent
-			evTextDone.Type = "response.output_text.done"
-			evTextDone.ResponseID = respID
-			evTextDone.ItemID = msgID
-			evTextDone.OutputIndex = textOutputIndex
-			evTextDone.ContentIndex = 0
-			evTextDone.Text = finalText
-			if err := writeResponseEvent(gctx.ResponseWriter, "response.output_text.done", evTextDone); err != nil {
-				return err
-			}
-
-			// 6. response.content_part.done
-			var evPartDone responseContentPartDoneEvent
-			evPartDone.Type = "response.content_part.done"
-			evPartDone.ResponseID = respID
-			evPartDone.ItemID = msgID
-			evPartDone.OutputIndex = textOutputIndex
-			evPartDone.ContentIndex = 0
-			evPartDone.Part.Type = "output_text"
-			evPartDone.Part.Text = finalText
-			evPartDone.Part.Annotations = []interface{}{}
-			if err := writeResponseEvent(gctx.ResponseWriter, "response.content_part.done", evPartDone); err != nil {
-				return err
-			}
-
-			// 7. response.output_item.done
-			var evItemDone responseOutputItemDoneEvent
-			evItemDone.Type = "response.output_item.done"
-			evItemDone.ResponseID = respID
-			evItemDone.OutputIndex = textOutputIndex
-			evItemDone.Item.ID = msgID
-			evItemDone.Item.Type = "message"
-			evItemDone.Item.Status = "completed"
-			evItemDone.Item.Role = "assistant"
-			evItemDone.Item.Content = []interface{}{
-				map[string]interface{}{
-					"type":        "output_text",
-					"text":        finalText,
-					"annotations": []interface{}{},
-				},
-			}
-			if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.done", evItemDone); err != nil {
-				return err
-			}
-		}
-
-		// Finalize tool calls
-		var outputs []interface{}
-		if reasoningAdded {
-			outputs = append(outputs, map[string]interface{}{
-				"id":     reasoningID,
-				"type":   "reasoning",
-				"status": "completed",
-				"summary": []interface{}{
-					map[string]interface{}{"type": "summary_text", "text": fullReasoning.String()},
-				},
-			})
-		}
-		if messageAdded {
-			outputs = append(outputs, map[string]interface{}{
-				"id":     msgID,
-				"type":   "message",
-				"status": "completed",
-				"role":   "assistant",
-				"content": []interface{}{
-					map[string]interface{}{
-						"type":        "output_text",
-						"text":        fullText.String(),
-						"annotations": []interface{}{},
-					},
-				},
-			})
-		}
-
-		// Iterate tool call completion events in index order
-		var indices []int
-		for idx := range localToolCalls {
-			indices = append(indices, idx)
-		}
-		sort.Ints(indices)
-
-		for _, idx := range indices {
-			tc := localToolCalls[idx]
-			finalArgs := tc.Arguments.String()
-
-			if tc.IsCustom {
-				rawPatch := translate.ExtractPatchInput(finalArgs)
-				var evTCItemDone responseOutputItemDoneCustomToolCallEvent
-				evTCItemDone.Type = "response.output_item.done"
-				evTCItemDone.ResponseID = respID
-				evTCItemDone.OutputIndex = tc.OutputIndex
-				evTCItemDone.Item.ID = tc.ID
-				evTCItemDone.Item.CallID = tc.CallID
-				evTCItemDone.Item.Type = "custom_tool_call"
-				evTCItemDone.Item.Status = "completed"
-				evTCItemDone.Item.Name = tc.Name
-				evTCItemDone.Item.Namespace = tc.Namespace
-				evTCItemDone.Item.Input = rawPatch
-				if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.done", evTCItemDone); err != nil {
-					return err
-				}
-
-				outputs = append(outputs, map[string]interface{}{
-					"id":        tc.ID,
-					"call_id":   tc.CallID,
-					"type":      "custom_tool_call",
-					"status":    "completed",
-					"name":      tc.Name,
-					"namespace": tc.Namespace,
-					"input":     rawPatch,
-				})
-			} else {
-				// Send arguments done
-				var evTCDone responseFunctionCallArgumentsDoneEvent
-				evTCDone.Type = "response.function_call.arguments.done"
-				evTCDone.ResponseID = respID
-				evTCDone.ItemID = tc.ID
-				evTCDone.CallID = tc.CallID
-				evTCDone.OutputIndex = tc.OutputIndex
-				evTCDone.Arguments = finalArgs
-				if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.done", evTCDone); err != nil {
-					return err
-				}
-
-				// Send output_item.done
-				var evTCItemDone responseOutputItemDoneFunctionCallEvent
-				evTCItemDone.Type = "response.output_item.done"
-				evTCItemDone.ResponseID = respID
-				evTCItemDone.OutputIndex = tc.OutputIndex
-				evTCItemDone.Item.ID = tc.ID
-				evTCItemDone.Item.CallID = tc.CallID
-				evTCItemDone.Item.Type = "function_call"
-				evTCItemDone.Item.Status = "completed"
-				evTCItemDone.Item.Name = tc.Name
-				evTCItemDone.Item.Namespace = tc.Namespace
-				evTCItemDone.Item.Arguments = finalArgs
-				if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.done", evTCItemDone); err != nil {
-					return err
-				}
-
-				outputs = append(outputs, map[string]interface{}{
-					"id":        tc.ID,
-					"call_id":   tc.CallID,
-					"type":      "function_call",
-					"status":    "completed",
-					"name":      tc.Name,
-					"namespace": tc.Namespace,
-					"arguments": finalArgs,
-				})
-			}
-		}
-
-		// 8. response.done
-		var evCompleted responseDoneEvent
-		evCompleted.Type = "response.done"
-		evCompleted.Response.ID = respID
-		evCompleted.Response.Object = "response"
-		evCompleted.Response.CreatedAt = now - 1
-		evCompleted.Response.Status = "completed"
-		evCompleted.Response.Model = modelName
-		evCompleted.Response.Output = outputs
-		evCompleted.Response.Usage.InputTokens = gctx.InputTokens
-		evCompleted.Response.Usage.OutputTokens = gctx.OutputTokens
-		evCompleted.Response.Usage.TotalTokens = gctx.InputTokens + gctx.OutputTokens
-		if err := writeResponseEvent(gctx.ResponseWriter, "response.done", evCompleted); err != nil {
+	// 输出 interceptor 可能改变 gctx usage；末尾必须以 caller-latest 有效值封装 completion。
+	translated, meta := stream.Finish(translate.TokenUsage{
+		InputTokens: gctx.InputTokens, OutputTokens: gctx.OutputTokens,
+		CachedTokens: gctx.CachedTokens, CacheCreationTokens: gctx.CacheCreationTokens,
+	})
+	applyChatResponsesMeta(gctx, meta)
+	for _, event := range translated {
+		if err := writeSSEEvent(gctx.ResponseWriter, event.Event, event.Data); err != nil {
 			return err
 		}
-
-		// Also send response.completed for old client compatibility to avoid indefinite waiting timeout
-		evCompleted.Type = "response.completed"
-		if err := writeResponseEvent(gctx.ResponseWriter, "response.completed", evCompleted); err != nil {
-			return err
-		}
-
+	}
+	if meta.Completed {
 		if gctx.Tags == nil {
 			gctx.Tags = make(map[string]string)
 		}
 		gctx.Tags["response_completed_sent"] = "true"
-
-		// Send data: [DONE] to explicitly end the client's SSE listening
-		_, _ = fmt.Fprintf(gctx.ResponseWriter, "data: [DONE]\n\n")
-
+	}
+	if meta.EmitDone {
+		_ = writeSSEData(gctx.ResponseWriter, []byte("[DONE]"))
 		if hasFlusher {
 			flusher.Flush()
 		}
 	}
 
 	return nil
+}
+
+// caller 写回 usage/tags，FSM 不依赖 GatewayContext。
+func applyChatResponsesMeta(gctx *core.GatewayContext, meta translate.StreamChunkMeta) {
+	llm.ApplyUsage(gctx, meta.InputTokens, meta.OutputTokens, meta.CachedTokens, meta.CacheCreationTokens)
+	if meta.ResponseID != "" || meta.ResponseModel != "" {
+		if gctx.Tags == nil {
+			gctx.Tags = make(map[string]string)
+		}
+		if meta.ResponseID != "" {
+			gctx.Tags["response_id"] = meta.ResponseID
+		}
+		if meta.ResponseModel != "" {
+			gctx.Tags["response_model"] = meta.ResponseModel
+		}
+	}
 }

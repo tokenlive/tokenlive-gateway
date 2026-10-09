@@ -540,10 +540,7 @@ func ChatCompletionToMessages(chatBody []byte, model string) (ChatCompletionToMe
 	if len(oaiResp.Choices) > 0 {
 		msg := oaiResp.Choices[0].Message
 		if msg.ReasoningContent != "" {
-			anthropicContent = append(anthropicContent, map[string]interface{}{
-				"type":     "thinking",
-				"thinking": msg.ReasoningContent,
-			})
+			anthropicContent = append(anthropicContent, messagesThinkingBlock(msg.ReasoningContent))
 		}
 		if msg.Content != "" {
 			anthropicContent = append(anthropicContent, map[string]interface{}{
@@ -663,8 +660,7 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 				txt, _ := blockMap["text"].(string)
 				textContent.WriteString(txt)
 			case "thinking":
-				think, _ := blockMap["thinking"].(string)
-				thinkingContent.WriteString(think)
+				thinkingContent.WriteString(thinkingText(blockMap))
 			case "tool_use":
 				toolID, _ := blockMap["id"].(string)
 				name, _ := blockMap["name"].(string)
@@ -701,21 +697,8 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 		inputTokens = int(it) + cachedTokens + cacheCreationTokens
 	}
 
-	finishReason := "stop"
-	if sr, ok := aResp["stop_reason"].(string); ok {
-		switch sr {
-		case "max_tokens":
-			finishReason = "length"
-		case "tool_use":
-			finishReason = "tool_calls"
-		case "end_turn", "stop_sequence":
-			finishReason = "stop"
-		}
-	}
-	if len(toolCalls) > 0 && finishReason == "stop" {
-		// Prefer tool_calls when tool_use present, even if stop_reason missing
-		finishReason = "tool_calls"
-	}
+	stopReason, _ := aResp["stop_reason"].(string)
+	finishReason := mapStopReasonToFinish(stopReason, len(toolCalls) > 0)
 
 	message := map[string]interface{}{
 		"role":    "assistant",
@@ -854,4 +837,3 @@ func CorrectNativeMessagesRequest(rawBody []byte) ([]byte, error) {
 	}
 	return json.Marshal(payload)
 }
-

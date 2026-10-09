@@ -37,12 +37,7 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 	// to carry reasoning_content. We infer thinking mode purely from protocol signals:
 	// 1. Explicit reasoning parameters (e.g. reasoning.effort != "none")
 	// 2. Or the presence of reasoning items in conversation history
-	hasReasoningConfig := false
-	if reasoningVal, ok := payload["reasoning"].(map[string]interface{}); ok {
-		if effort, _ := reasoningVal["effort"].(string); effort != "" && effort != "none" {
-			hasReasoningConfig = true
-		}
-	}
+	hasReasoningConfig := hasReasoningEffort(responsesReasoningEffort(payload))
 
 	var openAIMessages []interface{}
 	if instructions, ok := payload["instructions"].(string); ok && instructions != "" {
@@ -130,13 +125,8 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 					msg["content"] = pendingToolText
 					pendingToolText = ""
 				}
-				if pendingReasoning != "" {
-					msg["reasoning_content"] = pendingReasoning
-					pendingReasoning = ""
-				} else if inThinkingMode {
-					// Thinking models require reasoning_content on every assistant turn
-					msg["reasoning_content"] = ""
-				}
+				applyAssistantReasoning(msg, pendingReasoning, inThinkingMode)
+				pendingReasoning = ""
 				openAIMessages = append(openAIMessages, msg)
 				openAIMessages = append(openAIMessages, toolMsgs...)
 			}
@@ -274,16 +264,8 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 				// Fold any pending reasoning into this assistant message so thinking
 				// models receive reasoning_content back in multi-turn history.
 				if openAIRole == "assistant" {
-					if pendingReasoning != "" {
-						msg["reasoning_content"] = pendingReasoning
-						pendingReasoning = ""
-					} else if inThinkingMode {
-						// Thinking mode requires reasoning_content on every assistant turn.
-						// Fall back to empty string to satisfy upstream protocol validation.
-						if _, exists := msg["reasoning_content"]; !exists {
-							msg["reasoning_content"] = ""
-						}
-					}
+					applyAssistantReasoning(msg, pendingReasoning, inThinkingMode)
+					pendingReasoning = ""
 				}
 
 				openAIMessages = append(openAIMessages, msg)
@@ -297,11 +279,9 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 
 	// Responses-only state and formatting parameters are invalid on Chat
 	// Completions. Preserve the reasoning effort in the Chat-native field.
-	if reasoningVal, ok := payload["reasoning"].(map[string]interface{}); ok {
-		if effort, _ := reasoningVal["effort"].(string); effort != "" {
-			if _, exists := payload["reasoning_effort"]; !exists {
-				payload["reasoning_effort"] = effort
-			}
+	if effort := responsesReasoningEffort(payload); effort != "" {
+		if _, exists := payload["reasoning_effort"]; !exists {
+			payload["reasoning_effort"] = effort
 		}
 	}
 	for _, key := range []string{"store", "previous_response_id", "include", "background", "truncation", "text", "reasoning"} {
@@ -404,52 +384,17 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 	}
 
 	now := time.Now().Unix()
-	respID := oaiResp.ID
-	if strings.HasPrefix(respID, "chatcmpl-") {
-		respID = strings.Replace(respID, "chatcmpl-", "resp_", 1)
-	} else if respID == "" {
-		respID = "resp_mock"
-	} else if !strings.HasPrefix(respID, "resp_") {
-		respID = "resp_" + respID
-	}
-
-	msgID := oaiResp.ID
-	if strings.HasPrefix(msgID, "chatcmpl-") {
-		msgID = strings.Replace(msgID, "chatcmpl-", "msg_", 1)
-	} else if msgID == "" {
-		msgID = "msg_mock"
-	} else if !strings.HasPrefix(msgID, "msg_") {
-		msgID = "msg_" + msgID
-	}
+	respID := chatResponsesID(oaiResp.ID, "resp_")
+	msgID := chatResponsesID(oaiResp.ID, "msg_")
 
 	var outputList []map[string]interface{}
 
 	if len(oaiResp.Choices) > 0 {
 		choice := oaiResp.Choices[0]
-		reasoningText := choice.Message.ReasoningContent
-		if reasoningText == "" {
-			reasoningText = choice.Message.Reasoning
-		}
+		reasoningText := chatResponsesReasoning(choice.Message.ReasoningContent, choice.Message.Reasoning)
 		if reasoningText != "" {
-			reasoningID := oaiResp.ID
-			if strings.HasPrefix(reasoningID, "chatcmpl-") {
-				reasoningID = strings.Replace(reasoningID, "chatcmpl-", "rs_", 1)
-			} else if reasoningID == "" {
-				reasoningID = "rs_mock"
-			} else if !strings.HasPrefix(reasoningID, "rs_") {
-				reasoningID = "rs_" + reasoningID
-			}
-			outputList = append(outputList, map[string]interface{}{
-				"id":     reasoningID,
-				"type":   "reasoning",
-				"status": "completed",
-				"summary": []map[string]interface{}{
-					{
-						"type": "summary_text",
-						"text": reasoningText,
-					},
-				},
-			})
+			reasoningID := chatResponsesID(oaiResp.ID, "rs_")
+			outputList = append(outputList, completedChatReasoningItem(reasoningID, reasoningText))
 		}
 		if len(choice.Message.ToolCalls) > 0 {
 			for _, tc := range choice.Message.ToolCalls {
@@ -458,8 +403,7 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 				if mapper != nil {
 					toolNamespace, toolName = mapper.Restore(toolName)
 				} else {
-					toolNamespace = splitChatToolNamespace(toolName)
-					toolName = chatToolLocalName(toolName)
+					toolNamespace, toolName = splitChatToolName(toolName)
 				}
 				isCustom := toolName == "apply_patch"
 				if mapper != nil && mapper.IsCustom(toolName) {
@@ -800,22 +744,6 @@ func BuildStandardTool(toolMap map[string]interface{}) map[string]interface{} {
 	return flatTool
 }
 
-// splitChatToolNamespace extracts the original Responses namespace from a
-// Chat Completions function name. Empty means the default functions namespace.
-func splitChatToolNamespace(name string) string {
-	if idx := strings.LastIndex(name, "."); idx > 0 && idx < len(name)-1 {
-		return name[:idx]
-	}
-	return ""
-}
-
-func chatToolLocalName(name string) string {
-	if idx := strings.LastIndex(name, "."); idx > 0 && idx < len(name)-1 {
-		return name[idx+1:]
-	}
-	return name
-}
-
 // WrapFlatToolToNestedOpenAI wraps a flat function tool as nested OpenAI Chat form.
 // When the flat tool carries a namespace, the name is sanitized to a pattern-safe
 // form via mapper (registering the mapping for later response-side restoration),
@@ -983,56 +911,4 @@ func correctInputForNativeResponses(payload map[string]interface{}) {
 			}
 		}
 	}
-}
-
-// extractReasoningSummary pulls the text of a Responses reasoning item. Codex
-// sends reasoning back as either a `summary` array of {type:"summary_text",
-// text:...} parts, a `content` array/string, or a plain string. Only the plaintext
-// summary form is recoverable for re-injection as reasoning_content upstream;
-// encrypted reasoning has no plaintext to pass back.
-func extractReasoningSummary(itemMap map[string]interface{}) string {
-	// 1. Try summary array: [{"type": "summary_text", "text": "..."}] or ["..."]
-	if summary, ok := itemMap["summary"].([]interface{}); ok {
-		var b strings.Builder
-		for _, part := range summary {
-			if partMap, ok := part.(map[string]interface{}); ok {
-				if text, _ := partMap["text"].(string); text != "" {
-					b.WriteString(text)
-				}
-			} else if str, ok := part.(string); ok && str != "" {
-				b.WriteString(str)
-			}
-		}
-		if b.Len() > 0 {
-			return b.String()
-		}
-	}
-	// 2. Try summary as string
-	if summaryStr, ok := itemMap["summary"].(string); ok && summaryStr != "" {
-		return summaryStr
-	}
-	// 3. Try reasoning_content or text as string
-	if rc, ok := itemMap["reasoning_content"].(string); ok && rc != "" {
-		return rc
-	}
-	if text, ok := itemMap["text"].(string); ok && text != "" {
-		return text
-	}
-	// 4. Try content array
-	if contentArr, ok := itemMap["content"].([]interface{}); ok {
-		var b strings.Builder
-		for _, part := range contentArr {
-			if partMap, ok := part.(map[string]interface{}); ok {
-				if text, _ := partMap["text"].(string); text != "" {
-					b.WriteString(text)
-				}
-			} else if str, ok := part.(string); ok && str != "" {
-				b.WriteString(str)
-			}
-		}
-		if b.Len() > 0 {
-			return b.String()
-		}
-	}
-	return ""
 }

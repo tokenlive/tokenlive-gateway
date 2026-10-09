@@ -13,6 +13,115 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
 
+func TestJoyCodeReasoningHistoryPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, params, history string
+		wantInjected          bool
+	}{
+		{"missing", ``, ``, false},
+		{"null", ``, `,"reasoning_content":null`, false},
+		{"false", ``, `,"reasoning_content":false`, true},
+		{"empty", ``, `,"reasoning_content":""`, true},
+		{"effort", `"reasoning_effort":"high",`, ``, true},
+		{"none", `"reasoning_effort":"none",`, ``, false},
+		{"thinking", `"thinking":{"type":"adaptive"},`, ``, true},
+		{"disabled", `"thinking":{"type":"disabled"},`, ``, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{` + tc.params + `"messages":[{"role":"tool"` + tc.history + `},{"role":"assistant"},{"role":"assistant","reasoning_content":null},{"role":"assistant","reasoning_content":false},{"role":"assistant","reasoning_content":""},{"role":"user"}]}`)
+			// Isolate intent from the preservation matrix: only the tool supplies history intent.
+			var payload map[string]interface{}
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatal(err)
+			}
+			messages := payload["messages"].([]interface{})
+			intentBody, _ := json.Marshal(map[string]interface{}{"messages": messages[:2], "reasoning_effort": payload["reasoning_effort"], "thinking": payload["thinking"]})
+			var intent map[string]interface{}
+			if err := json.Unmarshal(injectJoyCodePayload(intentBody), &intent); err != nil {
+				t.Fatal(err)
+			}
+			assistant := intent["messages"].([]interface{})[1].(map[string]interface{})
+			if rc, exists := assistant["reasoning_content"]; exists != tc.wantInjected || (exists && rc != "") {
+				t.Fatalf("injected assistant = %v", assistant)
+			}
+			var normalized map[string]interface{}
+			if err := json.Unmarshal(injectJoyCodePayload(raw), &normalized); err != nil {
+				t.Fatal(err)
+			}
+			got := normalized["messages"].([]interface{})
+			for _, i := range []int{0, 2, 3, 4, 5} {
+				before, _ := json.Marshal(messages[i])
+				after, _ := json.Marshal(got[i])
+				if string(before) != string(after) {
+					t.Fatalf("history message %d changed: %s -> %s", i, before, after)
+				}
+			}
+		})
+	}
+}
+
+func TestJoyCodeReasoningInjectionKeepsRawBodyOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, raw, response string
+		requestType                core.RequestType
+		wantWriteback              bool
+	}{
+		{"chat local", "m", `{"model":"m","reasoning_effort":"high","messages":[{"role":"assistant","content":"answer"}]}`, `{"choices":[{"message":{"content":"ok"}}]}`, core.RequestTypeChatCompletion, false},
+		{"native messages local", "claude-test", `{"model":"claude-test","thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"old"},{"type":"redacted_thinking","data":"blob"},{"type":"text","text":"answer"}]}]}`, `{"id":"msg_1","content":[{"type":"text","text":"ok"}]}`, core.RequestTypeMessages, false},
+		{"anthropic responses writeback", "claude-test", `{"model":"claude-test","reasoning":{"effort":"high"},"input":"hi"}`, `{"id":"msg_1","content":[{"type":"text","text":"ok"}]}`, core.RequestTypeResponses, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var received map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.response)
+			}))
+			defer server.Close()
+			p := NewJoyCodeProvider("joycode", server.URL, "key", nil)
+			gctx := core.AcquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.raw)))
+			defer core.ReleaseContext(gctx)
+			gctx.RequestType, gctx.Model, gctx.RawBody = tc.requestType, tc.model, []byte(tc.raw)
+			if err := p.Invoke(gctx); err != nil {
+				t.Fatal(err)
+			}
+			if received["client"] != "JoyCodeIDE" {
+				t.Fatalf("outgoing payload = %v", received)
+			}
+			if !tc.wantWriteback && string(gctx.RawBody) != tc.raw {
+				t.Fatalf("local adaptation wrote back RawBody: %s", gctx.RawBody)
+			}
+			if tc.wantWriteback {
+				var written map[string]interface{}
+				if err := json.Unmarshal(gctx.RawBody, &written); err != nil {
+					t.Fatal(err)
+				}
+				body, _ := json.Marshal(received)
+				writeback, _ := json.Marshal(written)
+				if string(body) != string(writeback) {
+					t.Fatalf("Responses writeback = %s, outgoing = %s", writeback, body)
+				}
+			}
+			if tc.requestType == core.RequestTypeChatCompletion {
+				if received["messages"].([]interface{})[0].(map[string]interface{})["reasoning_content"] != "" {
+					t.Fatalf("missing assistant reasoning = %v", received)
+				}
+			} else if received["thinking"].(map[string]interface{})["type"] != "adaptive" {
+				t.Fatalf("provider thinking adaptation = %v", received)
+			}
+			if tc.requestType == core.RequestTypeMessages {
+				blocks := received["messages"].([]interface{})[1].(map[string]interface{})["content"].([]interface{})
+				if len(blocks) != 2 || blocks[0].(map[string]interface{})["type"] != "redacted_thinking" {
+					t.Fatalf("cleaning must retain redacted thinking: %v", blocks)
+				}
+			}
+		})
+	}
+}
+
 func TestJoyCodeResponses_ChatOnlyEndpointUsesChatTranslation(t *testing.T) {
 	var received map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +151,55 @@ func TestJoyCodeResponses_ChatOnlyEndpointUsesChatTranslation(t *testing.T) {
 	clientResponse, ok := gctx.Response.(map[string]interface{})
 	if !ok || clientResponse["object"] != "response" {
 		t.Fatalf("client response = %v", gctx.Response)
+	}
+}
+
+func TestJoyCodeResponses_ChatOnlyEndpointStreamsTranslatedCompletion(t *testing.T) {
+	var received map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/saas/openai/v2/chat/completions" {
+			t.Errorf("upstream path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+`{"id":"chatcmpl-joy-stream","model":"Kimi-K2.6","choices":[{"delta":{"content":"ok"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	p := NewJoyCodeProvider("joycode", server.URL, "key", nil)
+	reqBody := `{"model":"Kimi-K2.6","input":"hello","stream":true}`
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody)))
+	defer core.ReleaseContext(gctx)
+	gctx.RequestType, gctx.RawBody, gctx.Model, gctx.IsStream = core.RequestTypeResponses, []byte(reqBody), "Kimi-K2.6", true
+	gctx.SelectedEndpoint = &core.Endpoint{RequestTypes: []core.RequestType{core.RequestTypeChatCompletion}}
+
+	if err := (&joycodeResponsesInvoker{}).Invoke(gctx, p); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if _, ok := received["messages"]; !ok {
+		t.Fatalf("chat-only endpoint did not receive messages: %v", received)
+	}
+	if _, ok := received["input"]; ok {
+		t.Fatalf("chat-only endpoint received Responses input: %v", received)
+	}
+	if w.Header().Get("Content-Type") != "text/event-stream" || !w.Flushed {
+		t.Fatalf("stream headers/flush = (%q, %v)", w.Header().Get("Content-Type"), w.Flushed)
+	}
+	if strings.Count(w.Body.String(), "event: response.completed\n") != 1 || !strings.HasSuffix(w.Body.String(), "data: [DONE]\n\n") {
+		t.Fatalf("missing stream completion: %s", w.Body.String())
+	}
+	if gctx.Tags["response_completed_sent"] != "true" || gctx.Tags["response_id"] != "resp_joy-stream" {
+		t.Fatalf("stream tags = %v", gctx.Tags)
+	}
+	if gctx.InputTokens != 7 || gctx.OutputTokens != 3 {
+		t.Fatalf("tail usage = (%d, %d)", gctx.InputTokens, gctx.OutputTokens)
 	}
 }
 
