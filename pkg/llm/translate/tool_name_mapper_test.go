@@ -87,3 +87,17 @@ func TestToolNameMapper_RestoreUnknownFallsBackToDotSplit(t *testing.T) {
 		t.Fatalf("fallback restore = (%q,%q), want (some,unknown)", ns, name)
 	}
 }
+
+func TestToolNameMapper_CustomTool(t *testing.T) {
+	m := NewToolNameMapper()
+	if !m.IsCustom("apply_patch") {
+		t.Errorf("apply_patch should always be custom")
+	}
+	if m.IsCustom("exec_command") {
+		t.Errorf("exec_command should not be custom initially")
+	}
+	m.RegisterCustom("exec_command")
+	if !m.IsCustom("exec_command") {
+		t.Errorf("exec_command should be custom after registration")
+	}
+}

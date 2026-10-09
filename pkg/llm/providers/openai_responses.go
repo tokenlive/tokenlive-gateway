@@ -256,6 +256,36 @@ type responseOutputItemDoneFunctionCallEvent struct {
 	} `json:"item"`
 }
 
+type responseOutputItemAddedCustomToolCallEvent struct {
+	Type        string `json:"type"`
+	ResponseID  string `json:"response_id"`
+	OutputIndex int    `json:"output_index"`
+	Item        struct {
+		ID        string `json:"id"`
+		CallID    string `json:"call_id"`
+		Type      string `json:"type"`
+		Status    string `json:"status"`
+		Name      string `json:"name"`
+		Input     string `json:"input"`
+		Namespace string `json:"namespace,omitempty"`
+	} `json:"item"`
+}
+
+type responseOutputItemDoneCustomToolCallEvent struct {
+	Type        string `json:"type"`
+	ResponseID  string `json:"response_id"`
+	OutputIndex int    `json:"output_index"`
+	Item        struct {
+		ID        string `json:"id"`
+		CallID    string `json:"call_id"`
+		Type      string `json:"type"`
+		Status    string `json:"status"`
+		Name      string `json:"name"`
+		Input     string `json:"input"`
+		Namespace string `json:"namespace,omitempty"`
+	} `json:"item"`
+}
+
 func writeResponseEvent(w io.Writer, eventType string, data interface{}) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -412,6 +442,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 		Arguments   strings.Builder
 		OutputIndex int
 		Added       bool
+		IsCustom    bool
 	}
 	var localToolCalls = make(map[int]*localToolCall)
 
@@ -710,39 +741,62 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 									}
 								}
 							}
+							if localTC.Name == "apply_patch" || (toolMapper != nil && toolMapper.IsCustom(localTC.Name)) {
+								localTC.IsCustom = true
+								localTC.ID = translate.EnsureCustomToolCallItemID(localTC.CallID)
+							}
 
 							// Once we have a tool name and haven't sent the added event yet, send it immediately
 							if localTC.Name != "" && !localTC.Added {
 								localTC.Added = true
-								var evTCAdded responseOutputItemAddedFunctionCallEvent
-								evTCAdded.Type = "response.output_item.added"
-								evTCAdded.ResponseID = respID
-								evTCAdded.OutputIndex = localTC.OutputIndex
-								evTCAdded.Item.ID = localTC.ID
-								evTCAdded.Item.CallID = localTC.CallID
-								evTCAdded.Item.Type = "function_call"
-								evTCAdded.Item.Status = "in_progress"
-								evTCAdded.Item.Name = localTC.Name
-								evTCAdded.Item.Namespace = localTC.Namespace
-								evTCAdded.Item.Arguments = ""
-								if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", evTCAdded); err != nil {
-									return err
+								if localTC.IsCustom {
+									var evTCAdded responseOutputItemAddedCustomToolCallEvent
+									evTCAdded.Type = "response.output_item.added"
+									evTCAdded.ResponseID = respID
+									evTCAdded.OutputIndex = localTC.OutputIndex
+									evTCAdded.Item.ID = localTC.ID
+									evTCAdded.Item.CallID = localTC.CallID
+									evTCAdded.Item.Type = "custom_tool_call"
+									evTCAdded.Item.Status = "in_progress"
+									evTCAdded.Item.Name = localTC.Name
+									evTCAdded.Item.Namespace = localTC.Namespace
+									evTCAdded.Item.Input = ""
+									if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", evTCAdded); err != nil {
+										return err
+									}
+								} else {
+									var evTCAdded responseOutputItemAddedFunctionCallEvent
+									evTCAdded.Type = "response.output_item.added"
+									evTCAdded.ResponseID = respID
+									evTCAdded.OutputIndex = localTC.OutputIndex
+									evTCAdded.Item.ID = localTC.ID
+									evTCAdded.Item.CallID = localTC.CallID
+									evTCAdded.Item.Type = "function_call"
+									evTCAdded.Item.Status = "in_progress"
+									evTCAdded.Item.Name = localTC.Name
+									evTCAdded.Item.Namespace = localTC.Namespace
+									evTCAdded.Item.Arguments = ""
+									if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.added", evTCAdded); err != nil {
+										return err
+									}
 								}
 							}
 
 							argDelta := tc.Function.Arguments
 							localTC.Arguments.WriteString(argDelta)
 
-							// Send arguments delta (always emit event to ensure client schema compliance)
-							var evTCDelta responseFunctionCallArgumentsDeltaEvent
-							evTCDelta.Type = "response.function_call.arguments.delta"
-							evTCDelta.ResponseID = respID
-							evTCDelta.ItemID = localTC.ID
-							evTCDelta.CallID = localTC.CallID
-							evTCDelta.OutputIndex = localTC.OutputIndex
-							evTCDelta.Delta = argDelta
-							if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.delta", evTCDelta); err != nil {
-								return err
+							// Send arguments delta only for standard function calls
+							if !localTC.IsCustom {
+								var evTCDelta responseFunctionCallArgumentsDeltaEvent
+								evTCDelta.Type = "response.function_call.arguments.delta"
+								evTCDelta.ResponseID = respID
+								evTCDelta.ItemID = localTC.ID
+								evTCDelta.CallID = localTC.CallID
+								evTCDelta.OutputIndex = localTC.OutputIndex
+								evTCDelta.Delta = argDelta
+								if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.delta", evTCDelta); err != nil {
+									return err
+								}
 							}
 						}
 					}
@@ -961,43 +1015,71 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 			tc := localToolCalls[idx]
 			finalArgs := tc.Arguments.String()
 
-			// Send arguments done
-			var evTCDone responseFunctionCallArgumentsDoneEvent
-			evTCDone.Type = "response.function_call.arguments.done"
-			evTCDone.ResponseID = respID
-			evTCDone.ItemID = tc.ID
-			evTCDone.CallID = tc.CallID
-			evTCDone.OutputIndex = tc.OutputIndex
-			evTCDone.Arguments = finalArgs
-			if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.done", evTCDone); err != nil {
-				return err
-			}
+			if tc.IsCustom {
+				rawPatch := translate.ExtractPatchInput(finalArgs)
+				var evTCItemDone responseOutputItemDoneCustomToolCallEvent
+				evTCItemDone.Type = "response.output_item.done"
+				evTCItemDone.ResponseID = respID
+				evTCItemDone.OutputIndex = tc.OutputIndex
+				evTCItemDone.Item.ID = tc.ID
+				evTCItemDone.Item.CallID = tc.CallID
+				evTCItemDone.Item.Type = "custom_tool_call"
+				evTCItemDone.Item.Status = "completed"
+				evTCItemDone.Item.Name = tc.Name
+				evTCItemDone.Item.Namespace = tc.Namespace
+				evTCItemDone.Item.Input = rawPatch
+				if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.done", evTCItemDone); err != nil {
+					return err
+				}
 
-			// Send output_item.done
-			var evTCItemDone responseOutputItemDoneFunctionCallEvent
-			evTCItemDone.Type = "response.output_item.done"
-			evTCItemDone.ResponseID = respID
-			evTCItemDone.OutputIndex = tc.OutputIndex
-			evTCItemDone.Item.ID = tc.ID
-			evTCItemDone.Item.CallID = tc.CallID
-			evTCItemDone.Item.Type = "function_call"
-			evTCItemDone.Item.Status = "completed"
-			evTCItemDone.Item.Name = tc.Name
-			evTCItemDone.Item.Namespace = tc.Namespace
-			evTCItemDone.Item.Arguments = finalArgs
-			if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.done", evTCItemDone); err != nil {
-				return err
-			}
+				outputs = append(outputs, map[string]interface{}{
+					"id":        tc.ID,
+					"call_id":   tc.CallID,
+					"type":      "custom_tool_call",
+					"status":    "completed",
+					"name":      tc.Name,
+					"namespace": tc.Namespace,
+					"input":     rawPatch,
+				})
+			} else {
+				// Send arguments done
+				var evTCDone responseFunctionCallArgumentsDoneEvent
+				evTCDone.Type = "response.function_call.arguments.done"
+				evTCDone.ResponseID = respID
+				evTCDone.ItemID = tc.ID
+				evTCDone.CallID = tc.CallID
+				evTCDone.OutputIndex = tc.OutputIndex
+				evTCDone.Arguments = finalArgs
+				if err := writeResponseEvent(gctx.ResponseWriter, "response.function_call.arguments.done", evTCDone); err != nil {
+					return err
+				}
 
-			outputs = append(outputs, map[string]interface{}{
-				"id":        tc.ID,
-				"call_id":   tc.CallID,
-				"type":      "function_call",
-				"status":    "completed",
-				"name":      tc.Name,
-				"namespace": tc.Namespace,
-				"arguments": finalArgs,
-			})
+				// Send output_item.done
+				var evTCItemDone responseOutputItemDoneFunctionCallEvent
+				evTCItemDone.Type = "response.output_item.done"
+				evTCItemDone.ResponseID = respID
+				evTCItemDone.OutputIndex = tc.OutputIndex
+				evTCItemDone.Item.ID = tc.ID
+				evTCItemDone.Item.CallID = tc.CallID
+				evTCItemDone.Item.Type = "function_call"
+				evTCItemDone.Item.Status = "completed"
+				evTCItemDone.Item.Name = tc.Name
+				evTCItemDone.Item.Namespace = tc.Namespace
+				evTCItemDone.Item.Arguments = finalArgs
+				if err := writeResponseEvent(gctx.ResponseWriter, "response.output_item.done", evTCItemDone); err != nil {
+					return err
+				}
+
+				outputs = append(outputs, map[string]interface{}{
+					"id":        tc.ID,
+					"call_id":   tc.CallID,
+					"type":      "function_call",
+					"status":    "completed",
+					"name":      tc.Name,
+					"namespace": tc.Namespace,
+					"arguments": finalArgs,
+				})
+			}
 		}
 
 		// 8. response.done

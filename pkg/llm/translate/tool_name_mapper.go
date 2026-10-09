@@ -16,9 +16,10 @@ import (
 // returns the original (namespace, name); unknown names fall back to the
 // dot-split heuristic for backward compatibility.
 type ToolNameMapper struct {
-	forward map[string]string // "namespace\x00name" -> sanitized
-	reverse map[string]toolNameEntry
-	used    map[string]bool
+	forward     map[string]string // "namespace\x00name" -> sanitized
+	reverse     map[string]toolNameEntry
+	used        map[string]bool
+	customTools map[string]bool
 }
 
 type toolNameEntry struct {
@@ -29,9 +30,10 @@ type toolNameEntry struct {
 // NewToolNameMapper creates an empty mapper.
 func NewToolNameMapper() *ToolNameMapper {
 	return &ToolNameMapper{
-		forward: make(map[string]string),
-		reverse: make(map[string]toolNameEntry),
-		used:    make(map[string]bool),
+		forward:     make(map[string]string),
+		reverse:     make(map[string]toolNameEntry),
+		used:        make(map[string]bool),
+		customTools: make(map[string]bool),
 	}
 }
 
@@ -77,6 +79,25 @@ func (m *ToolNameMapper) Restore(sanitized string) (namespace, name string) {
 		return e.namespace, e.name
 	}
 	return splitChatToolNamespace(sanitized), chatToolLocalName(sanitized)
+}
+
+// RegisterCustom marks a tool (by its local name, sanitized name, or original name) as a custom freeform tool.
+func (m *ToolNameMapper) RegisterCustom(name string) {
+	if m.customTools == nil {
+		m.customTools = make(map[string]bool)
+	}
+	m.customTools[name] = true
+}
+
+// IsCustom returns true if the tool is registered as a custom freeform tool, or is inherently a known custom tool like apply_patch.
+func (m *ToolNameMapper) IsCustom(name string) bool {
+	if name == "apply_patch" {
+		return true
+	}
+	if m == nil || m.customTools == nil {
+		return false
+	}
+	return m.customTools[name]
 }
 
 // sanitizeToolName replaces every character outside [a-zA-Z0-9_-] with '_'.

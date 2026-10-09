@@ -1160,8 +1160,8 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelAfterFinish(t 
 	cancel()
 
 	stream := strings.Join([]string{
-		`data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"apply_patch","arguments":""}}]},"finish_reason":null}]}`,
-		`data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"patch\":\"*** Begin Patch\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"exec_command","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"ls\"}"}}]},"finish_reason":null}]}`,
 		`data: {"id":"gen-client-cancel","object":"chat.completion.chunk","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 	}, "\n\n") + "\n\n"
 
@@ -1181,7 +1181,7 @@ func TestOpenAIResponses_Translation_ToolCalls_Stream_ClientCancelAfterFinish(t 
 	respBody := w.Body.String()
 	for _, expected := range []string{
 		`event: response.function_call.arguments.done`,
-		`"arguments":"{\"patch\":\"*** Begin Patch\"}"`,
+		`"arguments":"{\"cmd\":\"ls\"}"`,
 		`event: response.output_item.done`,
 		`event: response.completed`,
 		`data: [DONE]`,
@@ -1444,3 +1444,102 @@ func TestOpenAIResponses_Translation_Text_Stream_TrailingErrorAfterStopSwallowed
 		}
 	}
 }
+
+func TestHandleResponsesStream_ApplyPatchCustomToolCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		chunks := []string{
+			`data: {"id":"chatcmpl-stream-patch","object":"chat.completion.chunk","created":1741476542,"model":"kimi-k3","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_patch_stream_1","type":"function","function":{"name":"apply_patch","arguments":""}}]},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-stream-patch","object":"chat.completion.chunk","created":1741476542,"model":"kimi-k3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"patch\": \"*** Begin Patch\\n"}}]}}]}`,
+			`data: {"id":"chatcmpl-stream-patch","object":"chat.completion.chunk","created":1741476542,"model":"kimi-k3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"+console.log(\\\"hello\\\");\\n*** End Patch\"}"}}]}}]}`,
+			`data: {"id":"chatcmpl-stream-patch","object":"chat.completion.chunk","created":1741476542,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			`data: [DONE]`,
+		}
+
+		for _, chunk := range chunks {
+			_, _ = w.Write([]byte(chunk + "\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	ep := &core.Endpoint{
+		ID:           "ep-stream-patch",
+		Provider:     "openai",
+		Model:        "kimi-k3",
+		RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
+	}
+	p := NewOpenAIProvider("test-openai-stream-patch", server.URL, "test-key", []string{"kimi-k3"})
+
+	reqBody := `{"model": "kimi-k3", "input": "Fix bug", "tools": [{"type": "custom", "name": "apply_patch"}], "stream": true}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	gctx := core.AcquireContext(w, req)
+	defer core.ReleaseContext(gctx)
+
+	gctx.RequestType = core.RequestTypeResponses
+	gctx.RawBody = []byte(reqBody)
+	gctx.Model = "kimi-k3"
+	gctx.IsStream = true
+	gctx.SelectedEndpoint = ep
+
+	invoker := &openaiResponsesInvoker{}
+	err := invoker.Invoke(gctx, p)
+	if err != nil {
+		t.Fatalf("invoke failed: %v", err)
+	}
+
+	respBody := w.Body.String()
+
+	// 1. 应包含 response.output_item.added 且类型为 custom_tool_call，ID 为 ctc_ 前缀
+	if !strings.Contains(respBody, `"type":"response.output_item.added"`) {
+		t.Errorf("expected response.output_item.added in stream, got:\n%s", respBody)
+	}
+	if !strings.Contains(respBody, `"type":"custom_tool_call"`) {
+		t.Errorf("expected custom_tool_call item type, got:\n%s", respBody)
+	}
+	if !strings.Contains(respBody, `"id":"ctc_patch_stream_1"`) {
+		t.Errorf("expected item id ctc_patch_stream_1, got:\n%s", respBody)
+	}
+
+	// 2. 对于 custom_tool_call，不应发送 response.function_call.arguments.delta 或 done
+	if strings.Contains(respBody, "response.function_call.arguments.delta") {
+		t.Errorf("custom_tool_call should not emit response.function_call.arguments.delta events")
+	}
+	if strings.Contains(respBody, "response.function_call.arguments.done") {
+		t.Errorf("custom_tool_call should not emit response.function_call.arguments.done events")
+	}
+
+	// 3. 应包含 response.output_item.done 且 input 为解开后的 patch
+	if !strings.Contains(respBody, `"type":"response.output_item.done"`) {
+		t.Errorf("expected response.output_item.done, got:\n%s", respBody)
+	}
+	expectedPatch := "*** Begin Patch\n+console.log(\"hello\");\n*** End Patch"
+	foundItemDone := false
+	for _, line := range strings.Split(respBody, "\n") {
+		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"response.output_item.done"`) {
+			var ev struct {
+				Item struct {
+					Input string `json:"input"`
+				} `json:"item"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err == nil {
+				foundItemDone = true
+				if ev.Item.Input != expectedPatch {
+					t.Errorf("expected patch %q, got %q", expectedPatch, ev.Item.Input)
+				}
+			}
+		}
+	}
+	if !foundItemDone {
+		t.Errorf("could not find and parse response.output_item.done event in stream")
+	}
+}
+

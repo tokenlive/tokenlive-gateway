@@ -1,6 +1,7 @@
 package translate
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -58,6 +59,42 @@ func EnsureFunctionCallItemID(id string) string {
 		return "fc_mock"
 	}
 	return "fc_" + res
+}
+
+// EnsureCustomToolCallItemID normalizes a tool call ID to the OpenAI Responses ctc_ prefix for custom tool call item IDs.
+func EnsureCustomToolCallItemID(id string) string {
+	if id == "" {
+		return "ctc_mock"
+	}
+	if strings.HasPrefix(id, "ctc_") {
+		return id
+	}
+	res := strings.TrimPrefix(id, "call_")
+	res = strings.TrimPrefix(res, "fc_")
+	res = strings.TrimPrefix(res, "toolu_")
+	res = strings.TrimPrefix(res, "toolu-")
+	if res == "" {
+		return "ctc_mock"
+	}
+	return "ctc_" + res
+}
+
+// ExtractPatchInput extracts raw patch text from arguments.
+// If arguments is a JSON object with a "patch", "diff", "content", or "input" field, it returns the string value.
+// Otherwise it falls back to the trimmed arguments string itself.
+func ExtractPatchInput(args string) string {
+	trimmed := strings.TrimSpace(args)
+	if strings.HasPrefix(trimmed, "{") {
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(trimmed), &m); err == nil {
+			for _, key := range []string{"patch", "diff", "content", "input"} {
+				if val, ok := m[key].(string); ok {
+					return val
+				}
+			}
+		}
+	}
+	return args
 }
 
 func cleanJSONSchema(m map[string]interface{}, removeAdditionalProps bool) map[string]interface{} {

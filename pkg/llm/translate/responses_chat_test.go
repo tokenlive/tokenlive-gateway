@@ -1078,3 +1078,170 @@ func TestEnsureFunctionCallItemID(t *testing.T) {
 	}
 }
 
+func TestEnsureCustomToolCallItemID(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "ctc_mock"},
+		{"ctc_abc123", "ctc_abc123"},
+		{"call_abc123", "ctc_abc123"},
+		{"fc_abc123", "ctc_abc123"},
+		{"toolu_01xyz", "ctc_01xyz"},
+		{"toolu-01xyz", "ctc_01xyz"},
+		{"call_", "ctc_mock"},
+		{"custom_999", "ctc_custom_999"},
+	}
+
+	for _, tc := range tests {
+		actual := EnsureCustomToolCallItemID(tc.input)
+		if actual != tc.expected {
+			t.Errorf("EnsureCustomToolCallItemID(%q) = %q, want %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+
+func TestExtractPatchInput(t *testing.T) {
+	tests := []struct {
+		args     string
+		expected string
+	}{
+		{`{"patch":"*** Begin Patch\n+line\n*** End Patch"}`, "*** Begin Patch\n+line\n*** End Patch"},
+		{`{"diff":"diff --git a b"}`, "diff --git a b"},
+		{`{"content":"some text"}`, "some text"},
+		{`{"input":"raw input"}`, "raw input"},
+		{`*** Begin Patch\nraw`, `*** Begin Patch\nraw`},
+		{`plain string`, "plain string"},
+	}
+
+	for _, tc := range tests {
+		actual := ExtractPatchInput(tc.args)
+		if actual != tc.expected {
+			t.Errorf("ExtractPatchInput(%q) = %q, want %q", tc.args, actual, tc.expected)
+		}
+	}
+}
+
+func TestResponsesRequestToChat_CustomToolCallHistory(t *testing.T) {
+	reqBody := `{
+		"model": "kimi-k3",
+		"input": [
+			{
+				"type": "custom_tool_call",
+				"id": "ctc_01",
+				"call_id": "call_patch_1",
+				"name": "apply_patch",
+				"input": "*** Begin Patch\n+test\n*** End Patch\n"
+			},
+			{
+				"type": "custom_tool_call_output",
+				"call_id": "call_patch_1",
+				"output": "Success"
+			}
+		]
+	}`
+
+	out, _, err := ResponsesRequestToChat([]byte(reqBody))
+	if err != nil {
+		t.Fatalf("ResponsesRequestToChat failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	msgs, _ := req["messages"].([]interface{})
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages (assistant + tool), got %d: %v", len(msgs), msgs)
+	}
+
+	asstMsg, _ := msgs[0].(map[string]interface{})
+	if asstMsg["role"] != "assistant" {
+		t.Errorf("expected role assistant, got %v", asstMsg["role"])
+	}
+	tcs, _ := asstMsg["tool_calls"].([]interface{})
+	if len(tcs) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(tcs))
+	}
+	tc0, _ := tcs[0].(map[string]interface{})
+	if tc0["id"] != "call_patch_1" {
+		t.Errorf("expected id call_patch_1, got %v", tc0["id"])
+	}
+	fn, _ := tc0["function"].(map[string]interface{})
+	if fn["name"] != "apply_patch" {
+		t.Errorf("expected name apply_patch, got %v", fn["name"])
+	}
+
+	toolMsg, _ := msgs[1].(map[string]interface{})
+	if toolMsg["role"] != "tool" {
+		t.Errorf("expected role tool, got %v", toolMsg["role"])
+	}
+	if toolMsg["tool_call_id"] != "call_patch_1" {
+		t.Errorf("expected tool_call_id call_patch_1, got %v", toolMsg["tool_call_id"])
+	}
+	if toolMsg["content"] != "Success" {
+		t.Errorf("expected content Success, got %v", toolMsg["content"])
+	}
+}
+
+func TestChatCompletionToResponses_ApplyPatchCustomToolCall(t *testing.T) {
+	chatResp := `{
+		"id": "chatcmpl-test",
+		"object": "chat.completion",
+		"created": 1234567890,
+		"model": "kimi-k3",
+		"choices": [
+			{
+				"index": 0,
+				"message": {
+					"role": "assistant",
+					"tool_calls": [
+						{
+							"id": "call_patch_2",
+							"type": "function",
+							"function": {
+								"name": "apply_patch",
+								"arguments": "{\"patch\":\"*** Begin Patch\\n+line\\n*** End Patch\"}"
+							}
+						}
+					]
+				},
+				"finish_reason": "tool_calls"
+			}
+		]
+	}`
+
+	res, err := ChatCompletionToResponses([]byte(chatResp), "kimi-k3", nil)
+	if err != nil {
+		t.Fatalf("ChatCompletionToResponses failed: %v", err)
+	}
+
+	var respMap map[string]interface{}
+	if err := json.Unmarshal(res.Body, &respMap); err != nil {
+		t.Fatalf("unmarshal responses failed: %v", err)
+	}
+
+	output, _ := respMap["output"].([]interface{})
+	if len(output) != 1 {
+		t.Fatalf("expected 1 output item, got %d", len(output))
+	}
+
+	item, _ := output[0].(map[string]interface{})
+	if item["type"] != "custom_tool_call" {
+		t.Errorf("expected item.type == 'custom_tool_call', got %v", item["type"])
+	}
+	if item["name"] != "apply_patch" {
+		t.Errorf("expected item.name == 'apply_patch', got %v", item["name"])
+	}
+	if item["id"] != "ctc_patch_2" {
+		t.Errorf("expected item.id == 'ctc_patch_2', got %v", item["id"])
+	}
+	if item["input"] != "*** Begin Patch\n+line\n*** End Patch" {
+		t.Errorf("expected unescaped patch input, got %v", item["input"])
+	}
+	if _, hasArgs := item["arguments"]; hasArgs {
+		t.Errorf("custom_tool_call should not have arguments field: %v", item)
+	}
+}
+

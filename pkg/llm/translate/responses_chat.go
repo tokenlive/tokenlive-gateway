@@ -74,7 +74,7 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 					continue
 				}
 				itemType, _ := itemMap["type"].(string)
-				if itemType == "function_call_output" {
+				if itemType == "function_call_output" || itemType == "custom_tool_call_output" {
 					if callID := responseItemCallID(itemMap); callID != "" {
 						toolOutputs[callID] = functionCallOutputText(itemMap)
 					}
@@ -185,10 +185,37 @@ func ResponsesRequestToChat(rawBody []byte) ([]byte, *ToolNameMapper, error) {
 					continue
 				}
 
+				if itemType == "custom_tool_call" {
+					callID := responseItemCallID(itemMap)
+					if _, ok := toolOutputs[callID]; !ok {
+						continue
+					}
+					name, _ := itemMap["name"].(string)
+					rawInput, _ := itemMap["input"].(string)
+					argsObj := map[string]interface{}{
+						"patch": rawInput,
+					}
+					argsBytes, _ := json.Marshal(argsObj)
+					args := string(argsBytes)
+					if ns, _ := itemMap["namespace"].(string); ns != "" {
+						name = mapper.SanitizeAndRegister(ns, name)
+					}
+					mapper.RegisterCustom(name)
+					pendingToolCalls = append(pendingToolCalls, map[string]interface{}{
+						"id":   callID,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      name,
+							"arguments": args,
+						},
+					})
+					continue
+				}
+
 				// 2. Function Call Output. Already indexed; emitted with its call
 				// when the round flushes. An output whose call is not still
 				// pending belongs to a round that already flushed, so close it.
-				if itemType == "function_call_output" {
+				if itemType == "function_call_output" || itemType == "custom_tool_call_output" {
 					callID := responseItemCallID(itemMap)
 					if callID == "" || pendingAnswered[callID] || !pendingHasCallID(pendingToolCalls, callID) {
 						flushPendingToolCalls()
@@ -434,15 +461,32 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 					toolNamespace = splitChatToolNamespace(toolName)
 					toolName = chatToolLocalName(toolName)
 				}
-				outputList = append(outputList, map[string]interface{}{
-					"id":        EnsureFunctionCallItemID(tc.ID),
-					"call_id":   tc.ID,
-					"type":      "function_call",
-					"status":    "completed",
-					"name":      toolName,
-					"namespace": toolNamespace,
-					"arguments": tc.Function.Arguments,
-				})
+				isCustom := toolName == "apply_patch"
+				if mapper != nil && mapper.IsCustom(toolName) {
+					isCustom = true
+				}
+
+				if isCustom {
+					outputList = append(outputList, map[string]interface{}{
+						"id":        EnsureCustomToolCallItemID(tc.ID),
+						"call_id":   tc.ID,
+						"type":      "custom_tool_call",
+						"status":    "completed",
+						"name":      toolName,
+						"namespace": toolNamespace,
+						"input":     ExtractPatchInput(tc.Function.Arguments),
+					})
+				} else {
+					outputList = append(outputList, map[string]interface{}{
+						"id":        EnsureFunctionCallItemID(tc.ID),
+						"call_id":   tc.ID,
+						"type":      "function_call",
+						"status":    "completed",
+						"name":      toolName,
+						"namespace": toolNamespace,
+						"arguments": tc.Function.Arguments,
+					})
+				}
 			}
 		} else {
 			content := choice.Message.Content
@@ -786,6 +830,11 @@ func WrapFlatToolToNestedOpenAI(flatTool map[string]interface{}, mapper *ToolNam
 	for k, v := range flatTool {
 		if k != "type" {
 			innerMap[k] = v
+		}
+	}
+	if name, _ := innerMap["name"].(string); name != "" {
+		if mapper != nil && (name == "apply_patch" || toolType == "custom") {
+			mapper.RegisterCustom(name)
 		}
 	}
 	if ns, ok := innerMap["namespace"].(string); ok && ns != "" {
