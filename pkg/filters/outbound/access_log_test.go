@@ -1,17 +1,70 @@
 package outbound
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/spf13/viper"
+	"github.com/tokenlive/tokenlive-gateway/pkg/compensation"
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
+
+func TestAccessLogCloseFlushesOnceAndRejectsLateBatchItems(t *testing.T) {
+	v := viper.New()
+	v.Set("access_log.clickhouse.enabled", true)
+	v.Set("access_log.batch.batch_size", 100)
+	v.Set("access_log.batch.flush_interval", time.Hour)
+	queue := &accessLogCloseQueue{}
+	f := NewAccessLogFilter(zap.NewNop(), nil, queue, &accessLogFailConn{}, v)
+	if err := f.OnResponse(&core.GatewayContext{Model: "test", StartTime: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	f.Close()
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	if len(queue.tasks) != 1 {
+		t.Fatalf("Close lost or duplicated buffered batch: %d tasks", len(queue.tasks))
+	}
+	logs := queue.tasks[0].Payload["logs"].([]AccessLogItem)
+	if len(logs) != 1 || logs[0].Model != "test" {
+		t.Fatalf("unexpected shutdown batch: %+v", logs)
+	}
+	_ = f.OnResponse(&core.GatewayContext{Model: "late", StartTime: time.Now()})
+	if len(f.logChan) != 0 {
+		t.Fatal("closed batcher accepted a late access log")
+	}
+}
+
+type accessLogFailConn struct{ clickhouse.Conn }
+
+func (*accessLogFailConn) PrepareBatch(context.Context, string, ...driver.PrepareBatchOption) (driver.Batch, error) {
+	return nil, errors.New("test sink unavailable")
+}
+
+type accessLogCloseQueue struct {
+	compensation.Queue
+	mu    sync.Mutex
+	tasks []*compensation.CompensationTask
+}
+
+func (q *accessLogCloseQueue) Enqueue(_ context.Context, task *compensation.CompensationTask) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.tasks = append(q.tasks, task)
+	return nil
+}
 
 func TestAccessLogRecordsSmartDecisionWithoutPrompt(t *testing.T) {
 	sink, logs := observer.New(zap.InfoLevel)

@@ -64,8 +64,10 @@ func (e *Engine) buildPipeline(cfg *PipelineConfig) (*Pipeline, error) {
 		defaultType = "cluster"
 	}
 	p.Invokers[defaultType] = invoker
-	if defaultType == "cluster" {
+	if defaultType == "cluster" || defaultType == "fallback" || defaultType == "failover" {
+		p.Invokers["cluster"] = invoker
 		p.Invokers["failover"] = invoker
+		p.Invokers["fallback"] = invoker
 
 		// Auto-generate and register hedging invoker for cluster-type pipelines
 		hedgingCfg := &InvokerConfig{
@@ -80,6 +82,7 @@ func (e *Engine) buildPipeline(cfg *PipelineConfig) (*Pipeline, error) {
 			e.logger.Warn("failed to build hedging invoker", zap.Error(err))
 		}
 	}
+	p.RequestInvoker = NewFallbackInvoker(p)
 	return p, nil
 }
 

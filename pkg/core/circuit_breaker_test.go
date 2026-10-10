@@ -3,11 +3,257 @@ package core
 import (
 	"errors"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
+
+func prepareAttemptHalfOpen(t *testing.T, cbm *CircuitBreakerManager, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		cbm.RecordRaw(key, false, 10, 1, 2, time.Nanosecond)
+		if cbm.GetState(key) != CircuitHalfOpen {
+			t.Fatalf("%s 未进入半开", key)
+		}
+	}
+}
+
+func attemptTestContext(level string) *GatewayContext {
+	return &GatewayContext{Policy: &policy.Policy{CircuitBreakPolicies: []*policy.CircuitBreakPolicy{{
+		Level: level, Version: 1, SlidingWindowSize: 10, MinCallsThreshold: 1,
+		AllowedCallsInHalfOpenState: 2, WaitDurationInOpenState: 60000,
+		ErrorMessages: []string{"matched"},
+	}}}}
+}
+
+func TestCircuitBreakerAttempt_DualLayerRollback(t *testing.T) {
+	cbm := NewCircuitBreakerManager()
+	ep := &Endpoint{ID: "ep", Provider: "provider", Model: "model"}
+	prepareAttemptHalfOpen(t, cbm, "provider:model", "ep")
+	if !cbm.AcquireHalfOpenPermit("ep", false) {
+		t.Fatal("无法占用端点许可")
+	}
+	if lease, err := cbm.AcquireAttempt(nil, ep, false); err == nil || lease != nil {
+		t.Fatal("端点许可冲突应拒绝双层获取")
+	}
+	if !cbm.AcquireHalfOpenPermit("provider:model", false) {
+		t.Fatal("端点拒绝后服务许可未回滚")
+	}
+}
+
+func TestCircuitBreakerAttempt_FinishAlwaysReturnsBothPermits(t *testing.T) {
+	for _, tc := range []struct {
+		name, level string
+		failure     bool
+	}{
+		{"disabled success", "disabled", false}, {"disabled failure", "disabled", true},
+		{"service success", "SERVICE", false}, {"service unmatched", "SERVICE", true},
+		{"endpoint success", "ENDPOINT", false}, {"endpoint unmatched", "ENDPOINT", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cbm := NewCircuitBreakerManager()
+			ep := &Endpoint{ID: "ep", Provider: "provider", Model: "model"}
+			g := attemptTestContext(tc.level)
+			if tc.level == "disabled" {
+				g.Policy = nil
+			}
+			prepareAttemptHalfOpen(t, cbm, "provider:model", "ep")
+			lease, err := cbm.AcquireAttempt(g, ep, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.failure {
+				lease.RecordFailure(g, errors.New("other failure"))
+			} else {
+				lease.RecordSuccess(g)
+			}
+			if _, err := cbm.AcquireAttempt(g, ep, false); err != nil {
+				t.Fatalf("结束后许可泄漏: %v", err)
+			}
+		})
+	}
+}
+
+func TestCircuitBreakerAttempt_OldFinishCannotReleaseNewPermit(t *testing.T) {
+	for _, change := range []string{"double finish", "reset", "policy version", "next half-open"} {
+		t.Run(change, func(t *testing.T) {
+			cbm := NewCircuitBreakerManager()
+			ep := &Endpoint{ID: "ep", Provider: "provider", Model: "model"}
+			g := attemptTestContext("")
+			prepareAttemptHalfOpen(t, cbm, "provider:model", "ep")
+			old, err := cbm.AcquireAttempt(g, ep, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch change {
+			case "double finish":
+				old.RecordSuccess(g)
+			case "reset":
+				cbm.Reset("provider:model")
+				cbm.Reset("ep")
+				prepareAttemptHalfOpen(t, cbm, "provider:model", "ep")
+			case "policy version":
+				g = attemptTestContext("")
+				g.Policy.CircuitBreakPolicies[0].Version = 2
+				cbm.CheckAndResetOnVersionChange("provider:model", 2)
+				cbm.CheckAndResetOnVersionChange("ep", 2)
+				prepareAttemptHalfOpen(t, cbm, "provider:model", "ep")
+			case "next half-open":
+				cbm.RecordRaw("provider:model", false, 10, 1, 2, time.Nanosecond)
+				cbm.RecordRaw("ep", false, 10, 1, 2, time.Nanosecond)
+				cbm.GetState("provider:model")
+				cbm.GetState("ep")
+			}
+			current, err := cbm.AcquireAttempt(g, ep, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old.RecordFailure(attemptTestContext(""), errors.New("matched"))
+			old.Release()
+			if cbm.GetState("ep") != CircuitHalfOpen || cbm.GetState("provider:model") != CircuitHalfOpen {
+				t.Fatal("旧结束污染了当前健康状态")
+			}
+			if _, err := cbm.AcquireAttempt(g, ep, false); err == nil {
+				t.Fatal("旧结束误归还了新许可")
+			}
+			current.Release()
+			if _, err := cbm.AcquireAttempt(g, ep, false); err != nil {
+				t.Fatalf("当前结束未归还许可: %v", err)
+			}
+		})
+	}
+}
+
+func TestCircuitBreakerAttempt_NoRulesStillMatchesFailure(t *testing.T) {
+	cbm := NewCircuitBreakerManager()
+	ep := &Endpoint{ID: "ep", Provider: "provider", Model: "model"}
+	g := attemptTestContext("")
+	g.Policy.CircuitBreakPolicies[0].ErrorMessages = nil
+	prepareAttemptHalfOpen(t, cbm, "provider:model", "ep")
+	lease, err := cbm.AcquireAttempt(g, ep, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.RecordFailure(g, errors.New("any failure"))
+	if cbm.GetState("ep") != CircuitOpen || cbm.GetState("provider:model") != CircuitOpen {
+		t.Fatal("无匹配规则应保留默认全部失败计数")
+	}
+}
+
+func TestCircuitBreakerAttempt_MultiplePoliciesPreserveLegacyOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		secondVersion int64
+		secondMatches bool
+		success       bool
+		wantState     CircuitState
+		wantEvents    []string
+		wantResults   []bool
+		wantVersion   int64
+		wantPolicyID  string
+	}{
+		{"first matches different version", 2, false, false, CircuitOpen, []string{"A"}, nil, 1, "A"},
+		{"both match same version", 1, true, false, CircuitOpen, []string{"A"}, []bool{false}, 1, "B"},
+		{"both match different version", 2, true, false, CircuitOpen, []string{"A", "B"}, []bool{false}, 2, "B"},
+		{"success same version", 1, false, true, CircuitClosed, nil, []bool{true, true}, 1, "B"},
+		{"success different version", 2, false, true, CircuitClosed, nil, []bool{true}, 2, "B"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 同一输入走 legacy 和 lease；快照明确约束策略顺序、记录数与事件元数据。
+			for _, legacy := range []bool{true, false} {
+				manager := NewCircuitBreakerManager()
+				ep := &Endpoint{ID: "ep", Provider: "provider", Model: "model"}
+				prepareAttemptHalfOpen(t, manager, "ep")
+				g := attemptTestContext("ENDPOINT")
+				a := g.Policy.CircuitBreakPolicies[0]
+				a.ID, a.AllowedCallsInHalfOpenState = "A", 1
+				b := *a
+				b.ID, b.Version = "B", tc.secondVersion
+				if !tc.secondMatches {
+					b.ErrorMessages = []string{"other"}
+				}
+				g.Policy.CircuitBreakPolicies = append(g.Policy.CircuitBreakPolicies, &b)
+				var events []string
+				manager.SetEventHandler(func(evt CBEvent) { events = append(events, evt.PolicyID) })
+				if legacy {
+					if !manager.AcquireHalfOpenPermit("ep", false) {
+						t.Fatal("无法获取 legacy 许可")
+					}
+					if tc.success {
+						manager.RecordSuccess(g, ep)
+					} else {
+						manager.RecordFailure(g, ep, errors.New("matched"))
+					}
+				} else {
+					lease, err := manager.AcquireAttempt(g, ep, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if tc.success {
+						lease.RecordSuccess(g)
+					} else {
+						lease.RecordFailure(g, errors.New("matched"))
+					}
+				}
+				if manager.GetState("ep") != tc.wantState || !reflect.DeepEqual(events, tc.wantEvents) {
+					t.Fatalf("legacy=%v: state=%v events=%v, want %v %v", legacy, manager.GetState("ep"), events, tc.wantState, tc.wantEvents)
+				}
+				entry := manager.getEntry("ep")
+				entry.mu.Lock()
+				results := append([]bool(nil), entry.results...)
+				version, policyID := entry.policyVersion, entry.policyID
+				entry.mu.Unlock()
+				if !reflect.DeepEqual(results, tc.wantResults) || version != tc.wantVersion || policyID != tc.wantPolicyID {
+					t.Fatalf("legacy=%v 快照 results=%v version=%d policy=%s, want=%v/%d/%s", legacy, results, version, policyID, tc.wantResults, tc.wantVersion, tc.wantPolicyID)
+				}
+			}
+		})
+	}
+}
+
+func TestCircuitBreakerAttempt_PolicyCallbackResetCannotAffectNewPermit(t *testing.T) {
+	manager := NewCircuitBreakerManager()
+	ep := &Endpoint{ID: "ep", Provider: "provider", Model: "model"}
+	prepareAttemptHalfOpen(t, manager, "ep")
+	g := attemptTestContext("ENDPOINT")
+	g.Policy.CircuitBreakPolicies[0].ID = "A"
+	b := *g.Policy.CircuitBreakPolicies[0]
+	b.ID, b.Version = "B", 2
+	g.Policy.CircuitBreakPolicies = append(g.Policy.CircuitBreakPolicies, &b)
+	var current *CircuitBreakerAttempt
+	manager.SetEventHandler(func(evt CBEvent) {
+		if evt.PolicyID != "A" {
+			t.Fatal("外部 reset 后旧调用仍记录后续策略")
+		}
+		manager.SetEventHandler(nil)
+		manager.Reset("ep")
+		prepareAttemptHalfOpen(t, manager, "ep")
+		var err error
+		current, err = manager.AcquireAttempt(nil, ep, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	old, err := manager.AcquireAttempt(g, ep, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.RecordFailure(g, errors.New("matched"))
+	if current == nil || manager.GetState("ep") != CircuitHalfOpen {
+		t.Fatal("外部 reset 后的新半开状态被旧调用污染")
+	}
+	if _, err := manager.AcquireAttempt(nil, ep, false); err == nil {
+		t.Fatal("旧结束归还了 callback 获取的新许可")
+	}
+	current.Release()
+	if lease, err := manager.AcquireAttempt(nil, ep, false); err != nil {
+		t.Fatal(err)
+	} else {
+		lease.Release()
+	}
+}
 
 func TestCircuitBreakerEntry_TimeWindowSliding(t *testing.T) {
 	e := &circuitBreakerEntry{

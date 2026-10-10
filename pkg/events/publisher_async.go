@@ -9,12 +9,17 @@ import (
 // AsyncPublisher wraps a delegate Publisher and handles events asynchronously
 // using a buffered channel and a fixed background worker.
 type AsyncPublisher struct {
-	delegate Publisher
-	eventCh  chan *OpsEvent
-	wg       sync.WaitGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
-	cfg      EventsConfig
+	delegate  Publisher
+	eventCh   chan *OpsEvent
+	wg        sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	cfg       EventsConfig
+	mu        sync.Mutex
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
+	pending   *OpsEvent // worker 停止准入时已取出但尚未开始发布的事件
 }
 
 // NewAsyncPublisher wraps an existing publisher in an asynchronous buffer.
@@ -38,6 +43,8 @@ func NewAsyncPublisher(delegate Publisher, bufferSize int) *AsyncPublisher {
 
 // SetEventsConfig sets the toggle switches for different event types.
 func (p *AsyncPublisher) SetEventsConfig(cfg EventsConfig) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.cfg = cfg
 }
 
@@ -78,6 +85,11 @@ func (p *AsyncPublisher) isEventEnabled(eventType string) bool {
 // Publish implements Publisher. It pushes the event to the buffered channel.
 // If the channel is full, the event is safely dropped to avoid blocking the caller.
 func (p *AsyncPublisher) Publish(ctx context.Context, event *OpsEvent) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil // Best-effort events after shutdown are safely ignored.
+	}
 	if !p.isEventEnabled(event.EventType) {
 		return nil
 	}
@@ -91,20 +103,36 @@ func (p *AsyncPublisher) Publish(ctx context.Context, event *OpsEvent) error {
 	}
 }
 
+// Stop 停止准入、取消在途发布并等待 worker；排队事件留给 Close drain。
+func (p *AsyncPublisher) Stop() {
+	p.mu.Lock()
+	p.closed = true
+	p.cancel()
+	p.mu.Unlock()
+	p.wg.Wait()
+}
+
 // Close stops the background worker, flushes pending events, and closes the delegate.
 func (p *AsyncPublisher) Close() error {
-	p.cancel()
-	p.wg.Wait()
+	p.closeOnce.Do(func() {
+		p.Stop()
 
-	// Drain remaining events in the channel (best effort flush)
-	close(p.eventCh)
-	for event := range p.eventCh {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = p.delegate.Publish(bgCtx, event)
-		cancel()
-	}
-
-	return p.delegate.Close()
+		// 已取出但未准入的事件优先重试，之后沿原队列顺序做有界 best-effort drain。
+		drain := func(event *OpsEvent) {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = p.delegate.Publish(bgCtx, event)
+			cancel()
+		}
+		if p.pending != nil {
+			drain(p.pending)
+		}
+		close(p.eventCh)
+		for event := range p.eventCh {
+			drain(event)
+		}
+		p.closeErr = p.delegate.Close()
+	})
+	return p.closeErr
 }
 
 func (p *AsyncPublisher) worker() {
@@ -118,7 +146,14 @@ func (p *AsyncPublisher) worker() {
 			if !ok {
 				return
 			}
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			p.mu.Lock()
+			if p.closed {
+				p.pending = event
+				p.mu.Unlock()
+				return
+			}
+			bgCtx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+			p.mu.Unlock()
 			_ = p.delegate.Publish(bgCtx, event)
 			cancel()
 		}

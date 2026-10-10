@@ -9,8 +9,19 @@ type Pipeline struct {
 	InboundFilters          []InboundFilter
 	OutboundFilters         []OutboundFilter
 	CriticalOutboundFilters map[string]bool
-	Invoker                 Invoker            // Default invoker
-	Invokers                map[string]Invoker // Runtime invoker registry by key
+	Invoker                 Invoker            // 原始默认 Invoker，保留具体类型供 Smart 容量路由使用
+	Invokers                map[string]Invoker // 原始运行时 Invoker 注册表
+	RequestInvoker          Invoker            // 单次请求入口，封装模型级 fallback
+}
+
+// SelectInvoker 使用请求最初匹配的策略选择原始调用器。
+func (p *Pipeline) SelectInvoker(g *GatewayContext) Invoker {
+	if g.Policy != nil && g.Policy.InvocationPolicy != nil {
+		if selected := p.Invokers[g.Policy.InvocationPolicy.Type]; selected != nil {
+			return selected
+		}
+	}
+	return p.Invoker
 }
 
 // PipelineConfig configures a pipeline.

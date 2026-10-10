@@ -67,6 +67,9 @@ type AccessLogFilter struct {
 	flushInterval time.Duration
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
+	mu            sync.Mutex
+	closed        bool
+	closeOnce     sync.Once
 }
 
 // NewAccessLogFilter creates an AccessLogFilter with an in-memory batcher goroutine.
@@ -176,6 +179,11 @@ func (f *AccessLogFilter) OnResponse(gctx *core.GatewayContext) error {
 
 	// 3. enqueue to in-memory batcher
 	if f.chEnabled && f.chConn != nil {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.closed {
+			return nil
+		}
 		select {
 		case f.logChan <- item:
 		default:
@@ -271,14 +279,13 @@ func (f *AccessLogFilter) buildAccessLogItem(gctx *core.GatewayContext) AccessLo
 
 // Close gracefully drains the channel and flushes remaining logs to ClickHouse (falls back to Redis on failure).
 func (f *AccessLogFilter) Close() {
-	if !f.chEnabled || f.chConn == nil {
-		return
-	}
-
-	f.logger.Info("Stopping AccessLogFilter Batcher...")
-	close(f.stopCh)
-	f.wg.Wait()
-	f.logger.Info("AccessLogFilter Batcher stopped gracefully")
+	f.closeOnce.Do(func() {
+		f.mu.Lock()
+		f.closed = true
+		close(f.stopCh)
+		f.mu.Unlock()
+		f.wg.Wait()
+	})
 }
 
 // startBatchLoop runs the background batch loop, balancing batch size and flush interval.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,111 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
+
+func TestStatusCollectorCloseCancelsHTTPWorkerAndRejectsNewMetrics(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	f := NewStatusCollectorFilter(nil, nil, server.URL, "token", zap.NewNop())
+	// A full batch triggers reporting immediately, without waiting on heartbeat.
+	for range 100 {
+		if err := f.OnResponse(&core.GatewayContext{Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not begin its HTTP report")
+	}
+	done := make(chan struct{})
+	go func() { f.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel and join HTTP reporting")
+	}
+	f.Close()
+	before := len(f.metricCh)
+	_ = f.OnResponse(&core.GatewayContext{Model: "late"})
+	if len(f.metricCh) != before {
+		t.Fatal("closed collector admitted a late metric")
+	}
+}
+
+func TestStatusCollectorCloseCancelsInflightRedisPipeline(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), PoolSize: 1})
+	defer rdb.Close()
+	hook := &cancelPipelineHook{started: make(chan struct{}), canceled: make(chan struct{})}
+	rdb.AddHook(hook)
+	f := NewStatusCollectorFilter(rdb, nil, "", "", zap.NewNop())
+	_ = f.OnResponse(&core.GatewayContext{Model: "test"})
+	<-hook.started
+	done := make(chan struct{})
+	go func() { f.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel/join in-flight Redis reporting")
+	}
+	<-hook.canceled
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type cancelPipelineHook struct{ started, canceled chan struct{} }
+
+func (*cancelPipelineHook) DialHook(next redis.DialHook) redis.DialHook          { return next }
+func (*cancelPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+func (h *cancelPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if len(cmds) == 0 || cmds[0].Name() != "incr" {
+			return next(ctx, cmds)
+		}
+		close(h.started)
+		<-ctx.Done()
+		close(h.canceled)
+		return ctx.Err()
+	}
+}
+
+func TestStatusCollectorCloseJoinsRedisWritesAndClosesAdmission(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), PoolSize: 1, MaxConcurrentDials: 1})
+	defer rdb.Close()
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		t.Fatal(err)
+	}
+	f := NewStatusCollectorFilter(rdb, nil, "", "", zap.NewNop())
+	var callers sync.WaitGroup
+	for range 8 {
+		callers.Add(1)
+		go func() { defer callers.Done(); _ = f.OnResponse(&core.GatewayContext{Model: "test"}) }()
+	}
+	f.Close()
+	callers.Wait()
+	f.Close()
+	before := mr.CommandCount()
+	for range 10 {
+		_ = f.OnResponse(&core.GatewayContext{Model: "late"})
+	}
+	if got := mr.CommandCount(); got != before {
+		t.Fatalf("closed collector issued more Redis commands: %d -> %d", before, got)
+	}
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("collector closed borrowed Redis: %v", err)
+	}
+}
 
 func TestStatusCollectorFilter_OnResponse(t *testing.T) {
 	// 1. 初始化 miniredis 和 redis client

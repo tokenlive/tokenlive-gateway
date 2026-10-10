@@ -24,9 +24,17 @@ _Avoid_: binding, mapping
 请求类型枚举，如 `chat_completion`、`embedding`。Model 声明自己支持的能力（requestTypes）列表，Provider 声明自己支持的能力列表。路由时按此过滤。
 
 **Fallback**:
-跨模型降级策略。当请求的 model 不可用时，尝试降级到另一个 model**Policy**:
+跨模型降级策略。请求级 `FallbackInvoker` 在进入时选择一次原始 Cluster/Hedging，持有模型目标遍历；只在无可用 Endpoint 且未触发 fatal、亲和性禁止降级或首字已发出时切换模型。普通降级沿用首次解析的 Policy，不为目标重新查询策略。Inbound/Outbound 每请求各执行一次，原始 Invoker 注册表保留具体类型供 SmartRouting 容量筛选。
+
+**Policy**:
 单次请求的已解析策略，挂在 GatewayContext 上。包含 Invoker 级参数（max_retries、lb_strategy、各种超时机制）和 Filter 级参数（rate_limit、permissions）。**在传输契约上，网关与 AdminProject 统一使用下划线（snake_case）命名风格，同时表中的 Params 配置项直接使用原生 JSON 对象传递（非转义字符串），从而实现零额外映射开销的极简共享。**
 _Avoid_: resolved policy, strategy config
+
+**SmartRouting 子调用结算**:
+judge 与实际目标模型分别持有 child context 和目标 Policy，通过共享的已装配限额/结算实例完成预留、调用和一次结算；Endpoint 重试不重复预留。子调用只结算限额桶，不重复执行外层 Credits、EMA、日志或指标。部分准入失败与取消仍按原 reservation 退款，限额拒绝不触发模型升级。
+
+**后台任务生命周期**:
+装配入口集中实例注册、缺省管线和已拥有资源的退出顺序。缺省管线只补缺失名称，显式配置优先，切片不跨实例共享。构造成功后启动轮询和订阅；关闭先停止准入、取消并等待健康/熔断探测、配置同步和发布任务，再关闭结算日志、存储等依赖。构造失败回滚不关闭借入的 Redis/ClickHouse 客户端。
 
 **TTFT (Time to First Token)**:
 首字响应时间/首字超时。对流式请求而言，指发送请求到收到第一个流式 Token 的最大允许延迟。用来监控上游 LLM 冷启动或过载挂起。在度量指标（Metrics）采集上，TTFT 仅在成功输出首个流式 Token 时被激活并汇报（即 `gctx.TTFT > 0` 且 `gctx.IsStream = true`）。任何在流建立前被直接拒绝、拦截或报错的请求，其异常耗时不计入 TTFT 监控，只体现在常规的错误吞吐指标中。
@@ -47,6 +55,7 @@ _Avoid_: quota, limit, token pool
 
 **Circuit Breaker State Metrics (熔断状态指标导出)**:
 在 Prometheus 中实时反映底层 Endpoint 或服务渠道熔断状态（Closed/Open/Half-Open）的监控度量。为了解决惰性熔断器无请求时不触发状态更新的问题，网关采用**被动触发 + 定期刺探（Event-Driven + Tick Probe）**的设计：在发生熔断判定的瞬时直接写 Gauge 指标，并在后台运行轻量级定时探测协程，定期计算并刷新处于隔离状态的熔断实体，保障 Grafana 大屏指标的实时性。
+每次 Endpoint attempt 通过 Manager 取得服务与实例两层许可；第二层拒绝会回滚第一层，记录或释放只结束一次，Reset/版本变化后旧 attempt 不能归还新探测许可。健康反馈集中在 attempt observer，串行和 hedging 保留各自的错误、慢调用及延迟记录规则，不统一不同调用语义。
 
 **Cost Limiter**:
 消费额度限制器。基于大模型调用计费价格（Billing Policy）以及实际扣减额度，进行单日或单月维度的最大消费限额（USD/CNY 厘维度）流量控制。

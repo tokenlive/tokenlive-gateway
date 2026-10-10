@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
@@ -85,9 +86,13 @@ type StatusCollectorFilter struct {
 	logger     *zap.Logger
 
 	// async HTTP reporting channel
-	metricCh chan RequestMetric
-	ctx      context.Context
-	cancel   context.CancelFunc
+	metricCh  chan RequestMetric
+	ctx       context.Context
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	closed    bool
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 
 	includeClientDisconnect bool
 	sink                    MetricsSink
@@ -116,10 +121,11 @@ func NewStatusCollectorFilter(rdb *redis.Client, cbManager *core.CircuitBreakerM
 		logger:     logger,
 	}
 
+	f.ctx, f.cancel = context.WithCancel(context.Background())
 	if rdb == nil && adminURL != "" {
 		f.metricCh = make(chan RequestMetric, 5000)
-		f.ctx, f.cancel = context.WithCancel(context.Background())
-		go f.startWorker()
+		f.wg.Add(1)
+		go func() { defer f.wg.Done(); f.startWorker() }()
 	}
 
 	return f
@@ -142,6 +148,14 @@ func (f *StatusCollectorFilter) Criticality() core.FilterCriticality { return co
 func (f *StatusCollectorFilter) InboundSafe()                        {}
 
 func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return nil
+	}
+	f.wg.Add(1)
+	f.mu.Unlock()
+	defer f.wg.Done()
 	if gctx.Model == "" {
 		return nil
 	}
@@ -259,7 +273,9 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 		return nil
 	}
 
+	f.wg.Add(1) // The admitted response keeps Wait nonzero until this child is registered.
 	go func() {
+		defer f.wg.Done()
 		minute := time.Now().Unix() / 60
 		var statusKey string
 		var globalKey string
@@ -277,8 +293,8 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 		dailyOutputKey := fmt.Sprintf("aigw:status:daily:output_tokens:%s", dateStr)
 		dailyCostKey := fmt.Sprintf("aigw:status:daily:cost:%s", dateStr)
 
-		// use context.Background() so async writes survive request cancellation after the main goroutine exits
-		bgCtx := context.Background()
+		// Independent of request cancellation, but owned by collector lifetime.
+		bgCtx := f.ctx
 		pipe := f.rdb.Pipeline()
 
 		// 1. per-model and global per-minute stats
@@ -378,6 +394,20 @@ func (f *StatusCollectorFilter) OnResponse(gctx *core.GatewayContext) error {
 	}()
 
 	return nil
+}
+
+// Close rejects new work, cancels HTTP/Redis reporting and joins admitted work.
+// It never closes the borrowed Redis client or a shared HTTP transport.
+func (f *StatusCollectorFilter) Close() {
+	f.closeOnce.Do(func() {
+		f.mu.Lock()
+		f.closed = true
+		if f.cancel != nil {
+			f.cancel()
+		}
+		f.mu.Unlock()
+		f.wg.Wait()
+	})
 }
 
 func (f *StatusCollectorFilter) startWorker() {

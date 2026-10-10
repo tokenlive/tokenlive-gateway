@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/events"
+	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 
 	"go.uber.org/zap"
 )
@@ -39,6 +40,52 @@ type InvokerBuilder interface {
 	BuildInvoker(cfg *InvokerConfig, r InvokerDependencyResolver) (Invoker, error)
 }
 
+// FallbackInvoker 持有完整请求级模型降级，原始调用器仅在入口选择一次。
+type FallbackInvoker struct{ pipeline *Pipeline }
+
+func NewFallbackInvoker(pipeline *Pipeline) *FallbackInvoker {
+	return &FallbackInvoker{pipeline: pipeline}
+}
+
+func (*FallbackInvoker) Endpoint() *Endpoint { return nil }
+
+func (f *FallbackInvoker) Invoke(g *GatewayContext) error {
+	invoke := f.pipeline.SelectInvoker(g)
+	fallback := getFallbackPolicy(g)
+	if fallback == nil || len(fallback.Targets) == 0 {
+		return invoke.Invoke(g)
+	}
+	models := append([]string{g.Model}, fallback.Targets...)
+	var err error
+	for _, model := range models {
+		g.Model = model
+		g.FallbackChain = append(g.FallbackChain, model)
+		err = invoke.Invoke(g)
+		if !CanFallbackModel(g, err) {
+			break
+		}
+	}
+	return err
+}
+
+func getFallbackPolicy(g *GatewayContext) *policy.FallbackPolicy {
+	if g != nil && g.Policy != nil && g.Policy.InvocationPolicy != nil {
+		return g.Policy.InvocationPolicy.FallbackPolicy
+	}
+	return nil
+}
+
+// CanFallbackModel 仅允许无端点降级，保留亲和性与首字节保护。
+func CanFallbackModel(g *GatewayContext, err error) bool {
+	if err == nil || errors.Is(err, ErrFatalNoAvailableEndpoint) {
+		return false
+	}
+	if g != nil && (g.FatalErr != nil || g.TTFT > 0 || isAffinityNoDegrade(g)) {
+		return false
+	}
+	return errors.Is(err, ErrNoAvailableEndpoint)
+}
+
 // StateStore is local state storage (avoids gateway→store cycles).
 type StateStore interface {
 	// Rate limit: speculative debit + precise settlement
@@ -66,4 +113,41 @@ type StateStore interface {
 
 	// Lifecycle
 	Close() error
+}
+
+func isAffinityNoDegrade(gctx *GatewayContext) bool {
+	if gctx == nil || gctx.Policy == nil || gctx.Policy.LoadBalancePolicy == nil {
+		return false
+	}
+	lbPolicy := gctx.Policy.LoadBalancePolicy
+	if lbPolicy.Type == "endpoint_affinity" {
+		if lbPolicy.Params != nil {
+			var allowDegrade bool
+			if v, ok := lbPolicy.Params["allow_degrade"]; ok {
+				switch x := v.(type) {
+				case bool:
+					allowDegrade = x
+				case string:
+					allowDegrade = (x == "true")
+				case float64:
+					allowDegrade = (x != 0)
+				case int:
+					allowDegrade = (x != 0)
+				}
+			} else if v, ok := lbPolicy.Params["allowDegrade"]; ok {
+				switch x := v.(type) {
+				case bool:
+					allowDegrade = x
+				case string:
+					allowDegrade = (x == "true")
+				case float64:
+					allowDegrade = (x != 0)
+				case int:
+					allowDegrade = (x != 0)
+				}
+			}
+			return !allowDegrade
+		}
+	}
+	return false
 }

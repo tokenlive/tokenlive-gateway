@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,9 @@ type circuitBreakerEntry struct {
 	failThresh    int
 	hoSuccessThr  int // consecutive successes required in half-open state
 	activeCalls   int // in-flight half-open probe concurrency
+	attemptEpoch  uint64
+	nextToken     uint64
+	permitToken   uint64 // 非零许可只允许对应 lease 归还
 	policyVersion int64
 	modelCode     string
 	policyID      string
@@ -43,10 +47,14 @@ func (e *circuitBreakerEntry) record(success bool, now time.Time, windowType str
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if e.state == CircuitHalfOpen && e.activeCalls > 0 {
+	if e.state == CircuitHalfOpen && e.activeCalls > 0 && e.permitToken == 0 {
 		e.activeCalls--
 	}
+	return e.recordLocked(success, now, windowType, windowSize, failThresh, hoSuccessThr, recoveryTO, failureRateThreshold)
+}
 
+// recordLocked 只记录健康结果；新 lease 单独归还许可，legacy record 保留自动释放。
+func (e *circuitBreakerEntry) recordLocked(success bool, now time.Time, windowType string, windowSize, failThresh, hoSuccessThr int, recoveryTO time.Duration, failureRateThreshold float64) (CircuitState, CircuitState) {
 	e.windowType = windowType
 	if e.windowType == "" {
 		e.windowType = "count"
@@ -197,6 +205,7 @@ func (e *circuitBreakerEntry) computeState(now time.Time) CircuitState {
 		}
 	case CircuitOpen:
 		if now.Sub(e.openSince) >= e.recoveryTO {
+			e.invalidateAttempts()
 			e.state = CircuitHalfOpen
 			e.results = nil // clear stale results to avoid polluting half-open phase with Closed→Open failures
 			e.buckets = nil
@@ -212,6 +221,7 @@ func (e *circuitBreakerEntry) computeState(now time.Time) CircuitState {
 			}
 		}
 		if failures > 0 {
+			e.invalidateAttempts()
 			e.state = CircuitOpen
 			e.openSince = now
 			e.results = nil // clear stale results
@@ -222,11 +232,18 @@ func (e *circuitBreakerEntry) computeState(now time.Time) CircuitState {
 				thr = 1
 			}
 			if successes >= thr {
+				e.invalidateAttempts()
 				e.state = CircuitClosed
 			}
 		}
 	}
 	return e.state
+}
+
+func (e *circuitBreakerEntry) invalidateAttempts() {
+	e.attemptEpoch++
+	e.activeCalls = 0
+	e.permitToken = 0
 }
 
 func (e *circuitBreakerEntry) reset() (CircuitState, CircuitState) {
@@ -238,13 +255,17 @@ func (e *circuitBreakerEntry) reset() (CircuitState, CircuitState) {
 	e.results = nil
 	e.buckets = nil
 	e.openSince = time.Time{}
-	e.activeCalls = 0
+	e.invalidateAttempts()
 	return oldState, e.state
 }
 
 func (e *circuitBreakerEntry) checkAndResetOnVersionChange(version int64) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.checkAndResetOnVersionChangeLocked(version)
+}
+
+func (e *circuitBreakerEntry) checkAndResetOnVersionChangeLocked(version int64) bool {
 	if e.policyVersion == 0 {
 		e.policyVersion = version
 		return false
@@ -254,7 +275,7 @@ func (e *circuitBreakerEntry) checkAndResetOnVersionChange(version int64) bool {
 		e.results = nil
 		e.buckets = nil
 		e.openSince = time.Time{}
-		e.activeCalls = 0
+		e.invalidateAttempts()
 		e.policyVersion = version
 		return true
 	}
@@ -459,79 +480,115 @@ func (cbm *CircuitBreakerManager) releasePermitsWithoutPolicy(ep *Endpoint) {
 	cbm.ReleaseHalfOpenPermit(ep.ID)
 }
 
-func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoint) {
-	if gctx.Policy == nil || len(gctx.Policy.CircuitBreakPolicies) == 0 {
-		cbm.releasePermitsWithoutPolicy(ep)
-		return
-	}
+// CircuitBreakerAttempt 持有一次调用的双层许可，记录或取消只会结束一次。
+type CircuitBreakerAttempt struct {
+	manager  *CircuitBreakerManager
+	endpoint *Endpoint
+	permits  []attemptPermit
+	once     sync.Once
+}
 
-	traceID := ""
-	if gctx.Request != nil {
-		traceID = gctx.Request.Header.Get("X-Trace-ID")
-	}
-	if traceID == "" && gctx.ResponseWriter != nil {
-		traceID = gctx.ResponseWriter.Header().Get("X-Trace-Id")
-	}
-	requestID := ""
-	if gctx.Request != nil {
-		requestID = gctx.Request.Header.Get("X-Request-ID")
-	}
-	if requestID == "" {
-		requestID = traceID
-	}
+type attemptPermit struct {
+	key     string
+	entry   *circuitBreakerEntry
+	epoch   uint64
+	token   uint64
+	version int64
+}
 
-	now := time.Now()
-	for _, p := range gctx.Policy.CircuitBreakPolicies {
-		if p == nil {
-			continue
+// AcquireAttempt 先服务后端点获取，后者拒绝时回滚前者。
+func (cbm *CircuitBreakerManager) AcquireAttempt(gctx *GatewayContext, ep *Endpoint, enableActive bool) (*CircuitBreakerAttempt, error) {
+	a := &CircuitBreakerAttempt{manager: cbm, endpoint: ep}
+	if ep == nil {
+		return a, nil
+	}
+	for i, key := range []string{ep.Provider + ":" + ep.Model, ep.ID} {
+		entry := cbm.GetEntryWithModel(key, ep.Model)
+		entry.mu.Lock()
+		old := entry.state
+		state := entry.computeState(time.Now())
+		allowed := state == CircuitClosed || state == CircuitHalfOpen && !enableActive && entry.activeCalls < 1
+		permit := attemptPermit{key: key, entry: entry, epoch: entry.attemptEpoch, version: entry.policyVersion}
+		if allowed && state == CircuitHalfOpen {
+			entry.nextToken++
+			permit.token = entry.nextToken
+			entry.permitToken = permit.token
+			entry.activeCalls++
 		}
-		ws, mc, ho, to := p.SlidingWindowSize, p.MinCallsThreshold, p.AllowedCallsInHalfOpenState, time.Duration(p.WaitDurationInOpenState)*time.Millisecond
-		level := strings.ToUpper(p.Level)
-
-		if level == "" || level == "SERVICE" {
-			serviceKey := ep.Provider + ":" + ep.Model
-			cbm.CheckAndResetOnVersionChange(serviceKey, p.Version)
-			entry := cbm.GetEntryWithModel(serviceKey, ep.Model)
-			entry.mu.Lock()
-			entry.policyID = p.ID
-			entry.policyName = p.Name
-			entry.providerName = ep.Provider
-			entry.endpointCode = ep.Code
-			entry.lastTenant = gctx.Tenant
-			entry.lastTraceID = traceID
-			entry.lastRequestID = requestID
-			entry.mu.Unlock()
-			old, newStatus := entry.record(true, now, p.SlidingWindowType, ws, mc, ho, to, p.FailureRateThreshold)
-			if old != newStatus {
-				cbm.onStateChange(serviceKey, old, newStatus)
+		entry.mu.Unlock()
+		if old != state {
+			cbm.onStateChange(key, old, state)
+		}
+		if !allowed {
+			a.Release()
+			level := "service"
+			if i == 1 {
+				level = "instance"
 			}
+			return nil, fmt.Errorf("%s breaker half-open permit acquisition failed: %s", level, key)
 		}
-		if level == "" || level == "INSTANCE" || level == "ENDPOINT" {
-			cbm.CheckAndResetOnVersionChange(ep.ID, p.Version)
-			entry := cbm.GetEntryWithModel(ep.ID, ep.Model)
-			entry.mu.Lock()
-			entry.policyID = p.ID
-			entry.policyName = p.Name
-			entry.providerName = ep.Provider
-			entry.endpointCode = ep.Code
-			entry.lastTenant = gctx.Tenant
-			entry.lastTraceID = traceID
-			entry.lastRequestID = requestID
-			entry.mu.Unlock()
-			old, newStatus := entry.record(true, now, p.SlidingWindowType, ws, mc, ho, to, p.FailureRateThreshold)
-			if old != newStatus {
-				cbm.onStateChange(ep.ID, old, newStatus)
-			}
+		a.permits = append(a.permits, permit)
+	}
+	return a, nil
+}
+
+func (a *CircuitBreakerAttempt) releasePermits() {
+	for _, p := range a.permits {
+		p.entry.mu.Lock()
+		if p.token != 0 && p.entry.attemptEpoch == p.epoch && p.entry.permitToken == p.token {
+			p.entry.activeCalls--
+			p.entry.permitToken = 0
 		}
+		p.entry.mu.Unlock()
 	}
 }
 
+// Release 结束未计入健康的调用，旧 epoch/token 不能归还新一轮许可。
+func (a *CircuitBreakerAttempt) Release() {
+	a.once.Do(a.releasePermits)
+}
+
+func (a *CircuitBreakerAttempt) RecordSuccess(gctx *GatewayContext) {
+	a.finish(gctx, true, nil)
+}
+
+func (a *CircuitBreakerAttempt) RecordFailure(gctx *GatewayContext, err error) {
+	a.finish(gctx, false, err)
+}
+
+func (a *CircuitBreakerAttempt) finish(gctx *GatewayContext, success bool, err error) {
+	a.once.Do(func() {
+		defer a.releasePermits()
+		a.manager.recordOutcome(gctx, a.endpoint, success, err, a)
+	})
+}
+
+func circuitPolicyApplies(level string, service bool) bool {
+	level = strings.ToUpper(level)
+	if service {
+		return level == "" || level == "SERVICE"
+	}
+	return level == "" || level == "INSTANCE" || level == "ENDPOINT"
+}
+
+func (cbm *CircuitBreakerManager) RecordSuccess(gctx *GatewayContext, ep *Endpoint) {
+	cbm.recordOutcome(gctx, ep, true, nil, nil)
+}
+
 func (cbm *CircuitBreakerManager) RecordFailure(gctx *GatewayContext, ep *Endpoint, err error) {
-	if gctx.Policy == nil || len(gctx.Policy.CircuitBreakPolicies) == 0 {
-		cbm.releasePermitsWithoutPolicy(ep)
+	cbm.recordOutcome(gctx, ep, false, err, nil)
+}
+
+func (cbm *CircuitBreakerManager) recordOutcome(gctx *GatewayContext, ep *Endpoint, success bool, err error, attempt *CircuitBreakerAttempt) {
+	if ep == nil {
 		return
 	}
-
+	if gctx == nil || gctx.Policy == nil || len(gctx.Policy.CircuitBreakPolicies) == 0 {
+		if attempt == nil {
+			cbm.releasePermitsWithoutPolicy(ep)
+		}
+		return
+	}
 	statusCode := getStatusCode(gctx.UpstreamResponse)
 	contentType := ""
 	if gctx.UpstreamResponse != nil {
@@ -541,67 +598,79 @@ func (cbm *CircuitBreakerManager) RecordFailure(gctx *GatewayContext, ep *Endpoi
 	if err != nil {
 		errMsg = err.Error()
 	}
-
-	traceID := ""
+	traceID, requestID := "", ""
 	if gctx.Request != nil {
 		traceID = gctx.Request.Header.Get("X-Trace-ID")
+		requestID = gctx.Request.Header.Get("X-Request-ID")
 	}
 	if traceID == "" && gctx.ResponseWriter != nil {
 		traceID = gctx.ResponseWriter.Header().Get("X-Trace-Id")
 	}
-	requestID := ""
-	if gctx.Request != nil {
-		requestID = gctx.Request.Header.Get("X-Request-ID")
-	}
 	if requestID == "" {
 		requestID = traceID
 	}
-
 	now := time.Now()
 	for _, p := range gctx.Policy.CircuitBreakPolicies {
-		if p == nil {
+		if p == nil || !success && !p.MatchError(statusCode, contentType, errMsg, gctx.UpstreamBody) {
 			continue
 		}
-		if !p.MatchError(statusCode, contentType, errMsg, gctx.UpstreamBody) {
-			continue
-		}
-
-		ws, mc, ho, to := p.SlidingWindowSize, p.MinCallsThreshold, p.AllowedCallsInHalfOpenState, time.Duration(p.WaitDurationInOpenState)*time.Millisecond
-		level := strings.ToUpper(p.Level)
-
-		if level == "" || level == "SERVICE" {
-			serviceKey := ep.Provider + ":" + ep.Model
-			cbm.CheckAndResetOnVersionChange(serviceKey, p.Version)
-			entry := cbm.GetEntryWithModel(serviceKey, ep.Model)
-			entry.mu.Lock()
-			entry.policyID = p.ID
-			entry.policyName = p.Name
-			entry.providerName = ep.Provider
-			entry.endpointCode = ep.Code
-			entry.lastTenant = gctx.Tenant
-			entry.lastTraceID = traceID
-			entry.lastRequestID = requestID
-			entry.mu.Unlock()
-			old, newStatus := entry.record(false, now, p.SlidingWindowType, ws, mc, ho, to, p.FailureRateThreshold)
-			if old != newStatus {
-				cbm.onStateChange(serviceKey, old, newStatus)
+		for i, key := range []string{ep.Provider + ":" + ep.Model, ep.ID} {
+			if !circuitPolicyApplies(p.Level, i == 0) {
+				continue
 			}
-		}
-		if level == "" || level == "INSTANCE" || level == "ENDPOINT" {
-			cbm.CheckAndResetOnVersionChange(ep.ID, p.Version)
-			entry := cbm.GetEntryWithModel(ep.ID, ep.Model)
+			var entry *circuitBreakerEntry
+			var permit *attemptPermit
+			if attempt == nil {
+				cbm.CheckAndResetOnVersionChange(key, p.Version)
+				entry = cbm.GetEntryWithModel(key, ep.Model)
+			} else {
+				for index := range attempt.permits {
+					candidate := &attempt.permits[index]
+					if candidate.key == key {
+						permit = candidate
+						entry = candidate.entry
+						break
+					}
+				}
+				if entry == nil {
+					continue
+				}
+			}
 			entry.mu.Lock()
-			entry.policyID = p.ID
-			entry.policyName = p.Name
-			entry.providerName = ep.Provider
-			entry.endpointCode = ep.Code
-			entry.lastTenant = gctx.Tenant
-			entry.lastTraceID = traceID
-			entry.lastRequestID = requestID
+			if permit != nil {
+				if entry.attemptEpoch != permit.epoch || entry.policyVersion != permit.version {
+					entry.mu.Unlock()
+					continue
+				}
+				// 匹配后按原顺序更新版本；自身重置/状态变化推进 lease epoch，外部重置仍拒绝。
+				versionReset := entry.checkAndResetOnVersionChangeLocked(p.Version)
+				permit.version = entry.policyVersion
+				if versionReset {
+					permit.epoch, permit.token = entry.attemptEpoch, 0
+					entry.mu.Unlock()
+					cbm.onStateChange(key, CircuitOpen, CircuitClosed)
+					entry.mu.Lock()
+					if entry.attemptEpoch != permit.epoch || entry.policyVersion != permit.version {
+						entry.mu.Unlock()
+						continue
+					}
+				}
+			}
+			entry.policyID, entry.policyName = p.ID, p.Name
+			entry.providerName, entry.endpointCode = ep.Provider, ep.Code
+			entry.lastTenant, entry.lastTraceID, entry.lastRequestID = gctx.Tenant, traceID, requestID
+			if attempt == nil && entry.state == CircuitHalfOpen && entry.activeCalls > 0 && entry.permitToken == 0 {
+				entry.activeCalls--
+			}
+			old, newStatus := entry.recordLocked(success, now, p.SlidingWindowType, p.SlidingWindowSize,
+				p.MinCallsThreshold, p.AllowedCallsInHalfOpenState,
+				time.Duration(p.WaitDurationInOpenState)*time.Millisecond, p.FailureRateThreshold)
+			if permit != nil && permit.epoch != entry.attemptEpoch {
+				permit.epoch, permit.token = entry.attemptEpoch, 0
+			}
 			entry.mu.Unlock()
-			old, newStatus := entry.record(false, now, p.SlidingWindowType, ws, mc, ho, to, p.FailureRateThreshold)
 			if old != newStatus {
-				cbm.onStateChange(ep.ID, old, newStatus)
+				cbm.onStateChange(key, old, newStatus)
 			}
 		}
 	}
@@ -698,7 +767,9 @@ func (cbm *CircuitBreakerManager) AllowRequest(key string, enableActive bool) bo
 		return false
 	}
 	// Without active probing, allow through as fallback if probe concurrency is not full
-	return entry.activeCalls < 1
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	return entry.state != CircuitHalfOpen || entry.activeCalls < 1
 }
 
 // AcquireHalfOpenPermit attempts to acquire a half-open probe permit, incrementing concurrency.
@@ -721,7 +792,7 @@ func (cbm *CircuitBreakerManager) ReleaseHalfOpenPermit(key string) {
 		return
 	}
 	entry.mu.Lock()
-	if entry.state == CircuitHalfOpen && entry.activeCalls > 0 {
+	if entry.state == CircuitHalfOpen && entry.activeCalls > 0 && entry.permitToken == 0 {
 		entry.activeCalls--
 	}
 	entry.mu.Unlock()

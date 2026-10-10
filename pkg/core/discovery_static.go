@@ -24,6 +24,7 @@ type StaticDiscovery struct {
 	endpoints           map[string][]*Endpoint // model -> endpoints
 	mu                  sync.RWMutex
 	endpointCheckStates sync.Map // fine-grained health-check state cache
+	healthLifecycle     engineLifecycle
 }
 
 // NewStaticDiscovery creates a static discovery.
@@ -76,7 +77,18 @@ func (sd *StaticDiscovery) Watch(ctx context.Context, model string) (<-chan []*E
 
 // Close implements core.Discovery.
 func (sd *StaticDiscovery) Close() error {
+	sd.StopHealthChecks()
 	return nil
+}
+
+func (sd *StaticDiscovery) StopHealthChecks() {
+	sd.healthLifecycle.mu.Lock()
+	sd.healthLifecycle.stopped = true
+	if sd.healthLifecycle.cancel != nil {
+		sd.healthLifecycle.cancel()
+	}
+	sd.healthLifecycle.mu.Unlock()
+	sd.healthLifecycle.jobs.Wait()
 }
 
 // UpdateHealthAll updates the health status of all instances for the given model.
@@ -135,7 +147,7 @@ func (sd *StaticDiscovery) StartHealthCheck(
 
 	// 1. Start coarse-grained Provider health check. Re-read providers each tick so
 	// hot reload (SetProviders) does not leave a stale map such as openai-local.
-	go func() {
+	sd.healthLifecycle.start(ctx, ctx, func(ctx context.Context) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -146,11 +158,11 @@ func (sd *StaticDiscovery) StartHealthCheck(
 				sd.runHealthChecks(ctx, providers(), logger)
 			}
 		}
-	}()
+	})
 
 	// 2. Start fine-grained adaptive Endpoint health check
 	if enableActive {
-		go func() {
+		sd.healthLifecycle.start(ctx, ctx, func(ctx context.Context) {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -161,7 +173,7 @@ func (sd *StaticDiscovery) StartHealthCheck(
 					sd.runEndpointHealthChecks(ctx, cbManager, logger)
 				}
 			}
-		}()
+		})
 	}
 }
 
@@ -214,37 +226,37 @@ func (sd *StaticDiscovery) runEndpointHealthChecks(ctx context.Context, cbManage
 		}
 
 		// Probe asynchronously to avoid slow endpoints blocking the main check loop
-		go func(epCopy *Endpoint, currentSuccessCount int) {
-			err := sd.probeEndpoint(ctx, epCopy)
+		sd.healthLifecycle.start(ctx, ctx, func(ctx context.Context) {
+			err := sd.probeEndpoint(ctx, ep)
 
 			var newSuccessCount int
 			if err == nil {
-				newSuccessCount = currentSuccessCount + 1
+				newSuccessCount = successCount + 1
 				logger.Debug("endpoint health check success",
-					zap.String("endpoint_id", epCopy.ID),
+					zap.String("endpoint_id", ep.ID),
 					zap.Int("success_count", newSuccessCount))
 
 				// 3 consecutive probe successes force circuit breaker to Closed (recovered)
 				if newSuccessCount >= 3 {
 					logger.Info("endpoint health check success 3 times consecutively, resetting circuit breaker",
-						zap.String("endpoint_id", epCopy.ID))
-					cbManager.Reset(epCopy.ID)
-					serviceKey := epCopy.Provider + ":" + epCopy.Model
+						zap.String("endpoint_id", ep.ID))
+					cbManager.Reset(ep.ID)
+					serviceKey := ep.Provider + ":" + ep.Model
 					cbManager.Reset(serviceKey)
 					newSuccessCount = 0
 				}
 			} else {
 				newSuccessCount = 0
 				logger.Warn("endpoint health check failed",
-					zap.String("endpoint_id", epCopy.ID),
+					zap.String("endpoint_id", ep.ID),
 					zap.Error(err))
 			}
 
-			sd.endpointCheckStates.Store(epCopy.ID, &endpointCheckState{
+			sd.endpointCheckStates.Store(ep.ID, &endpointCheckState{
 				lastCheck:    time.Now(),
 				successCount: newSuccessCount,
 			})
-		}(ep, successCount)
+		})
 	}
 }
 

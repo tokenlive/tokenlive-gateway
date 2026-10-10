@@ -12,15 +12,10 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/compensation"
 	"github.com/tokenlive/tokenlive-gateway/pkg/config"
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
-	"github.com/tokenlive/tokenlive-gateway/pkg/events"
-	"github.com/tokenlive/tokenlive-gateway/pkg/filters/inbound"
 	"github.com/tokenlive/tokenlive-gateway/pkg/filters/outbound"
-	"github.com/tokenlive/tokenlive-gateway/pkg/invoker"
-	"github.com/tokenlive/tokenlive-gateway/pkg/lbs"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
 	"github.com/tokenlive/tokenlive-gateway/pkg/log"
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
-	"github.com/tokenlive/tokenlive-gateway/pkg/routers"
 	"github.com/tokenlive/tokenlive-gateway/pkg/store"
 	"github.com/tokenlive/tokenlive-gateway/pkg/telemetry"
 	"github.com/tokenlive/tokenlive-gateway/pkg/versionreport"
@@ -158,10 +153,17 @@ func NewGatewayEngine(
 		return nil, nil, nil, fmt.Errorf("init otel metrics: %w", otelErr)
 	}
 
+	lifetime := &gatewayLifetime{logger: logger.Logger, otelCleanup: otelCleanup}
+	built := false
+	defer func() {
+		if !built {
+			lifetime.close()
+		}
+	}()
+
 	// Explicit DI for MetricsRegistry.
 	metricsRegistry, regErr := telemetry.NewMetricsRegistry(otel.GetMeterProvider())
 	if regErr != nil {
-		otelCleanup()
 		return nil, nil, nil, fmt.Errorf("create metrics registry: %w", regErr)
 	}
 
@@ -253,11 +255,14 @@ func NewGatewayEngine(
 	}
 	registry := core.NewProviderRegistry(providerImpls)
 	gwDiscovery = core.NewAssemblingDiscovery(serviceDiscovery, registry)
+	lifetime.discovery = gwDiscovery
 
 	stateStore, compQueue, err := NewGatewayDataStores(v, rdb)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create data stores: %w", err)
 	}
+
+	lifetime.stateStore, lifetime.queue = stateStore, compQueue
 
 	// Local fallback policies for cold-start resilience.
 	var localPolicies []*policy.Policy
@@ -279,177 +284,24 @@ func NewGatewayEngine(
 	// Inject policyService as core.PolicyProvider.
 	engine := core.NewEngine(engineConfig, gwDiscovery, stateStore, policyService, logger.Logger)
 
-	cbMetrics := core.NewCircuitBreakerMetrics(metricsRegistry.CircuitBreakerState)
-	engine.CircuitBreakerManager().SetMetrics(cbMetrics)
-
-	if compQueue != nil {
-		engine.SetCompQueue(compQueue)
-	}
-	engine.SetProviders(providerImpls)
-	engine.SetStaticDiscovery(staticDiscovery)
-	engine.SetInvokerBuilder(invoker.NewBuilder())
-
-	aliasService := service.NewAliasService(rdb, logger, configMgr)
-	engine.SetAliasService(aliasService)
-
-	// Redis version polling for new-format config.
-	if configMgr != nil {
-		go configMgr.StartRedisPolling(engine.Context())
-	}
-
-	// Register Router factories.
-	engine.RegisterRouterFactory("capability", func(cfg core.RouterConfig, _ core.StateStore, _ *zap.Logger) core.Router {
-		return &routers.CapabilityRouter{}
-	})
-	engine.RegisterRouterFactory("tenant_endpoint", func(cfg core.RouterConfig, _ core.StateStore, l *zap.Logger) core.Router {
-		return routers.NewTenantEndpointRouter(rdb, l)
-	})
-	engine.RegisterRouterFactory("circuit_breaker", func(cfg core.RouterConfig, _ core.StateStore, l *zap.Logger) core.Router {
-		return routers.NewCircuitBreakerRouter(engine.CircuitBreakerManager(), v.GetBool("llm.enable_active_health_check"), l)
-	})
-	engine.RegisterRouterFactory("priority", func(cfg core.RouterConfig, _ core.StateStore, l *zap.Logger) core.Router {
-		return routers.NewPriorityRouter(l)
-	})
-	engine.RegisterRouterFactory("tag", func(cfg core.RouterConfig, _ core.StateStore, l *zap.Logger) core.Router {
-		return routers.NewTagRouter(l)
-	})
-
-	// Register LoadBalancer factories.
-	engine.RegisterLoadBalancerFactory("round_robin", func(_ core.StateStore) core.LoadBalancer {
-		return lbs.NewRoundRobin()
-	})
-	engine.RegisterLoadBalancerFactory("weighted_rr", func(_ core.StateStore) core.LoadBalancer {
-		return lbs.NewWeightedRoundRobinLoadBalancer()
-	})
-	engine.RegisterLoadBalancerFactory("random", func(_ core.StateStore) core.LoadBalancer {
-		return lbs.NewRandomLoadBalancer()
-	})
-	engine.RegisterLoadBalancerFactory("weighted_random", func(_ core.StateStore) core.LoadBalancer {
-		return lbs.NewWeightedRandomLoadBalancer()
-	})
-	engine.RegisterLoadBalancerFactory("least_connections", func(_ core.StateStore) core.LoadBalancer {
-		return lbs.NewLeastConnectionsLoadBalancer()
-	})
-	engine.RegisterLoadBalancerFactory("least_latency", func(ss core.StateStore) core.LoadBalancer {
-		return lbs.NewLeastLatencyLoadBalancer(ss)
-	})
-	engine.RegisterLoadBalancerFactory("cost", func(_ core.StateStore) core.LoadBalancer {
-		return lbs.NewCostLoadBalancer()
-	})
-	engine.RegisterLoadBalancerFactory("composite", func(ss core.StateStore) core.LoadBalancer {
-		return lbs.NewCompositeLoadBalancer(ss, 0.5, 0.5)
-	})
-	engine.RegisterLoadBalancerFactory("sticky", func(ss core.StateStore) core.LoadBalancer {
-		return lbs.NewStickyLoadBalancer(ss, lbs.NewRoundRobin(), func(gctx *core.GatewayContext) string {
-			return gctx.SessionID
-		}, 5*time.Minute)
-	})
-	engine.RegisterLoadBalancerFactory("endpoint_affinity", func(ss core.StateStore) core.LoadBalancer {
-		return lbs.NewEndpointAffinityLoadBalancer(ss)
-	})
-
-	// Register InboundFilters.
-	engine.RegisterFilter("auth", inbound.NewAuthFilter())
-	engine.RegisterFilter("session_reader", inbound.NewSessionReaderFilter("X-Session-ID"))
-	engine.RegisterFilter("credits_check", inbound.NewCreditsCheckFilter(apiKeyService))
-	engine.RegisterFilter("tagging", inbound.NewTaggingFilter())
-	rateLimitFilter := inbound.NewRateLimitFilter(stateStore)
-	engine.RegisterFilter("rate_limit", rateLimitFilter)
-	engine.RegisterFilter("validate", inbound.NewValidateFilter(modelService))
-
-	// Register OutboundFilters.
-	engine.RegisterFilter("token_settlement", outbound.NewTokenSettlementFilter(stateStore, apiKeyService, logger.Logger))
-	if modelService != nil && configMgr != nil {
-		modelService.SetConfigManager(configMgr)
-		engine.SetSmartRouter(invoker.NewSmartRouter(configMgr, modelService, policyService, engine))
-	}
-	engine.RegisterFilter("sticky_session", outbound.NewStickySessionFilter(stateStore, 5*time.Minute))
-	engine.RegisterFilter("metrics", outbound.NewMetricsFilter(
-		metricsRegistry,
-		&outbound.DefaultMetricsExtractor{},
-		logger.Logger,
-	))
-	engine.RegisterFilter("access_log", outbound.NewAccessLogFilter(logger.Logger, rdb, compQueue, chConn, v))
-
-	statusCollector := outbound.NewStatusCollectorFilter(rdb, engine.CircuitBreakerManager(), adminURL, syncToken, logger.Logger)
-	statusCollector.SetIncludeClientDisconnect(configSource == "embedded" && stateStoreMode == "memory")
-	if metricsSink != nil {
-		statusCollector.SetMetricsSink(metricsSink)
-	}
-	engine.RegisterFilter("status_collector", statusCollector)
-
-	// Register Event Publisher filter.
-	var eventsCfg events.PublisherConfig
-	if v.IsSet("events") {
-		_ = v.UnmarshalKey("events", &eventsCfg)
-	}
-	eventPublisher := events.NewPublisher(eventsCfg, rdb, adminURL, syncToken)
-	eventPubFilter := outbound.NewEventPublishFilter(eventPublisher, logger.Logger)
-	eventPubFilter.SetDiscovery(engine.Discovery())
-	engine.RegisterFilter("event_publisher", eventPubFilter)
-
-	// For InvokerDependencyResolver.Publisher().
-	engine.SetPublisher(eventPublisher)
-
-	// Publish events on circuit breaker state changes (Closed→Open).
-	engine.CircuitBreakerManager().SetEventHandler(func(evt core.CBEvent) {
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			provider := evt.ProviderName
-
-			// Service-level CB: if provider empty, parse from key (provider:model).
-			if provider == "" && strings.Contains(evt.Key, ":") {
-				parts := strings.Split(evt.Key, ":")
-				if len(parts) > 0 {
-					provider = parts[0]
-				}
-			}
-
-			transitionStr := ""
-			if evt.OldState != "" && evt.NewState != "" {
-				transitionStr = fmt.Sprintf("[%s->%s] ", evt.OldState, evt.NewState)
-			}
-
-			evtOps := &events.OpsEvent{
-				EventType:    events.EventTypeCircuitBreak,
-				TenantCode:   evt.TenantCode,
-				ModelCode:    evt.ModelCode,
-				ProviderName: provider,
-				PolicyID:     evt.PolicyID,
-				PolicyName:   evt.PolicyName,
-				Threshold:    evt.Threshold,
-				CurrentValue: evt.CurrentValue,
-				RequestID:    evt.RequestID,
-				TraceID:      evt.TraceID,
-				Message:      transitionStr + "circuit breaker opened: " + evt.Key,
-				Timestamp:    time.Now().Unix(),
-			}
-			// Instance-level CB: EndpointID is the key.
-			if !strings.Contains(evt.Key, ":") {
-				evtOps.EndpointID = evt.Key
-				evtOps.EndpointCode = evt.EndpointCode
-				// Resolve endpoint code from StaticDiscovery if missing.
-				if evtOps.EndpointCode == "" {
-					if ep := findEndpointByID(staticDiscovery, evt.Key); ep != nil {
-						evtOps.EndpointCode = ep.Code
-					}
-				}
-			}
-
-			if err := eventPublisher.Publish(bgCtx, evtOps); err != nil {
-				logger.Logger.Warn("circuit breaker event publish failed", zap.String("key", evt.Key), zap.Error(err))
-			}
-		}()
+	lifetime.engine = engine
+	lifetime.tasks = newGatewayRuntime(engine.Context())
+	setupEngineRegistry(engine, lifetime, registryDependencies{
+		config: v, logger: logger, models: modelService, apiKeys: apiKeyService,
+		configManager: configMgr, policies: policyService, stateStore: stateStore,
+		queue: compQueue, providers: providerImpls, discovery: staticDiscovery,
+		redis: rdb, clickhouse: chConn, metricsSink: metricsSink, metrics: metricsRegistry,
+		configSource: configSource, stateStoreMode: stateStoreMode, adminURL: adminURL, syncToken: syncToken,
 	})
 
 	if err := engine.Init(); err != nil {
-		otelCleanup()
-		if eventPublisher != nil {
-			_ = eventPublisher.Close()
-		}
 		return nil, nil, nil, fmt.Errorf("engine init: %w", err)
+	}
+	lifetime.initialized = true
+
+	// Explicit polling starts only after Init succeeds.
+	if configMgr != nil {
+		lifetime.tasks.start(configMgr.StartRedisPolling)
 	}
 
 	// Background tasks.
@@ -464,33 +316,39 @@ func NewGatewayEngine(
 		}
 		poller := config.NewHTTPConfigPoller(httpProv, pollInterval, logger.Logger)
 
-		go poller.Start(engine.Context(),
-			// 1) Routing config update callback.
-			func(ctx context.Context, gwCfg *config.GatewayConfig) error {
-				engineConfig, providerImpls, _, _ := BuildFromRelationalConfig(gwCfg, enableAuth)
-				if err := engine.UpdateConfig(engineConfig); err != nil {
-					return fmt.Errorf("engine update config: %w", err)
-				}
-				engine.SetProviders(providerImpls)
-				configMgr.UpdateYAMLConfig(gwCfg)
-				return nil
-			},
-			// 2) Policy config update callback.
-			func(ctx context.Context) error {
-				policyService.PurgeCache()
-				return nil
-			},
-			// 3) API Key update callback.
-			func(ctx context.Context) error {
-				apiKeyService.PurgeCache()
-				return nil
-			},
-		)
+		lifetime.tasks.start(func(ctx context.Context) {
+			poller.Start(ctx,
+				// 1) Routing config update callback.
+				func(ctx context.Context, gwCfg *config.GatewayConfig) error {
+					engineConfig, providerImpls, _, _ := BuildFromRelationalConfig(gwCfg, enableAuth)
+					if err := engine.UpdateConfig(engineConfig); err != nil {
+						return fmt.Errorf("engine update config: %w", err)
+					}
+					engine.SetProviders(providerImpls)
+					if configMgr != nil {
+						configMgr.UpdateYAMLConfig(gwCfg)
+					}
+					return nil
+				},
+				// 2) Policy config update callback.
+				func(ctx context.Context) error {
+					policyService.PurgeCache()
+					return nil
+				},
+				// 3) API Key update callback.
+				func(ctx context.Context) error {
+					if apiKeyService != nil {
+						apiKeyService.PurgeCache()
+					}
+					return nil
+				},
+			)
+		})
 	}
 
 	// Redis pub/sub for live cache refresh (RedisGatewayProvider, etc.).
 	if rdb != nil {
-		go func() {
+		lifetime.tasks.start(func(ctx context.Context) {
 			var retryDelay = 1 * time.Second
 			var maxRetryDelay = 30 * time.Second
 			var retryCount = 0
@@ -498,16 +356,18 @@ func NewGatewayEngine(
 
 			for {
 				select {
-				case <-engine.Context().Done():
+				case <-ctx.Done():
 					return
 				default:
 				}
 
-				pubsub := rdb.Subscribe(engine.Context(), "aigw:channel:policy_update", "aigw:channel:apikey_update")
+				pubsub := rdb.Subscribe(ctx, "aigw:channel:policy_update", "aigw:channel:apikey_update")
+				stopPubsub := context.AfterFunc(ctx, func() { _ = pubsub.Close() })
 
 				// First receive confirms whether Pub/Sub is supported.
-				_, err := pubsub.Receive(engine.Context())
+				_, err := pubsub.Receive(ctx)
 				if err != nil {
+					stopPubsub()
 					_ = pubsub.Close()
 					errMsg := err.Error()
 					if strings.Contains(errMsg, "unknown command") || strings.Contains(errMsg, "not allowed") || strings.Contains(errMsg, "ERR unknown") {
@@ -523,7 +383,7 @@ func NewGatewayEngine(
 
 					logger.Logger.Warn("Redis Pub/Sub subscription failed, retrying...", zap.Int("attempt", retryCount), zap.Duration("delay", retryDelay), zap.Error(err))
 					select {
-					case <-engine.Context().Done():
+					case <-ctx.Done():
 						return
 					case <-time.After(retryDelay):
 					}
@@ -543,7 +403,8 @@ func NewGatewayEngine(
 				var loopErr error
 				for {
 					select {
-					case <-engine.Context().Done():
+					case <-ctx.Done():
+						stopPubsub()
 						_ = pubsub.Close()
 						return
 					case msg, ok := <-ch:
@@ -556,7 +417,9 @@ func NewGatewayEngine(
 							policyService.PurgeCache()
 							logger.Logger.Info("Redis policy update signal received, local cache purged")
 						case "aigw:channel:apikey_update":
-							apiKeyService.PurgeCache()
+							if apiKeyService != nil {
+								apiKeyService.PurgeCache()
+							}
 							logger.Logger.Info("Redis API Key update signal received, local cache purged")
 						}
 					}
@@ -564,19 +427,24 @@ func NewGatewayEngine(
 						break
 					}
 				}
+				stopPubsub()
 				_ = pubsub.Close()
 
 				// Context cancelled: exit cleanly.
 				select {
-				case <-engine.Context().Done():
+				case <-ctx.Done():
 					return
 				default:
 				}
 
 				// Re-enter outer loop to resubscribe.
-				time.Sleep(1 * time.Second)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
 			}
-		}()
+		})
 	}
 
 	var compWorker *compensation.Worker
@@ -586,27 +454,14 @@ func NewGatewayEngine(
 		if redisQ, ok := compQueue.(*compensation.RedisQueue); ok {
 			compWorker = compensation.NewWorker(rdb, redisQ, logger.Logger)
 			compWorker.RegisterCompensator("access_log", outbound.NewAccessLogCompensator(chConn, logger.Logger))
-			go compWorker.Run(engine.Context())
+			lifetime.worker = compWorker
+			go compWorker.Run(lifetime.tasks.ctx)
 		}
 	}
 
-	stopVersionReporter := startVersionReporter(engine.Context(), v, rdb, configSource, adminURL, syncToken)
-
-	cleanup := func() {
-		stopVersionReporter()
-		if compWorker != nil {
-			compWorker.Close()
-		}
-		otelCleanup()
-		if err := engine.Close(); err != nil {
-			logger.Logger.Error("engine close error", zap.Error(err))
-		}
-		if eventPublisher != nil {
-			_ = eventPublisher.Close()
-		}
-	}
-
-	return engine, policyService, cleanup, nil
+	lifetime.stopReporter = startVersionReporter(engine.Context(), v, rdb, configSource, adminURL, syncToken)
+	built = true
+	return engine, policyService, lifetime.close, nil
 
 }
 
@@ -752,82 +607,7 @@ func BuildFromRelationalConfig(
 		engineConfig.Pipelines[name] = pcfg
 	}
 
-	// 1. Default chat_completion pipeline.
-	// Inbound filter order must match static pipelines in config/local.yml;
-	// rate_limit must be in the chain or rate limiting silently never runs.
-	inboundFilters := []string{"session_reader", "tagging", "credits_check", "rate_limit", "validate"}
-	if hasAuth {
-		inboundFilters = append([]string{"auth"}, inboundFilters...)
-	}
-
-	if _, exists := engineConfig.Pipelines["chat_completion"]; !exists {
-		engineConfig.Pipelines["chat_completion"] = &core.PipelineConfig{
-			Name:         "chat_completion",
-			RequestTypes: []core.RequestType{core.RequestTypeChatCompletion},
-			Invoker: core.InvokerConfig{
-				Type: "cluster",
-			},
-			InboundFilters:          inboundFilters,
-			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher"},
-			CriticalOutboundFilters: []string{"token_settlement", "sticky_session"},
-		}
-	}
-
-	// 2. Default embedding pipeline.
-	if _, exists := engineConfig.Pipelines["embedding"]; !exists {
-		engineConfig.Pipelines["embedding"] = &core.PipelineConfig{
-			Name:         "embedding",
-			RequestTypes: []core.RequestType{core.RequestTypeEmbedding},
-			Invoker: core.InvokerConfig{
-				Type: "cluster",
-			},
-			InboundFilters:          inboundFilters,
-			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher"},
-			CriticalOutboundFilters: []string{"token_settlement", "sticky_session"},
-		}
-	}
-
-	// 3. Default image generation pipeline.
-	// Image APIs do not expose token usage, so token settlement is intentionally omitted.
-	if _, exists := engineConfig.Pipelines["image_generation"]; !exists {
-		engineConfig.Pipelines["image_generation"] = &core.PipelineConfig{
-			Name:         "image_generation",
-			RequestTypes: []core.RequestType{core.RequestTypeImageGeneration},
-			Invoker: core.InvokerConfig{
-				Type: "cluster",
-			},
-			InboundFilters:  inboundFilters,
-			OutboundFilters: []string{"metrics", "status_collector", "access_log", "event_publisher"},
-		}
-	}
-
-	// 4. Default messages pipeline (Anthropic native protocol).
-	if _, exists := engineConfig.Pipelines["messages"]; !exists {
-		engineConfig.Pipelines["messages"] = &core.PipelineConfig{
-			Name:         "messages",
-			RequestTypes: []core.RequestType{core.RequestTypeMessages},
-			Invoker: core.InvokerConfig{
-				Type: "cluster",
-			},
-			InboundFilters:          inboundFilters,
-			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher"},
-			CriticalOutboundFilters: []string{"token_settlement", "sticky_session"},
-		}
-	}
-
-	// 5. Default responses pipeline.
-	if _, exists := engineConfig.Pipelines["responses"]; !exists {
-		engineConfig.Pipelines["responses"] = &core.PipelineConfig{
-			Name:         "responses",
-			RequestTypes: []core.RequestType{core.RequestTypeResponses},
-			Invoker: core.InvokerConfig{
-				Type: "cluster",
-			},
-			InboundFilters:          inboundFilters,
-			OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher"},
-			CriticalOutboundFilters: []string{"token_settlement", "sticky_session"},
-		}
-	}
+	addDefaultPipelines(engineConfig.Pipelines, hasAuth)
 
 	for _, pc := range providerConfigMap {
 		engineConfig.Providers[pc.Name] = pc

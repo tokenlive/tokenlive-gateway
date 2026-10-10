@@ -345,25 +345,17 @@ func (hi *HedgingInvoker) invokeSub(
 	childGctx.SelectedEndpoint = ep
 	childGctx.UpstreamConnect = time.Now()
 
-	// Acquire half-open probe permits
-	serviceKey := ep.Provider + ":" + ep.Model
-	if !hi.cbManager.AcquireHalfOpenPermit(serviceKey, hi.enableActive) {
+	observer := &attemptObserver{cbManager: hi.cbManager, stateStore: hi.stateStore, logger: hi.logger, enableActive: hi.enableActive}
+	observed, acquireErr := observer.begin(childGctx, ep)
+	if acquireErr != nil {
 		select {
-		case session.failuresChan <- fmt.Errorf("service breaker half-open permit acquisition failed"):
+		case session.failuresChan <- acquireErr:
 		default:
 		}
 		cancel()
 		return
 	}
-	if !hi.cbManager.AcquireHalfOpenPermit(ep.ID, hi.enableActive) {
-		hi.cbManager.ReleaseHalfOpenPermit(serviceKey)
-		select {
-		case session.failuresChan <- fmt.Errorf("instance breaker half-open permit acquisition failed"):
-		default:
-		}
-		cancel()
-		return
-	}
+	defer observed.release()
 
 	if ep != nil {
 		childGctx.Logger(zap.NewNop()).Info("invoking provider endpoint (hedging)",
@@ -388,7 +380,7 @@ func (hi *HedgingInvoker) invokeSub(
 			session.terminalFailure = childGctx
 		}
 		session.mu.Unlock()
-		hi.cbManager.RecordFailure(childGctx, ep, err)
+		observed.hedgedOutcome(err)
 		select {
 		case session.failuresChan <- err:
 		default:
@@ -398,8 +390,7 @@ func (hi *HedgingInvoker) invokeSub(
 	}
 
 	// Success (non-stream complete, or stream already flushed via writer)
-	hi.cbManager.RecordSuccess(childGctx, ep)
-	hi.stateStore.RecordLatency(childGctx.Ctx, ep.ID, time.Since(childGctx.UpstreamConnect))
+	observed.hedgedOutcome(nil)
 
 	session.claimWinner(childGctx)
 }

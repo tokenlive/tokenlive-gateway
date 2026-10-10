@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tokenlive/tokenlive-gateway/pkg/filters/inbound"
 	"github.com/tokenlive/tokenlive-gateway/pkg/matcher"
 	"github.com/tokenlive/tokenlive-gateway/pkg/policy"
 )
@@ -91,4 +92,23 @@ func TestSmartHTTPHedgingTerminalErrorDoesNotUpgrade(t *testing.T) {
 			t.Fatal("terminal 400 caused upgrade")
 		}
 	}
+}
+
+func TestSmartHTTPChildUsesConfiguredRateLimitInstance(t *testing.T) {
+	h := newSmartHTTPRig(t)
+	limits := inbound.NewRateLimitFilter(h.state)
+	var rejected []string
+	limits.SetEventHandler(func(_, model, _, _, _ string) { rejected = append(rejected, model) })
+	h.engine.RegisterFilter("rate_limit", limits)
+	if err := h.engine.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := h.config.GetPolicy(context.Background(), "", "", "cheap")
+	p.LimitPolicies = []*policy.LimitPolicy{{ID: "injected-limit", Type: "request", SlidingWindows: []*policy.SlidingWindow{{Threshold: 0, TimeWindowInMs: 60000}}}}
+	h.config.policies["cheap"] = p
+	w := h.request(context.Background(), "/v1/chat/completions", smartHTTPBody)
+	if w.Code != 429 || len(rejected) != 1 || rejected[0] != "cheap" {
+		t.Fatalf("child did not use injected filter: HTTP %d rejected=%v", w.Code, rejected)
+	}
+	h.requireCalls("judge-1")
 }

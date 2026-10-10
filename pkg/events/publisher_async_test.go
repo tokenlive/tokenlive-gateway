@@ -32,6 +32,101 @@ func (m *mockUnderlyingPublisher) Close() error {
 	return nil
 }
 
+type queuedDrainPublisher struct {
+	started chan struct{}
+	queued  int
+}
+
+func (p *queuedDrainPublisher) Publish(ctx context.Context, event *OpsEvent) error {
+	if event.EventType == "inflight" {
+		close(p.started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.queued++
+	return nil
+}
+
+func (*queuedDrainPublisher) Close() error { return nil }
+
+func TestAsyncPublisherStopPreservesQueuedEventsForClose(t *testing.T) {
+	for range 64 {
+		delegate := &queuedDrainPublisher{started: make(chan struct{})}
+		publisher := NewAsyncPublisher(delegate, 8)
+		_ = publisher.Publish(context.Background(), &OpsEvent{EventType: "inflight"})
+		<-delegate.started
+		for range 8 {
+			_ = publisher.Publish(context.Background(), &OpsEvent{EventType: "queued"})
+		}
+		publisher.Stop()
+		if delegate.queued != 0 {
+			t.Fatal("Stop published queued events instead of leaving them for Close")
+		}
+		if err := publisher.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if delegate.queued != 8 {
+			t.Fatalf("Close drained %d queued events, want 8", delegate.queued)
+		}
+	}
+}
+
+func TestAsyncPublisherStopCancelsWorkerBeforeDelegateClose(t *testing.T) {
+	delegate := &cancelAwarePublisher{started: make(chan struct{}), release: make(chan struct{})}
+	pub := NewAsyncPublisher(delegate, 10)
+	_ = pub.Publish(context.Background(), &OpsEvent{EventType: "blocked"})
+	<-delegate.started
+	pub.Stop()
+	pub.Stop()
+	if err := pub.Publish(context.Background(), &OpsEvent{EventType: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAsyncPublisherCloseCancelsWorkerAndIsIdempotent(t *testing.T) {
+	delegate := &cancelAwarePublisher{started: make(chan struct{}), release: make(chan struct{})}
+	pub := NewAsyncPublisher(delegate, 10)
+	_ = pub.Publish(context.Background(), &OpsEvent{EventType: "blocked"})
+	<-delegate.started
+	done := make(chan error, 1)
+	go func() { done <- pub.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(delegate.release)
+		<-done
+		t.Fatal("Close did not cancel the in-flight worker publish")
+	}
+	if err := pub.Publish(context.Background(), &OpsEvent{EventType: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type cancelAwarePublisher struct{ started, release chan struct{} }
+
+func (p *cancelAwarePublisher) Publish(ctx context.Context, _ *OpsEvent) error {
+	close(p.started)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.release:
+		return nil
+	}
+}
+func (*cancelAwarePublisher) Close() error { return nil }
+
 func TestAsyncPublisher_NormalPublish(t *testing.T) {
 	mock := &mockUnderlyingPublisher{}
 	asyncPub := NewAsyncPublisher(mock, 10)

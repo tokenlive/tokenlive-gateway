@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -49,8 +48,9 @@ type Engine struct {
 	mu              sync.RWMutex
 
 	// Lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx       context.Context
+	cancel    context.CancelFunc
+	lifecycle engineLifecycle
 
 	// Optional components (injected via setters)
 	compQueue               compensation.Queue
@@ -149,79 +149,6 @@ func (e *Engine) SetPublisher(pub events.Publisher) {
 // Context returns the Engine lifecycle context for graceful goroutine shutdown.
 func (e *Engine) Context() context.Context {
 	return e.ctx
-}
-
-// Close gracefully shuts down the Engine in order: cancel → compQueue → stateStore → discovery.
-func (e *Engine) Close() error {
-	var errs []error
-	if e.cancel != nil {
-		e.cancel()
-	}
-	if e.compQueue != nil {
-		errs = append(errs, e.compQueue.Close())
-	}
-	errs = append(errs, e.stateStore.Close())
-	errs = append(errs, e.discovery.Close())
-	return errors.Join(errs...)
-}
-
-// StartHealthCheck starts background Provider and adaptive Endpoint health check goroutines.
-func (e *Engine) StartHealthCheck(ctx context.Context, interval time.Duration, enableActive bool) {
-	e.enableActiveHealthCheck = enableActive
-	if e.staticDiscovery == nil {
-		return
-	}
-	e.staticDiscovery.StartHealthCheck(ctx, e.getProviders, e.cbManager, e.logger, interval, enableActive)
-}
-
-// StartCircuitBreakerProbe starts background circuit breaker state probing, periodically evaluating Open breakers and updating Redis cache.
-func (e *Engine) StartCircuitBreakerProbe(ctx context.Context, interval time.Duration) {
-	if e.cbManager == nil {
-		return
-	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				e.probeCircuitBreakerStates()
-			}
-		}
-	}()
-}
-
-func (e *Engine) probeCircuitBreakerStates() {
-	e.cbManager.mu.RLock()
-	keys := make([]string, 0, len(e.cbManager.entries))
-	for k := range e.cbManager.entries {
-		keys = append(keys, k)
-	}
-	e.cbManager.mu.RUnlock()
-
-	now := time.Now()
-	for _, k := range keys {
-		entry := e.cbManager.getEntry(k)
-		oldState, newState := entry.stateVal(now)
-		if oldState != newState {
-			e.cbManager.onStateChange(k, oldState, newState)
-		}
-		// Periodic probe: refresh metrics even if state unchanged (ensures Grafana real-time visibility)
-		if e.cbManager.metrics != nil {
-			entry.mu.Lock()
-			mc := entry.modelCode
-			entry.mu.Unlock()
-			if mc == "" && strings.Contains(k, ":") {
-				parts := strings.Split(k, ":")
-				if len(parts) > 1 {
-					mc = parts[1]
-				}
-			}
-			e.cbManager.metrics.RecordState(k, mc, newState)
-		}
-	}
 }
 
 // Init builds all Pipelines from config.
@@ -327,50 +254,20 @@ func (e *Engine) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Execute Invoker (supports dynamic model fallback)
-	invoker := pipe.Invoker
-	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil && gctx.Policy.InvocationPolicy.Type != "" {
-		if matchedInvoker, ok := pipe.Invokers[gctx.Policy.InvocationPolicy.Type]; ok {
-			invoker = matchedInvoker
-		}
-	}
-
+	// Smart 优先；普通请求只进入一次请求级调用器。
 	var invokeErr error
-	fallbackPolicy := getFallbackPolicy(gctx)
 	smartHandled := false
 	if e.smartRouter != nil {
 		smartHandled, invokeErr = e.smartRouter.Invoke(gctx, pipe)
 	}
-	if smartHandled {
-		gctx.Err = invokeErr
-	} else if fallbackPolicy != nil && len(fallbackPolicy.Targets) > 0 {
-		models := append([]string{gctx.Model}, fallbackPolicy.Targets...)
-		for i, modelName := range models {
-			if i > 0 {
-				gctx.Model = modelName
-				gctx.FallbackChain = append(gctx.FallbackChain, modelName)
-			} else {
-				gctx.FallbackChain = append(gctx.FallbackChain, modelName)
-			}
-			invokeErr = invoker.Invoke(gctx)
-			if invokeErr == nil {
-				break
-			}
-			// First byte already sent for streaming; cannot fallback
-			if gctx.TTFT > 0 {
-				break
-			}
-			if i == len(models)-1 {
-				break
-			}
-			if !shouldDynamicFallback(gctx, invokeErr) {
-				break
-			}
+	if !smartHandled {
+		if pipe.RequestInvoker != nil {
+			invokeErr = pipe.RequestInvoker.Invoke(gctx)
+		} else {
+			invokeErr = NewFallbackInvoker(pipe).Invoke(gctx)
 		}
-		gctx.Err = invokeErr
-	} else {
-		gctx.Err = invoker.Invoke(gctx)
 	}
+	gctx.Err = invokeErr
 
 	// 5. Execute OutboundFilters
 	for _, f := range pipe.OutboundFilters {
@@ -525,62 +422,6 @@ func (e *Engine) Publisher() events.Publisher {
 	return e.publisher
 }
 
-func getFallbackPolicy(gctx *GatewayContext) *policy.FallbackPolicy {
-	if gctx.Policy != nil && gctx.Policy.InvocationPolicy != nil {
-		return gctx.Policy.InvocationPolicy.FallbackPolicy
-	}
-	return nil
-}
-
-func shouldDynamicFallback(gctx *GatewayContext, err error) bool {
-	if err == nil {
-		return false
-	}
-	if gctx != nil && gctx.FatalErr != nil {
-		return false
-	}
-	if errors.Is(err, ErrFatalNoAvailableEndpoint) {
-		return false
-	}
-	if isAffinityNoDegrade(gctx) {
-		return false
-	}
-	return errors.Is(err, ErrNoAvailableEndpoint)
-}
-
-func isAffinityNoDegrade(gctx *GatewayContext) bool {
-	if gctx == nil || gctx.Policy == nil || gctx.Policy.LoadBalancePolicy == nil {
-		return false
-	}
-	lbPolicy := gctx.Policy.LoadBalancePolicy
-	if lbPolicy.Type == "endpoint_affinity" {
-		if lbPolicy.Params != nil {
-			var allowDegrade bool
-			if v, ok := lbPolicy.Params["allow_degrade"]; ok {
-				switch x := v.(type) {
-				case bool:
-					allowDegrade = x
-				case string:
-					allowDegrade = (x == "true")
-				case float64:
-					allowDegrade = (x != 0)
-				case int:
-					allowDegrade = (x != 0)
-				}
-			} else if v, ok := lbPolicy.Params["allowDegrade"]; ok {
-				switch x := v.(type) {
-				case bool:
-					allowDegrade = x
-				case string:
-					allowDegrade = (x == "true")
-				case float64:
-					allowDegrade = (x != 0)
-				case int:
-					allowDegrade = (x != 0)
-				}
-			}
-			return !allowDegrade
-		}
-	}
-	return false
+func shouldDynamicFallback(g *GatewayContext, err error) bool {
+	return CanFallbackModel(g, err)
 }

@@ -17,7 +17,10 @@ var _ core.InvokerBuilder = (*Builder)(nil)
 // BuildInvoker constructs a concrete Invoker from config.
 func (b *Builder) BuildInvoker(cfg *core.InvokerConfig, r core.InvokerDependencyResolver) (core.Invoker, error) {
 	switch cfg.Type {
-	case "cluster":
+	case "", "cluster", "failover":
+		return buildClusterInvoker(cfg, r)
+	case "fallback":
+		// 原始目标仍为 Cluster，模型降级由 BuildRequestInvoker 装配。
 		return buildClusterInvoker(cfg, r)
 	case "hedging":
 		return buildHedgingInvoker(cfg, r)

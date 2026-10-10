@@ -74,144 +74,6 @@ func (ci *ClusterInvoker) SetEnableActive(enable bool) {
 	ci.enableActive = enable
 }
 
-// Default failure-penalty parameters for latency stats.
-const (
-	defaultFailurePenalty  = 3.0              // hist avg × 3
-	defaultFailureMax      = 30 * time.Second // penalty cap
-	minFailurePenalty      = 1.0              // floor so failure is never "rewarded"
-	defaultLatencyWindowLL = 5 * time.Minute  // default window for least_latency
-)
-
-// recordFailurePenalty records a failed call as a synthetic latency sample.
-// Penalty = endpoint hist avg × multiplier (or maxPenalty if no samples).
-// Written to RecordLatency (total) or RecordTTFT (ttft). Disable with latency_failure_penalty=0.
-// Keeps failed endpoints from looking artificially fast under least_latency during recovery.
-func (ci *ClusterInvoker) recordFailurePenalty(gctx *core.GatewayContext) {
-	if gctx == nil || gctx.SelectedEndpoint == nil {
-		return
-	}
-	params := lbParams(gctx)
-	multiplier, maxPenalty := resolveFailurePenaltyConfig(params)
-	if multiplier == 0 {
-		// Explicitly disabled
-		return
-	}
-	if multiplier < minFailurePenalty {
-		multiplier = minFailurePenalty
-	}
-
-	window, metric := resolveLatencyConfig(params)
-	epID := gctx.SelectedEndpoint.ID
-
-	histAvg := func() (time.Duration, error) {
-		if metric == "ttft" {
-			return ci.stateStore.GetAvgTTFT(gctx.Ctx, epID, window)
-		}
-		return ci.stateStore.GetAvgLatency(gctx.Ctx, epID, window)
-	}
-	avg, err := histAvg()
-	if err != nil || avg <= 0 {
-		// No history: use max penalty
-		ci.writePenalty(gctx, metric, maxPenalty)
-		return
-	}
-	penalty := time.Duration(float64(avg) * multiplier)
-	if penalty > maxPenalty {
-		penalty = maxPenalty
-	}
-	ci.writePenalty(gctx, metric, penalty)
-}
-
-// writePenalty writes the penalty into the series for the given metric.
-func (ci *ClusterInvoker) writePenalty(gctx *core.GatewayContext, metric string, penalty time.Duration) {
-	epID := gctx.SelectedEndpoint.ID
-	if metric == "ttft" {
-		if err := ci.stateStore.RecordTTFT(gctx.Ctx, epID, penalty); err != nil {
-			gctx.Logger(ci.logger).Warn("record ttft penalty failed",
-				zap.String("endpoint", epID), zap.Error(err))
-		}
-		return
-	}
-	if err := ci.stateStore.RecordLatency(gctx.Ctx, epID, penalty); err != nil {
-		gctx.Logger(ci.logger).Warn("record latency penalty failed",
-			zap.String("endpoint", epID), zap.Error(err))
-	}
-}
-
-// lbParams safely returns LoadBalancePolicy.Params.
-func lbParams(gctx *core.GatewayContext) map[string]interface{} {
-	if gctx == nil || gctx.Policy == nil || gctx.Policy.LoadBalancePolicy == nil {
-		return nil
-	}
-	return gctx.Policy.LoadBalancePolicy.Params
-}
-
-// resolveLatencyConfig reads latency_window (default 5m) and latency_metric (default total).
-func resolveLatencyConfig(params map[string]interface{}) (window time.Duration, metric string) {
-	window = defaultLatencyWindowLL
-	metric = "total"
-	if params == nil {
-		return
-	}
-	if v, ok := params["latency_window"]; ok {
-		switch x := v.(type) {
-		case float64:
-			if x > 0 {
-				window = time.Duration(x) * time.Second
-			}
-		case int:
-			if x > 0 {
-				window = time.Duration(x) * time.Second
-			}
-		case string:
-			if d, err := time.ParseDuration(x); err == nil && d > 0 {
-				window = d
-			}
-		}
-	}
-	if v, ok := params["latency_metric"]; ok {
-		if s, ok := v.(string); ok && (s == "ttft" || s == "total") {
-			metric = s
-		}
-	}
-	return
-}
-
-// resolveFailurePenaltyConfig reads failure penalty multiplier and max from Params.
-// multiplier=0 disables failure-as-latency recording.
-func resolveFailurePenaltyConfig(params map[string]interface{}) (multiplier float64, maxPenalty time.Duration) {
-	multiplier = defaultFailurePenalty
-	maxPenalty = defaultFailureMax
-	if params == nil {
-		return
-	}
-	if v, ok := params["latency_failure_penalty"]; ok {
-		switch x := v.(type) {
-		case float64:
-			multiplier = x
-		case int:
-			multiplier = float64(x)
-		}
-	}
-	if v, ok := params["latency_failure_max"]; ok {
-		switch x := v.(type) {
-		case float64:
-			if x > 0 {
-				maxPenalty = time.Duration(x) * time.Second
-			}
-		case int:
-			if x > 0 {
-				maxPenalty = time.Duration(x) * time.Second
-			}
-		case string:
-			if d, err := time.ParseDuration(x); err == nil && d > 0 {
-				maxPenalty = d
-			}
-		}
-	}
-	return
-}
-
 // RouterChain returns the router chain (for tests).
 func (ci *ClusterInvoker) RouterChain() []core.Router {
 	return ci.routerChain
@@ -219,6 +81,7 @@ func (ci *ClusterInvoker) RouterChain() []core.Router {
 
 // Invoke runs a cluster call with retry.
 func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
+	observer := &attemptObserver{cbManager: ci.cbManager, stateStore: ci.stateStore, logger: ci.logger, enableActive: ci.enableActive}
 	excluded := make(map[string]bool)
 	var lastErr error
 
@@ -407,39 +270,33 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		selectedEp := invoker.Endpoint()
 		if selectedEp != nil {
 			lastSelectedEndpointID = selectedEp.ID
-			// Acquire half-open probe permits before sending traffic
-			serviceKey := selectedEp.Provider + ":" + selectedEp.Model
-			if !ci.cbManager.AcquireHalfOpenPermit(serviceKey, ci.enableActive) {
-				if !rp.IsExcludeFailedEndpoint() {
-					return fmt.Errorf("service breaker half-open permit acquisition failed: %s", serviceKey)
-				}
-				excluded[selectedEp.ID] = true
-				lastErr = fmt.Errorf("service breaker half-open permit acquisition failed")
-				if attempt+1 >= maxAttempts {
-					return lastErr
-				}
-				continue
+		}
+		observed, acquireErr := observer.begin(gctx, selectedEp)
+		if acquireErr != nil {
+			if !rp.IsExcludeFailedEndpoint() {
+				return acquireErr
 			}
-			if !ci.cbManager.AcquireHalfOpenPermit(selectedEp.ID, ci.enableActive) {
-				ci.cbManager.ReleaseHalfOpenPermit(serviceKey)
-				if !rp.IsExcludeFailedEndpoint() {
-					return fmt.Errorf("instance breaker half-open permit acquisition failed: %s", selectedEp.ID)
-				}
-				excluded[selectedEp.ID] = true
-				lastErr = fmt.Errorf("instance breaker half-open permit acquisition failed")
-				if attempt+1 >= maxAttempts {
-					return lastErr
-				}
-				continue
+			excluded[selectedEp.ID] = true
+			lastErr = acquireErr
+			if attempt+1 >= maxAttempts {
+				return lastErr
 			}
+			continue
 		}
 
-		err = invoker.Invoke(gctx)
+		err = func() error {
+			defer observed.release()
+			invokeErr := invoker.Invoke(gctx)
+			clientDisconnected := errors.Is(invokeErr, core.ErrClientDisconnected)
+			if invokeErr != nil && !clientDisconnected && gctx.UpstreamError == nil {
+				gctx.UpstreamError = invokeErr
+			}
+			// 物理尝试必须先于健康/延迟反馈记录，且许可保持到 outcome 完成。
+			gctx.RecordAttempt(invokeErr == nil || clientDisconnected)
+			observed.sequentialOutcome(invokeErr)
+			return invokeErr
+		}()
 		clientDisconnected := errors.Is(err, core.ErrClientDisconnected)
-		if err != nil && !clientDisconnected && gctx.UpstreamError == nil {
-			gctx.UpstreamError = err
-		}
-		gctx.RecordAttempt(err == nil || clientDisconnected)
 
 		lastInvoker = gctx.SelectedInvoker
 		lastEndpoint = gctx.SelectedEndpoint
@@ -458,44 +315,6 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		}
 
 		if err == nil {
-			isSlowCall := false
-			var slowReason string
-			if gctx.Policy != nil {
-				for _, p := range gctx.Policy.CircuitBreakPolicies {
-					if p.SlowCallMetric == "TTFT" && gctx.TTFT > 0 {
-						limit := time.Duration(p.SlowCallDurationThreshold) * time.Millisecond
-						if gctx.TTFT > limit {
-							isSlowCall = true
-							slowReason = "slow call TTFT exceeded"
-							break
-						}
-					} else if p.SlowCallMetric == "RTT" || p.SlowCallMetric == "Duration" {
-						rtt := time.Since(gctx.UpstreamConnect)
-						limit := time.Duration(p.SlowCallDurationThreshold) * time.Millisecond
-						if rtt > limit {
-							isSlowCall = true
-							slowReason = "slow call RTT exceeded"
-							break
-						}
-					}
-				}
-			}
-
-			if isSlowCall {
-				ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, fmt.Errorf("%s", slowReason))
-			} else {
-				ci.cbManager.RecordSuccess(gctx, gctx.SelectedEndpoint)
-			}
-			ci.stateStore.RecordLatency(gctx.Ctx, gctx.SelectedEndpoint.ID, time.Since(gctx.UpstreamConnect))
-			// Stream: record TTFT for latency_metric=ttft. Non-stream TTFT is 0, skip.
-			if gctx.TTFT > 0 {
-				if err := ci.stateStore.RecordTTFT(gctx.Ctx, gctx.SelectedEndpoint.ID, gctx.TTFT); err != nil {
-					gctx.Logger(ci.logger).Warn("record ttft failed",
-						zap.String("endpoint", gctx.SelectedEndpoint.ID),
-						zap.Error(err),
-					)
-				}
-			}
 			return nil
 		}
 
@@ -510,12 +329,6 @@ func (ci *ClusterInvoker) Invoke(gctx *core.GatewayContext) error {
 		if isExplicitlyNonRetryable(err) {
 			return err
 		}
-
-		// Remaining invocation errors count against endpoint health.
-		ci.cbManager.RecordFailure(gctx, gctx.SelectedEndpoint, err)
-
-		// Synthetic latency so failed endpoints are not preferred by least_latency
-		ci.recordFailurePenalty(gctx)
 
 		// Stream already sent first byte: no retry
 		if gctx.TTFT > 0 {

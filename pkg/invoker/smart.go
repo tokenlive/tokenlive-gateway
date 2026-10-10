@@ -35,6 +35,11 @@ func (e *smartTerminalError) Error() string { return e.cause.Error() }
 func (e *smartTerminalError) Unwrap() error { return e.cause }
 
 func NewSmartRouter(source SmartConfigSource, validator inbound.ModelValidator, policies policy.PolicyProvider, resolver core.InvokerDependencyResolver) *SmartRouter {
+	return NewSmartRouterWithAccounting(source, validator, policies, resolver, nil, nil)
+}
+
+// NewSmartRouterWithAccounting 复用生产过滤器实例，旧构造器从 Pipeline 获取实例。
+func NewSmartRouterWithAccounting(source SmartConfigSource, validator inbound.ModelValidator, policies policy.PolicyProvider, resolver core.InvokerDependencyResolver, limits *inbound.RateLimitFilter, settler *outbound.TokenSettlementFilter) *SmartRouter {
 	judge := NewClusterInvoker(resolver.Discovery(),
 		resolver.ResolveRouters([]string{"capability", "circuit_breaker", "tenant_endpoint", "tag", "priority"}),
 		map[string]core.LoadBalancer{"round_robin": resolver.ResolveLoadBalancer("round_robin")},
@@ -42,8 +47,8 @@ func NewSmartRouter(source SmartConfigSource, validator inbound.ModelValidator, 
 	judge.SetEnableActive(resolver.EnableActiveHealthCheck())
 	return &SmartRouter{
 		source: source, validator: validator, policies: policies, judge: judge,
-		limits:    inbound.NewRateLimitFilter(resolver.StateStore()),
-		settler:   outbound.NewTokenSettlementFilter(resolver.StateStore(), nil, resolver.Logger()),
+		limits:    limits,
+		settler:   settler,
 		discovery: resolver.Discovery(),
 	}
 }
@@ -91,8 +96,12 @@ func (r *SmartRouter) Invoke(g *core.GatewayContext, pipe *core.Pipeline) (bool,
 			break
 		}
 	}
+	accounting, err := r.childAccounting(pipe)
+	if err != nil {
+		return true, err
+	}
 	judgeStart := time.Now()
-	score, reason, usage, judgeErr := r.classify(g, req, auth)
+	score, reason, usage, judgeErr := r.classify(g, req, auth, accounting)
 	record.JudgeDurationMs = time.Since(judgeStart).Milliseconds()
 	record.JudgeUsage = usage
 	if err := g.Ctx.Err(); err != nil {
@@ -136,30 +145,11 @@ func (r *SmartRouter) Invoke(g *core.GatewayContext, pipe *core.Pipeline) (bool,
 		if record.MatchedModel == "" {
 			record.MatchedModel = model
 		}
-		err = r.limits.OnRequest(child)
-		if err != nil {
-			child.Err = err
-			settleErr := r.settler.SettleLimits(child)
+		result := accounting.invoke(child, pipe.SelectInvoker(child))
+		err = result.err()
+		if result.admissionErr != nil || result.settlementErr != nil {
 			core.ReleaseContext(child)
-			if settleErr != nil {
-				return true, settleErr
-			}
-			return true, err // A hard local quota denial must not trigger escalation.
-		}
-		invoke := pipe.Invoker
-		if child.Policy != nil && child.Policy.InvocationPolicy != nil {
-			if configured := pipe.Invokers[child.Policy.InvocationPolicy.Type]; configured != nil {
-				invoke = configured
-			}
-		}
-		invoke, err = capacityCheckedInvoker(invoke)
-		if err == nil {
-			err = invoke.Invoke(child)
-		}
-		child.Err = err
-		if settleErr := r.settler.SettleLimits(child); settleErr != nil {
-			core.ReleaseContext(child)
-			return true, settleErr
+			return true, err // 本地限额拒绝和结算失败均不可升级。
 		}
 		record.ExecutedModel = model
 		g.History = append(g.History, child.History...)
@@ -182,7 +172,7 @@ func (r *SmartRouter) Invoke(g *core.GatewayContext, pipe *core.Pipeline) (bool,
 	return true, lastErr
 }
 
-func (r *SmartRouter) classify(parent *core.GatewayContext, req *smartRequest, auth core.InboundFilter) (int, string, *core.SmartJudgeUsage, error) {
+func (r *SmartRouter) classify(parent *core.GatewayContext, req *smartRequest, auth core.InboundFilter, accounting childAccounting) (int, string, *core.SmartJudgeUsage, error) {
 	cfg := parent.SmartConfig
 	body, err := buildSmartJudgeRequest(req, cfg)
 	if err != nil {
@@ -206,22 +196,14 @@ func (r *SmartRouter) classify(parent *core.GatewayContext, req *smartRequest, a
 		buffer.limit = child.MaxResponseBytes
 	}
 	child.Policy.InvocationPolicy = &policy.InvocationPolicy{Type: "cluster", RetryPolicy: &policy.RetryPolicy{Retry: 0, TotalTimeout: cfg.JudgeTimeoutMs}}
-	limitErr := r.limits.OnRequest(child)
-	err = limitErr
-	if err == nil {
-		var invoke core.Invoker
-		invoke, err = capacityCheckedInvoker(r.judge)
-		if err == nil {
-			err = invoke.Invoke(child)
-		}
+	result := accounting.invoke(child, r.judge)
+	if result.settlementErr != nil {
+		return 0, "judge_quota_error", nil, &smartTerminalError{result.settlementErr}
 	}
-	child.Err = err
-	if settleErr := r.settler.SettleLimits(child); settleErr != nil {
-		return 0, "judge_quota_error", nil, &smartTerminalError{settleErr}
+	if result.admissionErr != nil {
+		return 0, "judge_limit_rejected", nil, &smartTerminalError{result.admissionErr}
 	}
-	if limitErr != nil {
-		return 0, "judge_limit_rejected", nil, &smartTerminalError{limitErr}
-	}
+	err = result.invokeErr
 	if err != nil {
 		reason := "judge_unavailable"
 		if ctx.Err() != nil {
