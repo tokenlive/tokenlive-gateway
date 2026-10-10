@@ -214,7 +214,7 @@ func TestApiKeyService_ValidateAndCache(t *testing.T) {
 }
 
 func TestApiKeyService_PurgeCache(t *testing.T) {
-	logger := log.NewLog(config.NewConfig(""))
+	logger := &log.Logger{Logger: zap.NewNop()}
 	svc := NewApiKeyService(nil, logger)
 
 	origCache := svc.cache

@@ -39,12 +39,12 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 		cleanup()
 		return nil, nil, err
 	}
-	conn, cleanup2, err := repository.NewClickHouse(viperViper, logger)
+	v, cleanup2, err := repository.NewClickHouse(viperViper, logger)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	engine, cleanup3, err := NewGatewayEngine(viperViper, logger, modelService, apiKeyService, configManager, client, conn, gatewayProvider)
+	engine, cleanup3, err := NewGatewayEngine(viperViper, logger, modelService, apiKeyService, configManager, client, v, gatewayProvider)
 	if err != nil {
 		cleanup2()
 		cleanup()

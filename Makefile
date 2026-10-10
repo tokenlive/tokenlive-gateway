@@ -24,7 +24,7 @@ mock:
 
 .PHONY: test
 test:
-	go test -coverpkg=./internal/handler,./internal/service,./internal/repository -coverprofile=./coverage.out ./test/server/...
+	go test -coverpkg=./internal/...,./pkg/... -coverprofile=./coverage.out ./internal/... ./pkg/...
 	go tool cover -html=./coverage.out -o coverage.html
 
 .PHONY: build
