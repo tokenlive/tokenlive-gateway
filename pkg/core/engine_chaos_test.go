@@ -112,6 +112,7 @@ type chaosStateStore struct {
 	mu      sync.Mutex
 	refunds map[string]int64
 	incrs   map[string]int64
+	adjusts map[string]int64
 	latency map[string]time.Duration
 }
 
@@ -119,6 +120,7 @@ func newChaosStateStore() *chaosStateStore {
 	return &chaosStateStore{
 		refunds: make(map[string]int64),
 		incrs:   make(map[string]int64),
+		adjusts: make(map[string]int64),
 		latency: make(map[string]time.Duration),
 	}
 }
@@ -142,6 +144,13 @@ func (s *chaosStateStore) RateLimitTake(ctx context.Context, key string, tokens 
 	defer s.mu.Unlock()
 	s.incrs[key] += tokens
 	return true, capacity - s.incrs[key], nil
+}
+
+func (s *chaosStateStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adjusts[key] += tokens
+	return capacity - s.adjusts[key], nil
 }
 
 func (s *chaosStateStore) RecordLatency(ctx context.Context, endpointID string, latency time.Duration) error {

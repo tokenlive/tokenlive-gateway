@@ -71,6 +71,9 @@ func (m *mockLatencyStateStore) RateLimitRefund(ctx context.Context, key string,
 func (m *mockLatencyStateStore) RateLimitTake(ctx context.Context, key string, tokens int64, limit int64, capacity int64, window time.Duration, now time.Time) (bool, int64, error) {
 	return true, capacity - tokens, nil
 }
+func (m *mockLatencyStateStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
+	return capacity - tokens, nil
+}
 func (m *mockLatencyStateStore) StickyGet(ctx context.Context, sessionKey string) (string, error) {
 	return "", nil
 }
@@ -171,4 +174,3 @@ func TestLeastLatencyLoadBalancer_LatencyWindowParam(t *testing.T) {
 	require.NotNil(t, invoker)
 	assert.Equal(t, "ep1", invoker.Endpoint().ID)
 }
-

@@ -42,6 +42,9 @@ judge 与实际目标模型分别持有 child context 和目标 Policy，通过�
 **Token Estimator**:
 Token 估算器。用于在请求进入网关时对 Prompt 进行 Token 数量预估，支持基于字符长度比例的简单估算 (`length_ratio`)，或引入具体模型的分词器（如 `tiktoken`、`llama-tokenizer`）进行精确预估。
 
+**StateStore**:
+跨请求状态的单一接口，覆盖限流、Sticky Session、延迟统计和 EMA。Memory 与 Redis 是同一接口的两个实现；调用方不按存储能力做类型断言。突发限额的实际用量核销属于接口本身：`RateLimitAdjust` 记录已经发生的用量，正数可以形成债务，负数退款不超过桶容量。键、TTL 和债务恢复规则保持原实现，不拆成多个存储接口。
+
 **Token Settlement (Token 最终结算)**:
 在 Outbound 过滤器阶段对实际 Token 消耗进行核销并扣减 Credits。若流式请求中途中断导致未能获取上游官方 `usage` 字段，系统将触发**字数估算降级（Length Estimation Fallback）**：利用 SSE 拦截器累计统计已发送至客户端的字符数，按模型预设比率估算 Completion Token，以此作为最终值进行指标上报与 Credits 余额扣减，规避网关计费漏扣风险。Token 提取由统一的 `TokenExtractor`（`func(data string)(in,out,cached,cacheCreation int)`，同一个提取器既吃单个 SSE 事件帧、也吃整段非流式响应体）与写入函数 `ApplyUsage`（带 `>0` 守卫，防跨帧 0 值覆盖真值）承担，流式（`SSEInterceptWriter`）与非流式（各 Provider 的 nonStream handler）共用同一套提取与写入语义，不各自内联重写。
 _【架构红线】监控指标（Metrics）仅用于实时大屏和运维告警展示，严禁将 Prometheus 指标（如 `gateway_cost_total` 等）用作计费对账和账单核销的真实依据。所有计费、扣费结算必须强一致地依赖写入 ClickHouse 的结构化访问日志（Access Log）核算，同时必须通过 Redis 补偿队列机制确保 ClickHouse 故障时数据的零丢失与最终一致性。_

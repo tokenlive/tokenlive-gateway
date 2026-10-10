@@ -9,10 +9,6 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 )
 
-type testBurstAdjuster interface {
-	RateLimitAdjust(context.Context, string, int64, int64, int64, time.Duration, time.Time) (int64, error)
-}
-
 func TestBurstAdjustmentDebtAndRefund(t *testing.T) {
 	for _, backend := range []string{"memory", "redis"} {
 		t.Run(backend, func(t *testing.T) {
@@ -23,15 +19,13 @@ func TestBurstAdjustmentDebtAndRefund(t *testing.T) {
 				ss, _ = newTestRedisStore(t)
 			}
 			t.Cleanup(func() { require.NoError(t, ss.Close()) })
-			adjuster, ok := ss.(testBurstAdjuster)
-			require.True(t, ok, "store must support actual-use reconciliation")
 			now, ctx := time.Now(), context.Background()
 			allowed, remaining, err := ss.RateLimitTake(ctx, "quota", 20, 100, 100, time.Minute, now)
 			require.NoError(t, err)
 			require.True(t, allowed)
 			require.Equal(t, int64(80), remaining)
 
-			remaining, err = adjuster.RateLimitAdjust(ctx, "quota", 480, 100, 100, time.Minute, now)
+			remaining, err = ss.RateLimitAdjust(ctx, "quota", 480, 100, 100, time.Minute, now)
 			require.NoError(t, err)
 			require.Equal(t, int64(-400), remaining)
 			// A rollback must refund even if the balance is below the negative refund.
@@ -39,7 +33,7 @@ func TestBurstAdjustmentDebtAndRefund(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, allowed)
 			require.Equal(t, int64(-380), remaining)
-			remaining, err = adjuster.RateLimitAdjust(ctx, "quota", -80, 100, 100, time.Minute, now)
+			remaining, err = ss.RateLimitAdjust(ctx, "quota", -80, 100, 100, time.Minute, now)
 			require.NoError(t, err)
 			require.Equal(t, int64(-300), remaining)
 
@@ -52,7 +46,7 @@ func TestBurstAdjustmentDebtAndRefund(t *testing.T) {
 			require.True(t, allowed)
 			require.Equal(t, int64(99), remaining)
 
-			remaining, err = adjuster.RateLimitAdjust(ctx, "quota", -500, 100, 100, time.Minute, now.Add(4*time.Minute))
+			remaining, err = ss.RateLimitAdjust(ctx, "quota", -500, 100, 100, time.Minute, now.Add(4*time.Minute))
 			require.NoError(t, err)
 			require.Equal(t, int64(100), remaining, "refund cannot exceed capacity")
 		})
@@ -62,10 +56,8 @@ func TestBurstAdjustmentDebtAndRefund(t *testing.T) {
 func TestRedisBurstDebtCannotExpireBeforeFullRefill(t *testing.T) {
 	ss, server := newTestRedisStore(t)
 	t.Cleanup(func() { require.NoError(t, ss.Close()) })
-	adjuster, ok := any(ss).(testBurstAdjuster)
-	require.True(t, ok, "store must support actual-use reconciliation")
 	ctx, now := context.Background(), time.Now()
-	remaining, err := adjuster.RateLimitAdjust(ctx, "quota", 500, 100, 100, time.Minute, now)
+	remaining, err := ss.RateLimitAdjust(ctx, "quota", 500, 100, 100, time.Minute, now)
 	require.NoError(t, err)
 	require.Equal(t, int64(-400), remaining)
 	require.GreaterOrEqual(t, server.TTL(ss.key("tb", "quota")), 5*time.Minute)
@@ -95,10 +87,8 @@ func TestRedisBurstAdjustmentPreservesOrdinaryBucketExpiry(t *testing.T) {
 func TestRedisBurstDebtHorizonSurvivesLaterAdmission(t *testing.T) {
 	ss, server := newTestRedisStore(t)
 	t.Cleanup(func() { require.NoError(t, ss.Close()) })
-	adjuster, ok := any(ss).(testBurstAdjuster)
-	require.True(t, ok)
 	ctx, now := context.Background(), time.Now()
-	remaining, err := adjuster.RateLimitAdjust(ctx, "quota", 1000, 100, 500, time.Minute, now)
+	remaining, err := ss.RateLimitAdjust(ctx, "quota", 1000, 100, 500, time.Minute, now)
 	require.NoError(t, err)
 	require.Equal(t, int64(-500), remaining)
 	server.FastForward(5*time.Minute + time.Second)

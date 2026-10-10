@@ -109,13 +109,7 @@ func (s *failingBurstAdjustmentStore) RateLimitAdjust(ctx context.Context, key s
 	if key == s.failKey {
 		return 0, errors.New("injected adjustment failure")
 	}
-	adjuster, ok := s.StateStore.(interface {
-		RateLimitAdjust(context.Context, string, int64, int64, int64, time.Duration, time.Time) (int64, error)
-	})
-	if !ok {
-		return 0, errors.New("adjustment unavailable")
-	}
-	return adjuster.RateLimitAdjust(ctx, key, tokens, rate, capacity, window, now)
+	return s.StateStore.RateLimitAdjust(ctx, key, tokens, rate, capacity, window, now)
 }
 
 func TestSmartBurstSettlementRetriesOnlyUnsatisfiedReservations(t *testing.T) {
@@ -146,20 +140,30 @@ func TestSmartBurstSettlementRetriesOnlyUnsatisfiedReservations(t *testing.T) {
 	}
 }
 
-func TestSmartBurstSettlementUnsupportedStoreDoesNotClaimSuccess(t *testing.T) {
-	// Hide optional capabilities without changing the backward-compatible interface.
-	ss := struct{ core.StateStore }{store.NewMemoryStateStore()}
+func TestSmartBurstSettlementUsesDeclaredStoreContract(t *testing.T) {
+	ss := store.NewMemoryStateStore()
 	t.Cleanup(func() { require.NoError(t, ss.Close()) })
-	allowed, _, err := ss.RateLimitTake(context.Background(), "reserved", 202, 500, 500, time.Hour, time.Now())
-	require.NoError(t, err)
-	require.True(t, allowed)
+	burst := 1.0
 	g := &core.GatewayContext{
-		Ctx: context.Background(), InputTokens: 1000,
-		LimitReservations: []core.LimitReservation{{
-			Key: "reserved", Type: "token", Estimated: 202, Burst: true,
-			Rate: 500, Capacity: 500, Window: time.Hour,
-		}},
+		Ctx: context.Background(), Model: "smart", UserID: "user", RawBody: []byte("12345678"),
+		TrackLimitReservations: true,
+		Policy: &policy.Policy{LimitPolicies: []*policy.LimitPolicy{{
+			ID: "tokens", Type: "token",
+			SlidingWindows: []*policy.SlidingWindow{{
+				Threshold: 500, TimeWindowInMs: 3600000, BurstRatio: &burst,
+			}},
+		}}},
 	}
-	require.Error(t, NewTokenSettlementFilter(ss, nil, nil).SettleLimits(g))
-	require.False(t, g.LimitReservations[0].Settled)
+	require.NoError(t, inbound.NewRateLimitFilter(ss).OnRequest(g))
+	require.Len(t, g.LimitReservations, 1)
+	reservation := g.LimitReservations[0]
+	require.True(t, reservation.Burst)
+	g.InputTokens = 1000
+	require.NoError(t, NewTokenSettlementFilter(ss, nil, nil).SettleLimits(g))
+	require.True(t, g.LimitReservations[0].Settled)
+
+	_, remaining, err := ss.RateLimitTake(context.Background(), reservation.Key, 0, reservation.Rate, reservation.Capacity, reservation.Window, time.Now())
+	require.NoError(t, err)
+	// Integer truncation of a fractional refill can move the reported balance by one.
+	require.InDelta(t, float64(reservation.Capacity-1000), float64(remaining), 1)
 }

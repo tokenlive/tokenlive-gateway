@@ -254,9 +254,7 @@ func (s *MemoryStateStore) RateLimitTake(ctx context.Context, key string, tokens
 	return allowed, remaining, nil
 }
 
-// RateLimitAdjust reconciles already-consumed usage; positive tokens debit even
-// below zero, negative tokens refund up to capacity. This optional capability
-// deliberately does not change the admission-only core.StateStore interface.
+// RateLimitAdjust 记录已经发生的用量；正数可形成债务，负数退款不超过容量。
 func (s *MemoryStateStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
 	e := s.getOrCreateTokenBucketEntry(key)
 	_, remaining := e.apply(tokens, rate, capacity, window, now, true)

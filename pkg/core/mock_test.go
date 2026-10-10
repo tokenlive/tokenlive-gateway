@@ -72,6 +72,10 @@ func (m *mockStateStore) RateLimitTake(ctx context.Context, key string, tokens i
 	return true, capacity - tokens, nil
 }
 
+func (m *mockStateStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
+	return capacity - tokens, nil
+}
+
 func (m *mockStateStore) GetEMA(ctx context.Context, key string) (float64, error) {
 	return 0, nil
 }

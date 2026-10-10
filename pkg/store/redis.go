@@ -162,9 +162,7 @@ func (s *RedisStateStore) RateLimitTake(ctx context.Context, key string, tokens 
 	return allowed, remaining, nil
 }
 
-// RateLimitAdjust reconciles already-consumed usage in the same token bucket as
-// admission. It allows a negative balance, which later refills must repay.
-// The optional operation leaves core.StateStore and RateLimitTake compatible.
+// RateLimitAdjust 在准入使用的同一个令牌桶中记录已发生用量，并允许负余额。
 func (s *RedisStateStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
 	res, err := s.rateLimitTakeScript.Eval(ctx, s.client,
 		[]string{s.key("tb", key)},

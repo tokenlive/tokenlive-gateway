@@ -30,6 +30,10 @@ func (m *mockRateLimitStore) RateLimitRefund(ctx context.Context, key string, to
 	return nil
 }
 
+func (m *mockRateLimitStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
+	return m.StateStore.RateLimitAdjust(ctx, key, tokens, rate, capacity, window, now)
+}
+
 func (m *mockRateLimitStore) GetEMA(ctx context.Context, key string) (float64, error) {
 	return 0.0001, nil
 }
@@ -363,6 +367,10 @@ func (m *mockCascadeStore) RateLimitRefund(ctx context.Context, key string, toke
 	}
 	m.refundCalls[key] += tokens
 	return nil
+}
+
+func (m *mockCascadeStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
+	return m.StateStore.RateLimitAdjust(ctx, key, tokens, rate, capacity, window, now)
 }
 
 func (m *mockCascadeStore) GetEMA(context.Context, string) (float64, error) {

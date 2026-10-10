@@ -36,6 +36,10 @@ func (m *mockCostStore) RateLimitRefund(ctx context.Context, key string, tokens 
 	return nil
 }
 
+func (m *mockCostStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
+	return m.StateStore.RateLimitAdjust(ctx, key, tokens, rate, capacity, window, now)
+}
+
 func (m *mockCostStore) GetEMA(ctx context.Context, key string) (float64, error) {
 	return 0, nil
 }
@@ -55,7 +59,7 @@ func TestCostLimitExecutor_Execute(t *testing.T) {
 
 	p := &policy.Policy{
 		Billing: &policy.BillingPolicy{
-			InputPrice:  5.0, // 5 元/百万 Tokens
+			InputPrice:  5.0,  // 5 元/百万 Tokens
 			OutputPrice: 10.0, // 10 元/百万 Tokens
 		},
 	}

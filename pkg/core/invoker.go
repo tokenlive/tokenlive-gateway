@@ -94,6 +94,9 @@ type StateStore interface {
 
 	// Token bucket (smooth burst): high-precision atomic consume
 	RateLimitTake(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (allowed bool, remaining int64, err error)
+	// RateLimitAdjust records usage that already happened. Positive tokens may
+	// create debt; negative tokens refund without exceeding capacity.
+	RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (remaining int64, err error)
 
 	// Sticky Session
 	StickyGet(ctx context.Context, sessionKey string) (endpointID string, err error)

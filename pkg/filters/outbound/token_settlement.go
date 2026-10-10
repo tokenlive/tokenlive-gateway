@@ -259,16 +259,8 @@ func (f *TokenSettlementFilter) SettleLimits(gctx *core.GatewayContext) error {
 		var err error
 		if diff != 0 {
 			if r.Burst {
-				// Admission may reject an extra debit, but actual usage has already
-				// happened. Require debt-aware reconciliation without widening the
-				// StateStore interface implemented by existing adapters and mocks.
-				adjuster, ok := f.stateStore.(interface {
-					RateLimitAdjust(context.Context, string, int64, int64, int64, time.Duration, time.Time) (int64, error)
-				})
-				if !ok {
-					return errors.New("state store does not support burst quota reconciliation")
-				}
-				_, err = adjuster.RateLimitAdjust(ctx, r.Key, diff, r.Rate, r.Capacity, r.Window, time.Now())
+				// 用量已经发生，不能按准入失败拒绝；正差额允许形成债务。
+				_, err = f.stateStore.RateLimitAdjust(ctx, r.Key, diff, r.Rate, r.Capacity, r.Window, time.Now())
 			} else if diff < 0 {
 				err = f.stateStore.RateLimitRefund(ctx, r.Key, -diff)
 			} else {

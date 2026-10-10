@@ -256,6 +256,10 @@ func (m *mockExceededStateStore) RateLimitRefund(ctx context.Context, key string
 	return nil
 }
 
+func (m *mockExceededStateStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
+	return m.StateStore.RateLimitAdjust(ctx, key, tokens, rate, capacity, window, now)
+}
+
 func TestRateLimitFilter_Exceeded(t *testing.T) {
 	ss := &mockExceededStateStore{}
 	f := NewRateLimitFilter(ss)
