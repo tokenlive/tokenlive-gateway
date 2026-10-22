@@ -50,7 +50,7 @@ func TestRedisQueue_Enqueue(t *testing.T) {
 	// 入队第二条
 	task2 := &CompensationTask{
 		ID:         "task-2",
-		FilterName: "sticky_session",
+		FilterName: "token_settlement",
 		Payload:    map[string]any{"session": "abc"},
 		EnqueueAt:  time.Now(),
 	}

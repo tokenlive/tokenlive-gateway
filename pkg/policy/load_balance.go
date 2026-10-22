@@ -6,7 +6,7 @@ import "encoding/json"
 type LoadBalancePolicy struct {
 	ID      string                 `yaml:"id" json:"id"`
 	Name    string                 `yaml:"name" json:"name"`
-	Type    string                 `yaml:"type" json:"type"` // e.g. "ROUND_ROBIN", "WEIGHTED", "STICKY"
+	Type    string                 `yaml:"type" json:"type"` // e.g. "ROUND_ROBIN", "WEIGHTED", "SESSION_HASH"
 	Version int64                  `yaml:"version" json:"version"`
 	Params  map[string]interface{} `yaml:"params" json:"params"` // e.g. dynamic weights
 }

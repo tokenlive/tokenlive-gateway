@@ -74,12 +74,6 @@ func (m *mockLatencyStateStore) RateLimitTake(ctx context.Context, key string, t
 func (m *mockLatencyStateStore) RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (int64, error) {
 	return capacity - tokens, nil
 }
-func (m *mockLatencyStateStore) StickyGet(ctx context.Context, sessionKey string) (string, error) {
-	return "", nil
-}
-func (m *mockLatencyStateStore) StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error {
-	return nil
-}
 func (m *mockLatencyStateStore) RecordLatency(ctx context.Context, endpointID string, latency time.Duration) error {
 	return nil
 }

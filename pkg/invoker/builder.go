@@ -34,7 +34,7 @@ func buildClusterInvoker(invokerCfg *core.InvokerConfig, r core.InvokerDependenc
 	// Shared process-level circuit breaker for instance-level trips (avoids heavy Redis I/O).
 	cbManager := r.CircuitBreakerManager()
 
-	knownLBStrategies := []string{"round_robin", "weighted_rr", "random", "weighted_random", "least_connections", "least_latency", "cost", "sticky", "composite", "endpoint_affinity"}
+	knownLBStrategies := []string{"round_robin", "weighted_rr", "random", "weighted_random", "least_connections", "least_latency", "cost", "session_hash", "composite", "endpoint_affinity"}
 	lbs := make(map[string]core.LoadBalancer)
 	for _, name := range knownLBStrategies {
 		if lb := r.ResolveLoadBalancer(name); lb != nil {
@@ -85,7 +85,7 @@ func buildHedgingInvoker(cfg *core.InvokerConfig, r core.InvokerDependencyResolv
 	routers := r.ResolveRouters(cfg.Routers)
 	cbManager := r.CircuitBreakerManager()
 
-	knownLBStrategies := []string{"round_robin", "weighted_rr", "random", "weighted_random", "least_connections", "least_latency", "cost", "sticky", "composite", "endpoint_affinity"}
+	knownLBStrategies := []string{"round_robin", "weighted_rr", "random", "weighted_random", "least_connections", "least_latency", "cost", "session_hash", "composite", "endpoint_affinity"}
 	lbs := make(map[string]core.LoadBalancer)
 	for _, name := range knownLBStrategies {
 		if lb := r.ResolveLoadBalancer(name); lb != nil {

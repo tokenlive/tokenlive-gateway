@@ -177,33 +177,6 @@ func (s *RedisStateStore) RateLimitAdjust(ctx context.Context, key string, token
 	return res[1], nil
 }
 
-// --- sticky session ---
-
-// StickyGet returns the endpointID for sessionKey, or ErrKeyNotFound.
-func (s *RedisStateStore) StickyGet(ctx context.Context, sessionKey string) (string, error) {
-	redisKey := s.key("sticky", sessionKey)
-
-	val, err := s.client.Get(ctx, redisKey).Result()
-	if err == redis.Nil {
-		return "", ErrKeyNotFound
-	}
-	if err != nil {
-		return "", fmt.Errorf("redis sticky get: %w", err)
-	}
-	return val, nil
-}
-
-// StickySet maps sessionKey to endpointID with the given TTL.
-func (s *RedisStateStore) StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error {
-	redisKey := s.key("sticky", sessionKey)
-
-	err := s.client.Set(ctx, redisKey, endpointID, ttl).Err()
-	if err != nil {
-		return fmt.Errorf("redis sticky set: %w", err)
-	}
-	return nil
-}
-
 // --- latency ---
 
 // RecordLatency records a latency sample in a Redis sorted set.

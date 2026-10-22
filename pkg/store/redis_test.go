@@ -194,63 +194,6 @@ func TestRedis_RateLimit_RefundPreservesTTL(t *testing.T) {
 	assert.InDelta(t, ttlBefore.Seconds(), ttlAfter.Seconds(), 1.0, "refund should preserve TTL")
 }
 
-// ==================== Sticky Session ====================
-
-func TestRedis_Sticky_SetAndGet(t *testing.T) {
-	s, _ := newTestRedisStore(t)
-	defer s.Close()
-	ctx := context.Background()
-
-	err := s.StickySet(ctx, "session:abc", "ep:1", 5*time.Minute)
-	require.NoError(t, err)
-
-	endpointID, err := s.StickyGet(ctx, "session:abc")
-	require.NoError(t, err)
-	assert.Equal(t, "ep:1", endpointID)
-}
-
-func TestRedis_Sticky_NotFound(t *testing.T) {
-	s, _ := newTestRedisStore(t)
-	defer s.Close()
-	ctx := context.Background()
-
-	_, err := s.StickyGet(ctx, "session:nonexistent")
-	assert.ErrorIs(t, err, ErrKeyNotFound)
-}
-
-func TestRedis_Sticky_TTLExpiry(t *testing.T) {
-	s, mr := newTestRedisStore(t)
-	defer s.Close()
-	ctx := context.Background()
-
-	err := s.StickySet(ctx, "session:abc", "ep:1", 50*time.Millisecond)
-	require.NoError(t, err)
-
-	// 立即获取，应该存在
-	endpointID, err := s.StickyGet(ctx, "session:abc")
-	require.NoError(t, err)
-	assert.Equal(t, "ep:1", endpointID)
-
-	// 快进超过 TTL
-	mr.FastForward(60 * time.Millisecond)
-
-	_, err = s.StickyGet(ctx, "session:abc")
-	assert.ErrorIs(t, err, ErrKeyNotFound)
-}
-
-func TestRedis_Sticky_Overwrite(t *testing.T) {
-	s, _ := newTestRedisStore(t)
-	defer s.Close()
-	ctx := context.Background()
-
-	s.StickySet(ctx, "session:abc", "ep:1", 5*time.Minute)
-	s.StickySet(ctx, "session:abc", "ep:2", 5*time.Minute)
-
-	endpointID, err := s.StickyGet(ctx, "session:abc")
-	require.NoError(t, err)
-	assert.Equal(t, "ep:2", endpointID)
-}
-
 // ==================== 延迟统计 ====================
 
 func TestRedis_Latency_RecordAndGetAvg(t *testing.T) {

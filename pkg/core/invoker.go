@@ -98,10 +98,6 @@ type StateStore interface {
 	// create debt; negative tokens refund without exceeding capacity.
 	RateLimitAdjust(ctx context.Context, key string, tokens int64, rate int64, capacity int64, window time.Duration, now time.Time) (remaining int64, err error)
 
-	// Sticky Session
-	StickyGet(ctx context.Context, sessionKey string) (endpointID string, err error)
-	StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error
-
 	// Latency stats (full request)
 	RecordLatency(ctx context.Context, endpointID string, latency time.Duration) error
 	GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error)

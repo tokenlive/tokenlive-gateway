@@ -89,13 +89,6 @@ func (e *tokenBucketEntry) apply(requested int64, rate int64, capacity int64, wi
 	return false, int64(e.tokens)
 }
 
-// ---------- sticky session ----------
-
-type stickyEntry struct {
-	endpointID string
-	expiresAt  time.Time
-}
-
 // ---------- latency ----------
 
 type latencySample struct {
@@ -174,7 +167,6 @@ type MemoryStateStore struct {
 	mu           sync.RWMutex
 	rateLimits   map[string]*rateLimitEntry
 	tokenBuckets map[string]*tokenBucketEntry
-	sticky       map[string]*stickyEntry
 	latencies    map[string]*latencyRing
 	ttfts        map[string]*latencyRing // TTFT series, separate from total latency
 	emas         map[string]*emaEntry
@@ -185,7 +177,6 @@ func NewMemoryStateStore() *MemoryStateStore {
 	return &MemoryStateStore{
 		rateLimits:   make(map[string]*rateLimitEntry),
 		tokenBuckets: make(map[string]*tokenBucketEntry),
-		sticky:       make(map[string]*stickyEntry),
 		latencies:    make(map[string]*latencyRing),
 		ttfts:        make(map[string]*latencyRing),
 		emas:         make(map[string]*emaEntry),
@@ -259,41 +250,6 @@ func (s *MemoryStateStore) RateLimitAdjust(ctx context.Context, key string, toke
 	e := s.getOrCreateTokenBucketEntry(key)
 	_, remaining := e.apply(tokens, rate, capacity, window, now, true)
 	return remaining, nil
-}
-
-// --- sticky session ---
-
-// StickyGet returns the endpointID for sessionKey, or ErrKeyNotFound if expired/missing.
-func (s *MemoryStateStore) StickyGet(ctx context.Context, sessionKey string) (string, error) {
-	s.mu.RLock()
-	e, ok := s.sticky[sessionKey]
-	s.mu.RUnlock()
-
-	if !ok {
-		return "", ErrKeyNotFound
-	}
-	if time.Now().After(e.expiresAt) {
-		// lazy delete only if entry pointer is still the same (avoid clobbering a refresh)
-		s.mu.Lock()
-		if current, exists := s.sticky[sessionKey]; exists && current == e {
-			delete(s.sticky, sessionKey)
-		}
-		s.mu.Unlock()
-		return "", ErrKeyNotFound
-	}
-	return e.endpointID, nil
-}
-
-// StickySet maps sessionKey to endpointID with the given TTL.
-func (s *MemoryStateStore) StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.sticky[sessionKey] = &stickyEntry{
-		endpointID: endpointID,
-		expiresAt:  time.Now().Add(ttl),
-	}
-	return nil
 }
 
 // --- latency ---

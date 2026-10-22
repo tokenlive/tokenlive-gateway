@@ -143,84 +143,6 @@ func TestRoundRobin_SingleEndpoint(t *testing.T) {
 	}
 }
 
-// ===== Sticky 测试 =====
-
-func TestSticky_FallbackOnMiss(t *testing.T) {
-	ss := store.NewMemoryStateStore()
-	fallback := NewRoundRobin()
-	lb := NewStickyLoadBalancer(ss, fallback, func(gctx *core.GatewayContext) string {
-		return gctx.SessionID
-	}, 5*time.Minute)
-
-	ep1 := newEndpoint("ep1", 0.01)
-	ep2 := newEndpoint("ep2", 0.02)
-	endpoints := []*core.Endpoint{ep1, ep2}
-	gctx := newGatewayContext()
-
-	// 没有粘滞记录，应该回退到 RoundRobin
-	invoker := lb.Select(gctx, endpoints)
-	assert.NotNil(t, invoker)
-}
-
-func TestSticky_StickOnHit(t *testing.T) {
-	ss := store.NewMemoryStateStore()
-	fallback := NewRoundRobin()
-	lb := NewStickyLoadBalancer(ss, fallback, func(gctx *core.GatewayContext) string {
-		return gctx.SessionID
-	}, 5*time.Minute)
-
-	ep1 := newEndpoint("ep1", 0.01)
-	ep2 := newEndpoint("ep2", 0.02)
-	endpoints := []*core.Endpoint{ep1, ep2}
-	gctx := newGatewayContext()
-
-	// 预先设置粘滞记录
-	err := ss.StickySet(context.Background(), "test-session", "ep2", 5*time.Minute)
-	require.NoError(t, err)
-
-	// 应该选择 ep2
-	invoker := lb.Select(gctx, endpoints)
-	require.NotNil(t, invoker)
-	assert.Equal(t, "ep2", invoker.Endpoint().ID)
-}
-
-func TestSticky_FallbackWhenEndpointMissing(t *testing.T) {
-	ss := store.NewMemoryStateStore()
-	fallback := NewRoundRobin()
-	lb := NewStickyLoadBalancer(ss, fallback, func(gctx *core.GatewayContext) string {
-		return gctx.SessionID
-	}, 5*time.Minute)
-
-	ep1 := newEndpoint("ep1", 0.01)
-	ep2 := newEndpoint("ep2", 0.02)
-	endpoints := []*core.Endpoint{ep1, ep2}
-	gctx := newGatewayContext()
-
-	// 设置一个不存在的端点 ID
-	err := ss.StickySet(context.Background(), "test-session", "ep-nonexist", 5*time.Minute)
-	require.NoError(t, err)
-
-	// 应该回退到 RoundRobin
-	invoker := lb.Select(gctx, endpoints)
-	assert.NotNil(t, invoker)
-}
-
-func TestSticky_EmptyKey(t *testing.T) {
-	ss := store.NewMemoryStateStore()
-	fallback := NewRoundRobin()
-	lb := NewStickyLoadBalancer(ss, fallback, func(gctx *core.GatewayContext) string {
-		return "" // 空 key
-	}, 5*time.Minute)
-
-	ep1 := newEndpoint("ep1", 0.01)
-	endpoints := []*core.Endpoint{ep1}
-	gctx := newGatewayContext()
-
-	// 空 key 应该直接回退
-	invoker := lb.Select(gctx, endpoints)
-	assert.NotNil(t, invoker)
-}
-
 // ===== Cost 测试 =====
 
 func TestCost_SelectsCheapest(t *testing.T) {
@@ -384,7 +306,7 @@ func TestComposite_DynamicWeightsFromPolicy(t *testing.T) {
 func TestLoadBalancer_Interface(t *testing.T) {
 	// 确保所有实现都满足接口
 	var _ core.LoadBalancer = (*RoundRobin)(nil)
-	var _ core.LoadBalancer = (*StickyLoadBalancer)(nil)
 	var _ core.LoadBalancer = (*CostLoadBalancer)(nil)
+	var _ core.LoadBalancer = (*SessionHashLoadBalancer)(nil)
 	var _ core.LoadBalancer = (*CompositeLoadBalancer)(nil)
 }

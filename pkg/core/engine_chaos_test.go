@@ -160,14 +160,6 @@ func (s *chaosStateStore) RecordLatency(ctx context.Context, endpointID string, 
 	return nil
 }
 
-func (s *chaosStateStore) StickyGet(ctx context.Context, sessionKey string) (string, error) {
-	return "", nil
-}
-
-func (s *chaosStateStore) StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error {
-	return nil
-}
-
 func (s *chaosStateStore) GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
 	return 0, nil
 }

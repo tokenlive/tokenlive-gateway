@@ -2,7 +2,7 @@ package inbound
 
 import "github.com/tokenlive/tokenlive-gateway/pkg/core"
 
-// SessionReaderFilter reads SessionID from request headers for sticky session routing.
+// SessionReaderFilter reads SessionID from request headers for session-hash routing.
 // Falls back to UserID/Tenant if the header is absent.
 type SessionReaderFilter struct {
 	headerName string

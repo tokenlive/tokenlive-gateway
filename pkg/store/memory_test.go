@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -109,59 +108,6 @@ func TestRateLimitIncr_DifferentKeys(t *testing.T) {
 	assert.Equal(t, int64(300), r2)
 }
 
-// ==================== Sticky Session ====================
-
-func TestSticky_SetAndGet(t *testing.T) {
-	s := NewMemoryStateStore()
-	ctx := context.Background()
-
-	err := s.StickySet(ctx, "session:abc", "ep:1", 5*time.Minute)
-	require.NoError(t, err)
-
-	endpointID, err := s.StickyGet(ctx, "session:abc")
-	require.NoError(t, err)
-	assert.Equal(t, "ep:1", endpointID)
-}
-
-func TestSticky_NotFound(t *testing.T) {
-	s := NewMemoryStateStore()
-	ctx := context.Background()
-
-	_, err := s.StickyGet(ctx, "session:nonexistent")
-	assert.ErrorIs(t, err, ErrKeyNotFound)
-}
-
-func TestSticky_TTLExpiry(t *testing.T) {
-	s := NewMemoryStateStore()
-	ctx := context.Background()
-
-	err := s.StickySet(ctx, "session:abc", "ep:1", 50*time.Millisecond)
-	require.NoError(t, err)
-
-	// 立即获取，应该存在
-	endpointID, err := s.StickyGet(ctx, "session:abc")
-	require.NoError(t, err)
-	assert.Equal(t, "ep:1", endpointID)
-
-	// 等待过期
-	time.Sleep(60 * time.Millisecond)
-
-	_, err = s.StickyGet(ctx, "session:abc")
-	assert.ErrorIs(t, err, ErrKeyNotFound)
-}
-
-func TestSticky_Overwrite(t *testing.T) {
-	s := NewMemoryStateStore()
-	ctx := context.Background()
-
-	s.StickySet(ctx, "session:abc", "ep:1", 5*time.Minute)
-	s.StickySet(ctx, "session:abc", "ep:2", 5*time.Minute)
-
-	endpointID, err := s.StickyGet(ctx, "session:abc")
-	require.NoError(t, err)
-	assert.Equal(t, "ep:2", endpointID)
-}
-
 // ==================== 延迟统计 ====================
 
 func TestLatency_RecordAndGetAvg(t *testing.T) {
@@ -263,23 +209,6 @@ func TestRateLimitIncr_Concurrent(t *testing.T) {
 	current, err := s.RateLimitIncr(ctx, "user:1", 0, time.Minute)
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), current)
-}
-
-func TestSticky_Concurrent(t *testing.T) {
-	s := NewMemoryStateStore()
-	ctx := context.Background()
-
-	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			key := fmt.Sprintf("session:%d", i%10)
-			s.StickySet(ctx, key, fmt.Sprintf("ep:%d", i), time.Minute)
-			s.StickyGet(ctx, key)
-		}(i)
-	}
-	wg.Wait()
 }
 
 // ==================== EMA (指数移动平均) ====================

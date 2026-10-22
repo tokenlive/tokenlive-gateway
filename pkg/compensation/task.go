@@ -1,5 +1,5 @@
 // Package compensation provides a queue to retry failed critical OutboundFilter
-// operations (e.g. token settlement, sticky session writes).
+// operations (e.g. token settlement writes).
 // Uses Redis Stream + consumer group + delayed ZSet with exponential backoff.
 package compensation
 
@@ -11,7 +11,7 @@ import (
 type CompensationTask struct {
 	// ID uniquely identifies the task.
 	ID string `json:"id"`
-	// FilterName is the source filter (e.g. "token_settlement", "sticky_session").
+	// FilterName is the source filter (e.g. "token_settlement").
 	FilterName string `json:"filter_name"`
 	// Payload holds data needed for the compensation action.
 	Payload map[string]any `json:"payload"`

@@ -23,7 +23,6 @@ import (
 
 func TestOutboundFilterInterface(t *testing.T) {
 	var _ core.OutboundFilter = (*TokenSettlementFilter)(nil)
-	var _ core.OutboundFilter = (*StickySessionFilter)(nil)
 	var _ core.OutboundFilter = (*MetricsFilter)(nil)
 	var _ core.OutboundFilter = (*AccessLogFilter)(nil)
 }
@@ -173,76 +172,6 @@ func TestTokenSettlementFilter_ChargeWhenUnderEstimated(t *testing.T) {
 	consumed, _ := ss.RateLimitIncr(context.Background(), "u-charge:gpt-4:tpm-limit:1m0s", 0, time.Minute)
 	if consumed != 100 {
 		t.Errorf("expected total consumed tokens to be 100, got %d", consumed)
-	}
-}
-
-// ---------- StickySessionFilter 测试 ----------
-
-func TestStickySessionFilter_NameAndOrder(t *testing.T) {
-	f := NewStickySessionFilter(nil, 0)
-	if f.Name() != "sticky_session" {
-		t.Errorf("expected name 'sticky_session', got '%s'", f.Name())
-	}
-	if f.Order() != 20 {
-		t.Errorf("expected order 20, got %d", f.Order())
-	}
-	if f.Criticality() != core.Critical {
-		t.Errorf("expected Critical criticality, got %d", f.Criticality())
-	}
-}
-
-func TestStickySessionFilter_EmptySessionID(t *testing.T) {
-	ss := store.NewMemoryStateStore()
-	f := NewStickySessionFilter(ss, time.Minute)
-
-	gctx := &core.GatewayContext{
-		SessionID:        "",
-		SelectedEndpoint: &core.Endpoint{ID: "ep-1"},
-	}
-
-	err := f.OnResponse(gctx)
-	if err != nil {
-		t.Fatalf("expected no error when SessionID is empty, got: %v", err)
-	}
-}
-
-func TestStickySessionFilter_NilEndpoint(t *testing.T) {
-	ss := store.NewMemoryStateStore()
-	f := NewStickySessionFilter(ss, time.Minute)
-
-	gctx := &core.GatewayContext{
-		SessionID:        "sess-1",
-		SelectedEndpoint: nil,
-	}
-
-	err := f.OnResponse(gctx)
-	if err != nil {
-		t.Fatalf("expected no error when SelectedEndpoint is nil, got: %v", err)
-	}
-}
-
-func TestStickySessionFilter_SavesMapping(t *testing.T) {
-	ss := store.NewMemoryStateStore()
-	ttl := 5 * time.Minute
-	f := NewStickySessionFilter(ss, ttl)
-
-	gctx := &core.GatewayContext{
-		SessionID:        "sess-abc",
-		SelectedEndpoint: &core.Endpoint{ID: "ep-42"},
-	}
-
-	err := f.OnResponse(gctx)
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-
-	// 验证映射已保存
-	endpointID, err := ss.StickyGet(context.Background(), "sess-abc")
-	if err != nil {
-		t.Fatalf("expected sticky mapping to exist, got error: %v", err)
-	}
-	if endpointID != "ep-42" {
-		t.Errorf("expected endpoint 'ep-42', got '%s'", endpointID)
 	}
 }
 

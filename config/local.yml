@@ -99,8 +99,8 @@ pipelines:
     name: "chat_completion"
     request_types: [ "chat_completion" ]
     inbound_filters: [ "auth", "session_reader", "tagging", "credits_check", "rate_limit", "validate" ]
-    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
-    critical_outbound_filters: [ "token_settlement", "sticky_session" ]
+    outbound_filters: [ "token_settlement", "metrics", "status_collector", "access_log", "event_publisher" ]
+    critical_outbound_filters: [ "token_settlement" ]
     invoker:
       type: "cluster"
       routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]
@@ -115,8 +115,8 @@ pipelines:
     name: "responses"
     request_types: [ "responses" ]
     inbound_filters: [ "auth", "session_reader", "tagging", "credits_check", "rate_limit", "validate" ]
-    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
-    critical_outbound_filters: [ "token_settlement", "sticky_session" ]
+    outbound_filters: [ "token_settlement", "metrics", "status_collector", "access_log", "event_publisher" ]
+    critical_outbound_filters: [ "token_settlement" ]
     invoker:
       type: "cluster"
       routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]
@@ -131,8 +131,8 @@ pipelines:
     name: "embedding"
     request_types: [ "embedding" ]
     inbound_filters: [ "auth", "session_reader", "tagging", "credits_check", "rate_limit", "validate" ]
-    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
-    critical_outbound_filters: [ "token_settlement", "sticky_session" ]
+    outbound_filters: [ "token_settlement", "metrics", "status_collector", "access_log", "event_publisher" ]
+    critical_outbound_filters: [ "token_settlement" ]
     invoker:
       type: "cluster"
       routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]
@@ -163,8 +163,8 @@ pipelines:
     name: "messages"
     request_types: [ "messages" ]
     inbound_filters: [ "auth", "session_reader", "tagging", "credits_check", "rate_limit", "validate" ]
-    outbound_filters: [ "token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher" ]
-    critical_outbound_filters: [ "token_settlement", "sticky_session" ]
+    outbound_filters: [ "token_settlement", "metrics", "status_collector", "access_log", "event_publisher" ]
+    critical_outbound_filters: [ "token_settlement" ]
     invoker:
       type: "cluster"
       routers: [ "capability", "tenant_endpoint", "tag", "circuit_breaker", "priority" ]

@@ -102,10 +102,8 @@ func setupEngineRegistry(engine *core.Engine, lifetime *gatewayLifetime, deps re
 	engine.RegisterLoadBalancerFactory("composite", func(ss core.StateStore) core.LoadBalancer {
 		return lbs.NewCompositeLoadBalancer(ss, 0.5, 0.5)
 	})
-	engine.RegisterLoadBalancerFactory("sticky", func(ss core.StateStore) core.LoadBalancer {
-		return lbs.NewStickyLoadBalancer(ss, lbs.NewRoundRobin(), func(gctx *core.GatewayContext) string {
-			return gctx.SessionID
-		}, 5*time.Minute)
+	engine.RegisterLoadBalancerFactory("session_hash", func(_ core.StateStore) core.LoadBalancer {
+		return lbs.NewSessionHashLoadBalancer(lbs.NewRoundRobin())
 	})
 	engine.RegisterLoadBalancerFactory("endpoint_affinity", func(ss core.StateStore) core.LoadBalancer {
 		return lbs.NewEndpointAffinityLoadBalancer(ss)
@@ -127,7 +125,6 @@ func setupEngineRegistry(engine *core.Engine, lifetime *gatewayLifetime, deps re
 		deps.models.SetConfigManager(deps.configManager)
 		engine.SetSmartRouter(invoker.NewSmartRouterWithAccounting(deps.configManager, deps.models, deps.policies, engine, rateLimitFilter, tokenSettlementFilter))
 	}
-	engine.RegisterFilter("sticky_session", outbound.NewStickySessionFilter(deps.stateStore, 5*time.Minute))
 	engine.RegisterFilter("metrics", outbound.NewMetricsFilter(
 		deps.metrics,
 		&outbound.DefaultMetricsExtractor{},

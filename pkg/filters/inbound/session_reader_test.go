@@ -78,7 +78,7 @@ func TestSessionReaderFilter_ReadsFromLoadBalanceParams(t *testing.T) {
 
 	gctx.Policy = &policy.Policy{
 		LoadBalancePolicy: &policy.LoadBalancePolicy{
-			Type:   "STICKY",
+			Type:   "SESSION_HASH",
 			Params: map[string]interface{}{"session_header": "X-Custom-Session-ID"},
 		},
 	}
@@ -104,7 +104,7 @@ func TestSessionReaderFilter_ReadsFromLoadBalanceParams_NameKey(t *testing.T) {
 
 	gctx.Policy = &policy.Policy{
 		LoadBalancePolicy: &policy.LoadBalancePolicy{
-			Type:   "STICKY",
+			Type:   "SESSION_HASH",
 			Params: map[string]interface{}{"session_header_name": "X-Custom-Name"},
 		},
 	}

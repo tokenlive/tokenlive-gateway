@@ -83,7 +83,7 @@ func TestBuildDefaultsPreserveExplicitPipelineAndAuthPolicy(t *testing.T) {
 				require.NotContains(t, p.OutboundFilters, "token_settlement")
 				require.Empty(t, p.CriticalOutboundFilters)
 			} else {
-				require.Equal(t, []string{"token_settlement", "sticky_session"}, p.CriticalOutboundFilters)
+				require.Equal(t, []string{"token_settlement"}, p.CriticalOutboundFilters)
 			}
 		}
 	}

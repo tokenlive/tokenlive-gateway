@@ -29,8 +29,8 @@ func newDefaultPipeline(name string, kind core.RequestType, hasAuth bool) *core.
 	p := &core.PipelineConfig{
 		Name: name, RequestTypes: []core.RequestType{kind},
 		Invoker: core.InvokerConfig{Type: "cluster"}, InboundFilters: inbound,
-		OutboundFilters:         []string{"token_settlement", "sticky_session", "metrics", "status_collector", "access_log", "event_publisher"},
-		CriticalOutboundFilters: []string{"token_settlement", "sticky_session"},
+		OutboundFilters:          []string{"token_settlement", "metrics", "status_collector", "access_log", "event_publisher"},
+		CriticalOutboundFilters:  []string{"token_settlement"},
 	}
 	// 图像生成不报告 tokens，不执行 token 结算。
 	if kind == core.RequestTypeImageGeneration {

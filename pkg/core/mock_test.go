@@ -27,14 +27,6 @@ func (m *mockStateStore) RecordLatency(ctx context.Context, endpointID string, l
 	return nil
 }
 
-func (m *mockStateStore) StickyGet(ctx context.Context, sessionKey string) (string, error) {
-	return "", nil
-}
-
-func (m *mockStateStore) StickySet(ctx context.Context, sessionKey string, endpointID string, ttl time.Duration) error {
-	return nil
-}
-
 func (m *mockStateStore) GetAvgLatency(ctx context.Context, endpointID string, window time.Duration) (time.Duration, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
