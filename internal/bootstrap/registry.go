@@ -136,7 +136,7 @@ func setupEngineRegistry(engine *core.Engine, lifetime *gatewayLifetime, deps re
 	lifetime.accessLog = outbound.NewAccessLogFilter(deps.logger.Logger, deps.redis, deps.queue, deps.clickhouse, deps.config)
 	engine.RegisterFilter("access_log", lifetime.accessLog)
 
-	statusCollector := outbound.NewStatusCollectorFilter(deps.redis, engine.CircuitBreakerManager(), deps.adminURL, deps.syncToken, deps.logger.Logger)
+		statusCollector := outbound.NewStatusCollectorFilter(deps.redis, engine.CircuitBreakerManager(), deps.adminURL, deps.syncToken, deps.logger.Logger, deps.config.GetBool("gateway.admin_tls_skip_verify"))
 	lifetime.status = statusCollector
 	statusCollector.SetIncludeClientDisconnect(deps.configSource == "embedded" && deps.stateStoreMode == "memory")
 	if deps.metricsSink != nil {

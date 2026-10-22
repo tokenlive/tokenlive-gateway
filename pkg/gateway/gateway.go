@@ -86,7 +86,7 @@ func New(conf *viper.Viper, logger *log.Logger, opts *Options) (*Gateway, func()
 		rdb = opts.Redis
 	} else {
 		redisCfg := repository.LoadRedisConfig(conf)
-		client, redisCleanup, err := repository.NewRedis(redisCfg)
+		client, redisCleanup, err := repository.NewRedis(redisCfg, logger)
 		if err != nil {
 			return nil, nil, fmt.Errorf("gateway: redis: %w", err)
 		}

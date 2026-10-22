@@ -8,6 +8,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
+	"github.com/tokenlive/tokenlive-gateway/pkg/log"
+	"go.uber.org/zap"
 )
 
 // ========== Redis ==========
@@ -67,7 +69,8 @@ func (c *RedisConfig) ToOptions() *redis.Options {
 
 // NewRedis 创建共享的 *redis.Client 单例，带健康检查和 cleanup 函数。
 // cfg 为 nil 时返回 (nil, func() {}, nil)，调用方可据此做 graceful degradation。
-func NewRedis(cfg *RedisConfig) (*redis.Client, func(), error) {
+// ping 失败同样降级为 nil，但通过 logger 打结构化警告；logger 为 nil 时退回 stdout。
+func NewRedis(cfg *RedisConfig, logger *log.Logger) (*redis.Client, func(), error) {
 	if cfg == nil {
 		return nil, func() {}, nil
 	}
@@ -78,7 +81,16 @@ func NewRedis(cfg *RedisConfig) (*redis.Client, func(), error) {
 	defer cancel()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		fmt.Printf("Warning: redis ping failed: %v. Degrading to memory mode.\n", err)
+		_ = rdb.Close()
+		if logger != nil && logger.Logger != nil {
+			logger.Warn("redis ping failed, degrading to memory mode",
+				zap.String("addr", cfg.Addr),
+				zap.Int("db", cfg.DB),
+				zap.Error(err),
+			)
+		} else {
+			fmt.Printf("Warning: redis ping failed: %v. Degrading to memory mode.\n", err)
+		}
 		return nil, func() {}, nil
 	}
 

@@ -3,6 +3,7 @@ package outbound
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,14 +112,23 @@ type MetricsSink interface {
 }
 
 // NewStatusCollectorFilter creates a StatusCollectorFilter.
-func NewStatusCollectorFilter(rdb *redis.Client, cbManager *core.CircuitBreakerManager, adminURL string, syncToken string, logger *zap.Logger) *StatusCollectorFilter {
+// tlsSkipVerify follows gateway.admin_tls_skip_verify and only applies to the
+// HTTP fallback used when Redis is unavailable.
+func NewStatusCollectorFilter(rdb *redis.Client, cbManager *core.CircuitBreakerManager, adminURL string, syncToken string, logger *zap.Logger, tlsSkipVerify bool) *StatusCollectorFilter {
+	transport := &http.Transport{}
+	if tlsSkipVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 	f := &StatusCollectorFilter{
-		rdb:        rdb,
-		cbManager:  cbManager,
-		adminURL:   adminURL,
-		syncToken:  syncToken,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
-		logger:     logger,
+		rdb:       rdb,
+		cbManager: cbManager,
+		adminURL:  adminURL,
+		syncToken: syncToken,
+		httpClient: &http.Client{
+			Timeout:   5 * time.Second,
+			Transport: transport,
+		},
+		logger: logger,
 	}
 
 	f.ctx, f.cancel = context.WithCancel(context.Background())

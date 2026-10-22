@@ -23,7 +23,7 @@ import (
 
 func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), error) {
 	redisConfig := repository.LoadRedisConfig(viperViper)
-	client, cleanup, err := repository.NewRedis(redisConfig)
+	client, cleanup, err := repository.NewRedis(redisConfig, logger)
 	if err != nil {
 		return nil, nil, err
 	}

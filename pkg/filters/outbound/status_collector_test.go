@@ -29,7 +29,7 @@ func TestStatusCollectorCloseCancelsHTTPWorkerAndRejectsNewMetrics(t *testing.T)
 	}))
 	defer server.Close()
 	defer close(release)
-	f := NewStatusCollectorFilter(nil, nil, server.URL, "token", zap.NewNop())
+	f := NewStatusCollectorFilter(nil, nil, server.URL, "token", zap.NewNop(), false)
 	// A full batch triggers reporting immediately, without waiting on heartbeat.
 	for range 100 {
 		if err := f.OnResponse(&core.GatewayContext{Model: "test"}); err != nil {
@@ -62,7 +62,7 @@ func TestStatusCollectorCloseCancelsInflightRedisPipeline(t *testing.T) {
 	defer rdb.Close()
 	hook := &cancelPipelineHook{started: make(chan struct{}), canceled: make(chan struct{})}
 	rdb.AddHook(hook)
-	f := NewStatusCollectorFilter(rdb, nil, "", "", zap.NewNop())
+	f := NewStatusCollectorFilter(rdb, nil, "", "", zap.NewNop(), false)
 	_ = f.OnResponse(&core.GatewayContext{Model: "test"})
 	<-hook.started
 	done := make(chan struct{})
@@ -101,7 +101,7 @@ func TestStatusCollectorCloseJoinsRedisWritesAndClosesAdmission(t *testing.T) {
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewStatusCollectorFilter(rdb, nil, "", "", zap.NewNop())
+	f := NewStatusCollectorFilter(rdb, nil, "", "", zap.NewNop(), false)
 	var callers sync.WaitGroup
 	for range 8 {
 		callers.Add(1)
@@ -130,7 +130,7 @@ func TestStatusCollectorFilter_OnResponse(t *testing.T) {
 	})
 	defer rdb.Close()
 
-	f := NewStatusCollectorFilter(rdb, nil, "", "", nil)
+	f := NewStatusCollectorFilter(rdb, nil, "", "", nil, false)
 
 	t.Run("Record success model and endpoints history", func(t *testing.T) {
 		gctx := &core.GatewayContext{
@@ -283,7 +283,7 @@ func TestStatusCollectorFilter_CompletedClientDisconnectWritesModelAndEndpointSt
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer rdb.Close()
 
-	f := NewStatusCollectorFilter(rdb, nil, "", "", nil)
+	f := NewStatusCollectorFilter(rdb, nil, "", "", nil, false)
 	gctx := &core.GatewayContext{
 		Ctx:          context.Background(),
 		Request:      httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
@@ -382,7 +382,7 @@ func TestStatusCollectorFilter_OnResponse_DoesNotCreditFailedRetryWithTokens(t *
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer rdb.Close()
 
-	f := NewStatusCollectorFilter(rdb, nil, "", "", nil)
+	f := NewStatusCollectorFilter(rdb, nil, "", "", nil, false)
 	gctx := &core.GatewayContext{
 		Ctx:          context.Background(),
 		Request:      httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
@@ -486,7 +486,7 @@ func TestStatusCollectorFilter_OnResponse_HTTP(t *testing.T) {
 
 	logger := zap.NewNop()
 
-	f := NewStatusCollectorFilter(nil, nil, ts.URL, "test-token", logger)
+	f := NewStatusCollectorFilter(nil, nil, ts.URL, "test-token", logger, false)
 	defer f.cancel()
 
 	gctx := &core.GatewayContext{
@@ -544,7 +544,7 @@ func TestStatusCollectorFilter_FlushUsesInProcessSink(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	sink := &recordingMetricsSink{}
-	f := NewStatusCollectorFilter(nil, nil, ts.URL, "test-token", zap.NewNop())
+	f := NewStatusCollectorFilter(nil, nil, ts.URL, "test-token", zap.NewNop(), false)
 	f.SetMetricsSink(sink)
 	t.Cleanup(func() {
 		if f.cancel != nil {
