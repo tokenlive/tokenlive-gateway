@@ -198,6 +198,17 @@ access_log:
     batch_size: 2000
     flush_interval: 2s
 
+# ==================== session_hash 负载均衡策略配置说明 ====================
+# 会话哈希基于加权最高随机权重哈希 (Weighted Rendezvous Hashing / HRW) 实现，
+# 纯无状态确定性计算，彻底替代原先依赖 Redis 状态存储与 TTL 读写的 sticky_session 过滤器。
+# - 会话标识提取: 由入站过滤器 session_reader 从请求头提取 (默认 X-Session-ID，缺省时降级为 UserID / Tenant)
+# - 回退行为: 当请求完全无 SessionID/UserID/Tenant 时，自动平滑退避为 round_robin 轮询
+# - 动态策略参数示例 (可由 Admin 或 Redis 动态下发):
+#   load_balance_policy:
+#     type: "session_hash"
+#     params:
+#       session_header: "X-Session-ID" # 自定义会话提取 Header，默认 X-Session-ID
+
 # ==================== least_latency 负载均衡策略配置示例 ====================
 # 策略配置可以在 policy.Policies 数组或策略源 Redis 中配置
 # 其中 load_balance_policy.params 参数示例:
