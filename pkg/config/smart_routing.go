@@ -34,10 +34,7 @@ func modelSmartRouting(cfg *GatewayConfig, code string, model ModelConfig) (*cor
 		return nil, fmt.Errorf("model %s: %w", code, err)
 	}
 	smart.ApplyDefaults()
-	deps := []string{smart.JudgeModel}
-	for _, r := range smart.Ranges {
-		deps = append(deps, r.Model)
-	}
+	deps := smart.ReferenceCodes()
 	for _, dep := range deps {
 		// A disabled/missing dependency is a runtime availability decision.
 		for name, candidate := range cfg.Models {

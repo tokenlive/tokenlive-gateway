@@ -24,12 +24,20 @@ func (e *smartHTTPError) Error() string { return e.reason }
 func (e *smartHTTPError) Code() int     { return e.status }
 
 type smartRequest struct {
-	Messages  json.RawMessage
-	MaxOutput int64
+	Stream             bool
+	StrictCapabilities bool
+	Messages           json.RawMessage
+	MaxOutput          int64
 }
 
 func parseSmartRequest(rt core.RequestType, body []byte) (*smartRequest, error) {
+	return parseSmartTextRequest(rt, body, false)
+}
+func parseSmartTextRequest(rt core.RequestType, body []byte, allowStream bool) (*smartRequest, error) {
 	bad := func() (*smartRequest, error) {
+		if allowStream {
+			return nil, &smartHTTPError{http.StatusBadRequest, "composite models support only text chat completions without tools or structured output"}
+		}
 		return nil, &smartHTTPError{http.StatusBadRequest, "smart models support only non-streaming text chat completions without tools"}
 	}
 	if rt != core.RequestTypeChatCompletion {
@@ -40,13 +48,16 @@ func parseSmartRequest(rt core.RequestType, body []byte) (*smartRequest, error) 
 		return bad()
 	}
 	var stream bool
-	if v := raw["stream"]; len(v) > 0 && (json.Unmarshal(v, &stream) != nil || stream) {
+	if v := raw["stream"]; len(v) > 0 && (json.Unmarshal(v, &stream) != nil || stream && !allowStream) {
 		return bad()
 	}
 	for _, key := range []string{"tools", "tool_choice", "functions", "function_call", "audio", "modalities"} {
 		if v, ok := raw[key]; ok && !bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
 			return bad()
 		}
+	}
+	if value, exists := raw["response_format"]; allowStream && exists && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return bad()
 	}
 	var messages []map[string]json.RawMessage
 	if json.Unmarshal(raw["messages"], &messages) != nil || len(messages) == 0 {
@@ -88,7 +99,7 @@ func parseSmartRequest(rt core.RequestType, body []byte) (*smartRequest, error) 
 			}
 		}
 	}
-	req := &smartRequest{Messages: append(json.RawMessage(nil), raw["messages"]...)}
+	req := &smartRequest{Stream: stream, StrictCapabilities: allowStream, Messages: append(json.RawMessage(nil), raw["messages"]...)}
 	for _, key := range []string{"max_tokens", "max_completion_tokens"} {
 		if v, ok := raw[key]; ok {
 			var value int64

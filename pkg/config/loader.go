@@ -145,7 +145,12 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				maxOutputTokens = m.MaxOutputTokens
 			}
 
+			abilities := ep.Abilities
+			if abilities == nil {
+				abilities = m.Abilities
+			}
 			re := ResolvedEndpoint{
+				Abilities:        append([]string(nil), abilities...),
 				ID:               ep.ID,
 				Code:             ep.Code,
 				ProviderName:     ep.Provider,

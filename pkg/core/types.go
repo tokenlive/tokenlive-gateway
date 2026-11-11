@@ -38,6 +38,7 @@ type Endpoint struct {
 	ProviderProtocol string            // Protocol, e.g. "openai", "anthropic"
 	ContextLength    int64             // Context window limit in tokens
 	MaxOutputTokens  int64             // Max output tokens limit
+	Abilities        []string
 
 	// Per-endpoint rates; nil inherits Model Policy.Billing
 	InputPrice         *float64

@@ -66,7 +66,7 @@ func (r *SmartRouter) Prepare(g *core.GatewayContext) error {
 	if err := cfg.Validate(g.Model); err != nil {
 		return &smartHTTPError{http.StatusServiceUnavailable, "invalid smart routing configuration"}
 	}
-	if _, err := parseSmartRequest(g.RequestType, g.RawBody); err != nil {
+	if _, err := parseSmartTextRequest(g.RequestType, g.RawBody, cfg.RoutingMode() != "difficulty"); err != nil {
 		return err
 	}
 	g.SmartConfig = cfg
@@ -81,6 +81,9 @@ func (r *SmartRouter) Invoke(g *core.GatewayContext, pipe *core.Pipeline) (bool,
 		return false, nil
 	}
 	defer func() { g.SmartRouting.DurationMs = time.Since(g.StartTime).Milliseconds() }()
+	if g.SmartConfig.RoutingMode() != "difficulty" {
+		return true, r.invokeDeterministic(g, pipe)
+	}
 	if err := g.Ctx.Err(); err != nil {
 		return true, err
 	}
@@ -260,8 +263,18 @@ func (r *SmartRouter) newChild(parent *core.GatewayContext, model string, body [
 	if err != nil || nested != nil {
 		return nil, "invalid_target", &smartHTTPError{http.StatusServiceUnavailable, "smart target must be an ordinary model"}
 	}
+	p := &policy.Policy{}
+	if r.policies != nil {
+		p, err = r.policies.GetPolicy(parent.Ctx, parent.Tenant, parent.UserID, model)
+		if err != nil || p == nil {
+			return nil, "target_policy_unavailable", &smartHTTPError{http.StatusForbidden, "smart routing target policy unavailable"}
+		}
+	}
 	endpoints, err := r.discovery.List(parent.Ctx, model)
 	if err != nil {
+		if req.StrictCapabilities && !core.CanFallbackModel(&core.GatewayContext{Policy: p}, core.ErrNoAvailableEndpoint) {
+			return nil, "affinity_no_degrade", core.ErrFatalNoAvailableEndpoint
+		}
 		return nil, "target_unavailable", &smartHTTPError{http.StatusServiceUnavailable, "smart routing target unavailable"}
 	}
 	compatible := false
@@ -272,14 +285,10 @@ func (r *SmartRouter) newChild(parent *core.GatewayContext, model string, body [
 		}
 	}
 	if !compatible {
-		return nil, "target_incompatible", &smartHTTPError{http.StatusServiceUnavailable, "no compatible smart routing endpoint"}
-	}
-	p := &policy.Policy{}
-	if r.policies != nil {
-		p, err = r.policies.GetPolicy(parent.Ctx, parent.Tenant, parent.UserID, model)
-		if err != nil || p == nil {
-			return nil, "target_policy_unavailable", &smartHTTPError{http.StatusForbidden, "smart routing target policy unavailable"}
+		if req.StrictCapabilities && !core.CanFallbackModel(&core.GatewayContext{Policy: p}, core.ErrNoAvailableEndpoint) {
+			return nil, "affinity_no_degrade", core.ErrFatalNoAvailableEndpoint
 		}
+		return nil, "target_incompatible", &smartHTTPError{http.StatusServiceUnavailable, "no compatible smart routing endpoint"}
 	}
 	// The policy service owns its snapshot; only mutate our shallow outer copy.
 	ownedPolicy := *p
@@ -354,11 +363,11 @@ func smartRetryable(g *core.GatewayContext, err error) bool {
 }
 
 // The immutable endpoint subset is checked on every attempt, before priority.
-type smartCapacityRouter struct{}
+type smartCapacityRouter struct{ strict bool }
 
 func (smartCapacityRouter) Name() string { return "smart_capacity" }
-func (smartCapacityRouter) Route(g *core.GatewayContext, endpoints []*core.Endpoint) []*core.Endpoint {
-	req, err := parseSmartRequest(g.RequestType, g.RawBody)
+func (router smartCapacityRouter) Route(g *core.GatewayContext, endpoints []*core.Endpoint) []*core.Endpoint {
+	req, err := parseSmartTextRequest(g.RequestType, g.RawBody, router.strict)
 	if err != nil {
 		return nil
 	}
@@ -375,6 +384,20 @@ func smartEndpointCompatible(ep *core.Endpoint, req *smartRequest) bool {
 	if ep == nil || !ep.SupportsRequestType(core.RequestTypeChatCompletion) {
 		return false
 	}
+	if req.StrictCapabilities {
+		if ep.ContextLength <= 0 || ep.MaxOutputTokens <= 0 {
+			return false
+		}
+		if req.Stream {
+			supported := false
+			for _, ability := range ep.Abilities {
+				supported = supported || ability == "stream"
+			}
+			if !supported {
+				return false
+			}
+		}
+	}
 	output := req.MaxOutput
 	if output == 0 {
 		output = ep.MaxOutputTokens
@@ -387,16 +410,16 @@ func smartEndpointCompatible(ep *core.Endpoint, req *smartRequest) bool {
 	return ep.ContextLength <= 0 || output <= ep.ContextLength && input <= ep.ContextLength-output
 }
 
-func capacityCheckedInvoker(invoke core.Invoker) (core.Invoker, error) {
+func capacityCheckedInvoker(invoke core.Invoker, strict bool) (core.Invoker, error) {
 	switch v := invoke.(type) {
 	case *ClusterInvoker:
 		c := *v
-		c.routerChain = append([]core.Router{smartCapacityRouter{}}, v.routerChain...)
+		c.routerChain = append([]core.Router{smartCapacityRouter{strict: strict}}, v.routerChain...)
 		return &c, nil
 	case *HedgingInvoker:
 		c := *v
-		c.routerChain = append([]core.Router{smartCapacityRouter{}}, v.routerChain...)
-		fallback, err := capacityCheckedInvoker(v.fallbackInvoker)
+		c.routerChain = append([]core.Router{smartCapacityRouter{strict: strict}}, v.routerChain...)
+		fallback, err := capacityCheckedInvoker(v.fallbackInvoker, strict)
 		if err != nil {
 			return nil, err
 		}

@@ -155,6 +155,14 @@ _Avoid_: connection, ws session, 长连接
 Realtime Session 内的一次完整交互单元：从用户开始说话到本轮 TTS 播放结束（或被打断）。Voice Turn 是**计量与结算的最小单位**——一轮内产生的 ASR 秒数、LLM Token、TTS 字符共同构成该轮的复合成本。
 _Avoid_: round, 对话轮, request
 
+**Context Compaction (上下文压缩)**:
+当请求上下文接近目标模型容量上限时，网关在保持消息结构与工具调用配对完整性的前提下，将较早的对话历史收缩到安全水位以防止超窗失败的治理能力。
+_Avoid_: context compression, prompt truncation, auto summarize
+
+**Prefix Summary Cache (前缀摘要缓存)**:
+以被压缩历史消息前缀的指纹为键存储的摘要缓存，使客户端每轮重发全量历史的无状态协议仍能跨轮次复用同一份摘要，避免重复压缩并维持上游 Prompt Cache 命中。
+_Avoid_: session summary, conversation state
+
 ## Relationships
 
 - 一个 **Model** 持有一组 **Endpoint**，表达"这个模型可以通过哪些端点被服务"

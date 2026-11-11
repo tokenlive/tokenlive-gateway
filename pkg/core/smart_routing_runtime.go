@@ -10,6 +10,8 @@ type SmartRouter interface {
 
 // SmartRoutingRecord contains routing metadata only; never raw prompts or keys.
 type SmartRoutingRecord struct {
+	Mode            string            `json:"mode,omitempty"`
+	MatchedRuleID   string            `json:"matched_rule_id,omitempty"`
 	Model           string            `json:"model"`
 	Version         int64             `json:"version"`
 	PromptVersion   string            `json:"prompt_version"`

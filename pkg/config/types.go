@@ -14,6 +14,7 @@ type ModelConfig struct {
 	RequestTypes    []string                 `mapstructure:"request_types" yaml:"request_types" json:"request_types"` // Optional API list
 	ContextLength   int64                    `mapstructure:"context_length" yaml:"context_length" json:"context_length,omitempty"`
 	MaxOutputTokens int64                    `mapstructure:"max_output_tokens" yaml:"max_output_tokens" json:"max_output_tokens,omitempty"`
+	Abilities       []string                 `mapstructure:"abilities" yaml:"abilities" json:"abilities,omitempty"`
 	Endpoints       []EndpointConfig         `mapstructure:"endpoints" yaml:"endpoints" json:"endpoints"` // Endpoints for this model
 }
 
@@ -42,6 +43,7 @@ type EndpointConfig struct {
 	Metadata        map[string]string `mapstructure:"metadata" yaml:"metadata" json:"metadata,omitempty"`       // Metadata
 	ContextLength   int64             `mapstructure:"context_length" yaml:"context_length" json:"context_length,omitempty"`
 	MaxOutputTokens int64             `mapstructure:"max_output_tokens" yaml:"max_output_tokens" json:"max_output_tokens,omitempty"`
+	Abilities       []string          `mapstructure:"abilities" yaml:"abilities" json:"abilities,omitempty"`
 }
 
 // GatewayConfig is model-centric two-layer gateway config.
@@ -75,6 +77,7 @@ type ResolvedEndpoint struct {
 	RequestTypes       []string          `mapstructure:"request_types" json:"request_types,omitempty"`
 	ContextLength      int64             `mapstructure:"context_length" json:"context_length,omitempty"`
 	MaxOutputTokens    int64             `mapstructure:"max_output_tokens" json:"max_output_tokens,omitempty"`
+	Abilities          []string          `mapstructure:"abilities" yaml:"abilities" json:"abilities,omitempty"`
 	InputPrice         *float64          `json:"input_price,omitempty"`
 	OutputPrice        *float64          `json:"output_price,omitempty"`
 	CachedPrice        *float64          `json:"cached_price,omitempty"`

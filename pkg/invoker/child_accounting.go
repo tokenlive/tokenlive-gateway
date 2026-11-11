@@ -10,8 +10,9 @@ import (
 
 // childAccounting 只复用已装配过滤器的预留与结算能力，不运行外层副作用。
 type childAccounting struct {
-	limits  *inbound.RateLimitFilter
-	settler *outbound.TokenSettlementFilter
+	limits             *inbound.RateLimitFilter
+	settler            *outbound.TokenSettlementFilter
+	strictCapabilities bool
 }
 
 type childCallResult struct {
@@ -35,7 +36,7 @@ func (a childAccounting) invoke(child *core.GatewayContext, invoke core.Invoker)
 	if result.admissionErr == nil {
 		result.invokeErr = child.Ctx.Err()
 		if result.invokeErr == nil {
-			checked, err := capacityCheckedInvoker(invoke)
+			checked, err := capacityCheckedInvoker(invoke, a.strictCapabilities)
 			result.invokeErr = err
 			if err == nil {
 				result.invokeErr = checked.Invoke(child)

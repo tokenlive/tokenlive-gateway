@@ -337,7 +337,10 @@ func resolvePrices(gctx *core.GatewayContext) (inputPrice, outputPrice, cachedPr
 		}
 	}
 
-	if gctx.SelectedEndpoint != nil {
+	// Composite answers are billed at the business entry price. The selected
+	// supplier endpoint is retained for observability and child quota settlement.
+	composite := gctx.SmartRouting != nil && (gctx.SmartRouting.Mode == "priority" || gctx.SmartRouting.Mode == "rules")
+	if gctx.SelectedEndpoint != nil && !composite {
 		if gctx.SelectedEndpoint.InputPrice != nil {
 			inputPrice = *gctx.SelectedEndpoint.InputPrice
 		}

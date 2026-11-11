@@ -41,6 +41,10 @@ func (pi *ProviderInvoker) Invoke(gctx *core.GatewayContext) error {
 		return nil
 	}
 
+	if err := core.ConsumeCompositeAttempt(gctx.Ctx); err != nil {
+		gctx.FatalErr = err
+		return err
+	}
 	// Rewrite model to upstream name when configured.
 	originalModel := gctx.Model
 	var originalRawBody []byte
