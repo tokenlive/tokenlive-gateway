@@ -629,6 +629,7 @@ func (p *JoyCodeProvider) handleAnthropicStreamToOpenAI(gctx *core.GatewayContex
 	parser := llm.NewSSEParser()
 	stream := translate.NewMessagesToChatStream(gctx.Model)
 	buf := make([]byte, 4096)
+	var rawInputTokens, cachedTokens, cacheCreationTokens int
 
 	for {
 		n, err := resp.Body.Read(buf)
@@ -647,19 +648,21 @@ func (p *JoyCodeProvider) handleAnthropicStreamToOpenAI(gctx *core.GatewayContex
 
 				chunks, meta := stream.FeedJSON(ev.Data)
 				if meta.CachedTokens > 0 {
-					gctx.CachedTokens = meta.CachedTokens
+					cachedTokens = meta.CachedTokens
 				}
 				if meta.CacheCreationTokens > 0 {
-					gctx.CacheCreationTokens = meta.CacheCreationTokens
+					cacheCreationTokens = meta.CacheCreationTokens
 				}
 				if meta.InputTokens > 0 {
+					rawInputTokens = meta.InputTokens
+				}
+				totalInput := 0
+				if meta.InputTokens > 0 || meta.CachedTokens > 0 || meta.CacheCreationTokens > 0 {
 					// Normalize to total input (input + cache read + cache creation),
 					// aligning with AnthropicTokenExtractor / OpenAI prompt_tokens semantics.
-					gctx.InputTokens = meta.InputTokens + meta.CachedTokens + meta.CacheCreationTokens
+					totalInput = rawInputTokens + cachedTokens + cacheCreationTokens
 				}
-				if meta.OutputTokens > 0 {
-					gctx.OutputTokens = meta.OutputTokens
-				}
+				llm.ApplyUsage(gctx, totalInput, meta.OutputTokens, meta.CachedTokens, meta.CacheCreationTokens)
 				if meta.TransmittedChars > 0 {
 					gctx.TransmittedChars += meta.TransmittedChars
 				}

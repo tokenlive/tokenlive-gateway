@@ -229,3 +229,33 @@ func TestHandleMessagesStream_EmptyAndIncompleteFramingRemainErrors(t *testing.T
 		})
 	}
 }
+
+func TestHandleMessagesStream_WithCachedTokens(t *testing.T) {
+	upstreamSSE := strings.Join([]string{
+		`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"hi"}}]}`,
+		`data: {"id":"chatcmpl-1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":12,"prompt_tokens_details":{"cached_tokens":60}}}`,
+		`data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"prompt_tokens_details":{"cached_tokens":0}}}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(upstreamSSE))}
+	rec := httptest.NewRecorder()
+	gctx := &core.GatewayContext{ResponseWriter: rec, Model: "glm-5.1", IsStream: true, RequestType: core.RequestTypeMessages}
+	require.NoError(t, handleMessagesStream(gctx, resp))
+	assert.Equal(t, 100, gctx.InputTokens)
+	assert.Equal(t, 12, gctx.OutputTokens)
+	assert.Equal(t, 60, gctx.CachedTokens)
+}
+
+func TestTranslateNonStreamResponse_WithCachedTokens(t *testing.T) {
+	rec := httptest.NewRecorder()
+	gctx := &core.GatewayContext{
+		ResponseWriter: rec,
+		Model:          "glm-5.1",
+		UpstreamBody:   []byte(`{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":75}}}`),
+	}
+	require.NoError(t, translateNonStreamResponse(gctx))
+	assert.Equal(t, 120, gctx.InputTokens)
+	assert.Equal(t, 8, gctx.OutputTokens)
+	assert.Equal(t, 75, gctx.CachedTokens)
+}

@@ -27,6 +27,7 @@ func (f *mockLimitFilter) OnRequest(gctx *GatewayContext) error {
 type TestSettleResult struct {
 	PromptTokens     int
 	CompletionTokens int
+	CachedTokens     int
 	TransmittedChars int
 	IsStream         bool
 }
@@ -47,6 +48,7 @@ func (f *mockSettlementFilter) OnResponse(gctx *GatewayContext) error {
 	f.settledChan <- TestSettleResult{
 		PromptTokens:     gctx.InputTokens,
 		CompletionTokens: gctx.OutputTokens,
+		CachedTokens:     gctx.CachedTokens,
 		TransmittedChars: gctx.TransmittedChars,
 		IsStream:         gctx.IsStream,
 	}
@@ -86,7 +88,7 @@ func TestEngine_HandleWebSocketRequest_SuccessFlow(t *testing.T) {
 						"type": "response.done",
 						"response": {
 							"id": "resp_ws_123",
-							"usage": {"input_tokens": 5, "output_tokens": 10}
+							"usage": {"input_tokens": 5, "output_tokens": 10, "input_tokens_details": {"cached_tokens": 3}}
 						}
 					}`
 					_ = conn.WriteMessage(mt, []byte(doneEvent))
@@ -196,6 +198,7 @@ func TestEngine_HandleWebSocketRequest_SuccessFlow(t *testing.T) {
 	case settledGctx := <-settleChan:
 		assert.Equal(t, 5, settledGctx.PromptTokens)
 		assert.Equal(t, 10, settledGctx.CompletionTokens)
+		assert.Equal(t, 3, settledGctx.CachedTokens)
 		assert.Equal(t, len("Hello World"), settledGctx.TransmittedChars)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for settlement filter execution")

@@ -424,8 +424,11 @@ func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, 
 			ID    string `json:"id"`
 			Model string `json:"model"`
 			Usage struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
+				InputTokens        int `json:"input_tokens"`
+				OutputTokens       int `json:"output_tokens"`
+				InputTokensDetails *struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"input_tokens_details"`
 			} `json:"usage"`
 		} `json:"response"`
 		Delta string `json:"delta"`
@@ -489,6 +492,9 @@ func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, 
 				if turn.Gctx != nil {
 					turn.Gctx.InputTokens = ev.Response.Usage.InputTokens
 					turn.Gctx.OutputTokens = ev.Response.Usage.OutputTokens
+					if ev.Response.Usage.InputTokensDetails != nil {
+						turn.Gctx.CachedTokens = ev.Response.Usage.InputTokensDetails.CachedTokens
+					}
 
 					e.logger.Info("triggering outbound filters on response.done", zap.String("response_id", responseID), zap.Int("input", turn.Gctx.InputTokens), zap.Int("output", turn.Gctx.OutputTokens))
 					for _, f := range pipe.OutboundFilters {

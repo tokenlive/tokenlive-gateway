@@ -1060,3 +1060,39 @@ func TestJoyCodeMessages_GLM5_NonAnthropicModelStream(t *testing.T) {
 		t.Errorf("expected message_stop event, got: %s", out)
 	}
 }
+
+func TestJoyCode_HandleAnthropicStreamToOpenAI_CacheZeroInputAndDelta(t *testing.T) {
+	t.Run("all_cached_zero_uncached_input", func(t *testing.T) {
+		sseContent := "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_c1\",\"usage\":{\"input_tokens\":0,\"cache_read_input_tokens\":1000}}}\n\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n" +
+			"data: {\"type\":\"message_stop\"}\n\n"
+
+		rec := httptest.NewRecorder()
+		gctx := &core.GatewayContext{Ctx: context.Background(), ResponseWriter: rec, Model: "claude-3-5-sonnet", IsStream: true}
+		p := &JoyCodeProvider{name: "test-joycode"}
+		if err := p.handleAnthropicStreamToOpenAI(gctx, &http.Response{Body: io.NopCloser(strings.NewReader(sseContent))}); err != nil {
+			t.Fatalf("handleAnthropicStreamToOpenAI failed: %v", err)
+		}
+		if gctx.InputTokens != 1000 || gctx.CachedTokens != 1000 || gctx.OutputTokens != 20 {
+			t.Fatalf("got (%d, %d, %d), want (1000, 1000, 20)", gctx.InputTokens, gctx.CachedTokens, gctx.OutputTokens)
+		}
+	})
+
+	t.Run("delta_updates_input_preserving_start_cache", func(t *testing.T) {
+		sseContent := "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_c2\",\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":50}}}\n\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":20,\"output_tokens\":7}}\n\n" +
+			"data: {\"type\":\"message_stop\"}\n\n"
+
+		rec := httptest.NewRecorder()
+		gctx := &core.GatewayContext{Ctx: context.Background(), ResponseWriter: rec, Model: "claude-3-5-sonnet", IsStream: true}
+		p := &JoyCodeProvider{name: "test-joycode"}
+		if err := p.handleAnthropicStreamToOpenAI(gctx, &http.Response{Body: io.NopCloser(strings.NewReader(sseContent))}); err != nil {
+			t.Fatalf("handleAnthropicStreamToOpenAI failed: %v", err)
+		}
+		if gctx.InputTokens != 170 || gctx.CachedTokens != 100 || gctx.CacheCreationTokens != 50 || gctx.OutputTokens != 7 {
+			t.Fatalf("got (%d, %d, %d, %d), want (170, 100, 50, 7)", gctx.InputTokens, gctx.CachedTokens, gctx.CacheCreationTokens, gctx.OutputTokens)
+		}
+	})
+}

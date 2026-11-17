@@ -597,3 +597,33 @@ func TestEnsureStreamUsage_ReturnsOriginalOnInvalidJSON(t *testing.T) {
 		t.Fatal("expected original body on invalid JSON")
 	}
 }
+
+func TestOpenAIProvider_NativeResponses_NonStreamUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":30,"output_tokens":12,"total_tokens":42,"input_tokens_details":{"cached_tokens":8}}}`))
+	}))
+	defer server.Close()
+
+	p := NewOpenAIProvider("openai", server.URL, "test-key", []string{"gpt-5"})
+	gctx := &core.GatewayContext{
+		Ctx:         context.Background(),
+		RequestType: core.RequestTypeResponses,
+		Model:       "gpt-5",
+		RawBody:     []byte(`{"model":"gpt-5","input":"hi"}`),
+		IsStream:    false,
+		SelectedEndpoint: &core.Endpoint{
+			RequestTypes: []core.RequestType{core.RequestTypeResponses},
+		},
+	}
+
+	if err := p.Invoke(gctx); err != nil {
+		t.Fatalf("Invoke failed: %v", err)
+	}
+	if gctx.InputTokens != 30 || gctx.OutputTokens != 12 || gctx.CachedTokens != 8 {
+		t.Fatalf("got (%d, %d, %d), want (30, 12, 8)", gctx.InputTokens, gctx.OutputTokens, gctx.CachedTokens)
+	}
+}

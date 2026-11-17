@@ -334,3 +334,30 @@ func TestMessagesToResponsesStream_RedactedThinking(t *testing.T) {
 		t.Errorf("redacted done = %v", itemDone)
 	}
 }
+
+func TestMessagesToResponsesStream_MessageDeltaUpdatesInputAndCache(t *testing.T) {
+	s := NewMessagesToResponsesStream("claude-sonnet")
+	frames := []string{
+		`{"type":"message_start","message":{"id":"msg_D","usage":{"input_tokens":10,"cache_read_input_tokens":4}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":20,"cache_read_input_tokens":12,"cache_creation_input_tokens":3,"output_tokens":9}}`,
+		`{"type":"message_stop"}`,
+	}
+	events, metas := feedResponses(t, s, frames)
+
+	deltaMeta := metas[4]
+	if deltaMeta.InputTokens != 35 || deltaMeta.CachedTokens != 12 || deltaMeta.CacheCreationTokens != 3 || deltaMeta.OutputTokens != 9 {
+		t.Fatalf("delta meta = %+v, want (35, 9, 12, 3)", deltaMeta)
+	}
+	completed := events[len(events)-1]
+	usage := completed["response"].(map[string]interface{})["usage"].(map[string]interface{})
+	if usage["input_tokens"].(float64) != 35 || usage["output_tokens"].(float64) != 9 {
+		t.Fatalf("completed usage = %v", usage)
+	}
+	details := usage["input_tokens_details"].(map[string]interface{})
+	if details["cached_tokens"].(float64) != 12 {
+		t.Fatalf("completed cached_tokens = %v, want 12", details["cached_tokens"])
+	}
+}

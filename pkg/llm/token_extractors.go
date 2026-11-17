@@ -155,18 +155,20 @@ func ResponsesTokenExtractor(data string) (int, int, int, int) {
 }
 
 // GeminiTokenExtractor extracts tokens from Gemini generateContent/streamGenerateContent responses.
-// Format: {"usageMetadata":{"promptTokenCount":N,"candidatesTokenCount":N,"totalTokenCount":N}}
+// Format: {"usageMetadata":{"promptTokenCount":N,"candidatesTokenCount":N,"cachedContentTokenCount":N,"totalTokenCount":N}}
+// promptTokenCount in Gemini already includes cachedContentTokenCount, matching OpenAI prompt_tokens semantics.
 func GeminiTokenExtractor(data string) (int, int, int, int) {
 	var payload struct {
 		UsageMetadata *struct {
-			PromptTokenCount     int `json:"promptTokenCount"`
-			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			PromptTokenCount        int `json:"promptTokenCount"`
+			CandidatesTokenCount    int `json:"candidatesTokenCount"`
+			CachedContentTokenCount int `json:"cachedContentTokenCount"`
 		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal([]byte(data), &payload); err != nil || payload.UsageMetadata == nil {
 		return 0, 0, 0, 0
 	}
-	return payload.UsageMetadata.PromptTokenCount, payload.UsageMetadata.CandidatesTokenCount, 0, 0
+	return payload.UsageMetadata.PromptTokenCount, payload.UsageMetadata.CandidatesTokenCount, payload.UsageMetadata.CachedContentTokenCount, 0
 }
 
 // ExtractContentLength extracts the character length of incremental response text

@@ -116,3 +116,11 @@ func TestResponsesTokenExtractor_InvalidJSON(t *testing.T) {
 		t.Errorf("expected (0, 0, 0, 0), got (%d, %d, %d, %d)", in, out, cached, cc)
 	}
 }
+
+func TestGeminiTokenExtractor_WithCachedContent(t *testing.T) {
+	data := `{"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":60,"totalTokenCount":120}}`
+	in, out, cached, cc := GeminiTokenExtractor(data)
+	if in != 100 || out != 20 || cached != 60 || cc != 0 {
+		t.Errorf("expected (100, 20, 60, 0), got (%d, %d, %d, %d)", in, out, cached, cc)
+	}
+}

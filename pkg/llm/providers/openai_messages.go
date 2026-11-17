@@ -84,8 +84,7 @@ func translateNonStreamResponse(gctx *core.GatewayContext) error {
 		return err
 	}
 	gctx.Response = result
-	gctx.InputTokens = res.Usage.InputTokens
-	gctx.OutputTokens = res.Usage.OutputTokens
+	llm.ApplyUsage(gctx, res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.CachedTokens, res.Usage.CacheCreationTokens)
 	return nil
 }
 
@@ -191,13 +190,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 					data = "[DONE]"
 				}
 				events, meta := stream.FeedJSON(data)
-				// 保留 Messages 原有 input/output 正数覆盖规则，不扩展缓存控制。
-				if meta.InputTokens > 0 {
-					gctx.InputTokens = meta.InputTokens
-				}
-				if meta.OutputTokens > 0 {
-					gctx.OutputTokens = meta.OutputTokens
-				}
+				llm.ApplyUsage(gctx, meta.InputTokens, meta.OutputTokens, meta.CachedTokens, meta.CacheCreationTokens)
 				if err := writeEvents(events, true); err != nil {
 					return err
 				}

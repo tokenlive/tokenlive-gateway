@@ -430,7 +430,11 @@ func handleOpenAINonStream(gctx *core.GatewayContext, resp *http.Response) error
 	}
 	gctx.Response = result
 
-	in, out, cached, cacheCreated := llm.OpenAITokenExtractor(string(body))
+	extractor := llm.OpenAITokenExtractor
+	if gctx.RequestType == core.RequestTypeResponses {
+		extractor = llm.ResponsesTokenExtractor
+	}
+	in, out, cached, cacheCreated := extractor(string(body))
 	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
 	return nil
 }

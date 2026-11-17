@@ -91,7 +91,7 @@ func translateResponsesNonStreamResponse(gctx *core.GatewayContext, toolMapper *
 		return err
 	}
 	gctx.Response = result
-	llm.ApplyUsage(gctx, res.Usage.InputTokens, res.Usage.OutputTokens, 0, 0)
+	llm.ApplyUsage(gctx, res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.CachedTokens, res.Usage.CacheCreationTokens)
 	return nil
 }
 

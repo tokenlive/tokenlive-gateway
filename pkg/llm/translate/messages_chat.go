@@ -527,8 +527,11 @@ func ChatCompletionToMessages(chatBody []byte, model string) (ChatCompletionToMe
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
+			PromptTokensDetails *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
 
@@ -606,11 +609,17 @@ func ChatCompletionToMessages(chatBody []byte, model string) (ChatCompletionToMe
 		return ChatCompletionToMessagesResult{}, err
 	}
 
+	cachedTokens := 0
+	if oaiResp.Usage.PromptTokensDetails != nil {
+		cachedTokens = oaiResp.Usage.PromptTokensDetails.CachedTokens
+	}
+
 	return ChatCompletionToMessagesResult{
 		Body: body,
 		Usage: TokenUsage{
 			InputTokens:  oaiResp.Usage.PromptTokens,
 			OutputTokens: oaiResp.Usage.CompletionTokens,
+			CachedTokens: cachedTokens,
 		},
 	}, nil
 }

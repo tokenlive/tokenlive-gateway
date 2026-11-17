@@ -474,6 +474,11 @@ func (s *ChatToResponsesStream) Finish(latestUsage TokenUsage) (events []Respons
 	evCompleted.Response.Usage.InputTokens = s.usage.InputTokens
 	evCompleted.Response.Usage.OutputTokens = s.usage.OutputTokens
 	evCompleted.Response.Usage.TotalTokens = s.usage.InputTokens + s.usage.OutputTokens
+	if s.usage.CachedTokens > 0 {
+		evCompleted.Response.Usage.InputTokensDetails = &struct {
+			CachedTokens int `json:"cached_tokens"`
+		}{CachedTokens: s.usage.CachedTokens}
+	}
 	appendChatResponsesEvent(&events, "response.done", evCompleted)
 
 	// Also send response.completed for old client compatibility to avoid indefinite waiting timeout
@@ -674,9 +679,12 @@ type responseDoneEvent struct {
 		Model     string        `json:"model"`
 		Output    []interface{} `json:"output"`
 		Usage     struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			TotalTokens  int `json:"total_tokens"`
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			TotalTokens        int `json:"total_tokens"`
+			InputTokensDetails *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details,omitempty"`
 		} `json:"usage"`
 	} `json:"response"`
 }

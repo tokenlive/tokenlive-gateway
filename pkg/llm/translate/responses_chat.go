@@ -373,9 +373,12 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
+			TotalTokens         int `json:"total_tokens"`
+			PromptTokensDetails *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
 
@@ -460,6 +463,21 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 		totalTokens = oaiResp.Usage.PromptTokens + oaiResp.Usage.CompletionTokens
 	}
 
+	cachedTokens := 0
+	if oaiResp.Usage.PromptTokensDetails != nil {
+		cachedTokens = oaiResp.Usage.PromptTokensDetails.CachedTokens
+	}
+	usageMap := map[string]interface{}{
+		"input_tokens":  oaiResp.Usage.PromptTokens,
+		"output_tokens": oaiResp.Usage.CompletionTokens,
+		"total_tokens":  totalTokens,
+	}
+	if cachedTokens > 0 {
+		usageMap["input_tokens_details"] = map[string]interface{}{
+			"cached_tokens": cachedTokens,
+		}
+	}
+
 	responsesResp := map[string]interface{}{
 		"id":           respID,
 		"object":       "response",
@@ -468,11 +486,7 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 		"completed_at": now + 1,
 		"model":        respModel,
 		"output":       outputList,
-		"usage": map[string]interface{}{
-			"input_tokens":  oaiResp.Usage.PromptTokens,
-			"output_tokens": oaiResp.Usage.CompletionTokens,
-			"total_tokens":  totalTokens,
-		},
+		"usage":        usageMap,
 	}
 
 	translatedBody, err := json.Marshal(responsesResp)
@@ -485,6 +499,7 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 		Usage: TokenUsage{
 			InputTokens:  oaiResp.Usage.PromptTokens,
 			OutputTokens: oaiResp.Usage.CompletionTokens,
+			CachedTokens: cachedTokens,
 		},
 	}, nil
 }

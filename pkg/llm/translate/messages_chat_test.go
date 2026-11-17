@@ -445,3 +445,33 @@ func TestChatRequestToMessages_MaxOutputTokens_DefaultingAndClamping(t *testing.
 		t.Errorf("max_tokens = %v, want 500", aReq3["max_tokens"])
 	}
 }
+
+func TestChatCompletionToMessages_WithCachedTokens(t *testing.T) {
+	chat := []byte(`{
+		"id": "chatcmpl-cache",
+		"choices": [{
+			"message": {"role": "assistant", "content": "ok"},
+			"finish_reason": "stop"
+		}],
+		"usage": {
+			"prompt_tokens": 100,
+			"completion_tokens": 5,
+			"prompt_tokens_details": {"cached_tokens": 40}
+		}
+	}`)
+
+	res, err := ChatCompletionToMessages(chat, "gpt-4")
+	if err != nil {
+		t.Fatalf("ChatCompletionToMessages: %v", err)
+	}
+	if res.Usage.InputTokens != 100 || res.Usage.OutputTokens != 5 || res.Usage.CachedTokens != 40 {
+		t.Fatalf("usage = %+v, want InputTokens=100, OutputTokens=5, CachedTokens=40", res.Usage)
+	}
+
+	var msg map[string]interface{}
+	_ = json.Unmarshal(res.Body, &msg)
+	usage := msg["usage"].(map[string]interface{})
+	if usage["input_tokens"].(float64) != 100 {
+		t.Errorf("client usage.input_tokens = %v, want 100", usage["input_tokens"])
+	}
+}

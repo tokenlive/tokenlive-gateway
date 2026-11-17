@@ -1470,3 +1470,16 @@ func TestOpenAIResponses_Translation_Text_Stream_TrailingErrorAfterStopSwallowed
 		}
 	}
 }
+
+func TestTranslateResponsesNonStreamResponse_WithCachedTokens(t *testing.T) {
+	gctx := &core.GatewayContext{
+		Model:        "gpt-4",
+		UpstreamBody: []byte(`{"id":"chatcmpl-1","model":"gpt-4","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":40}}}`),
+	}
+	if err := translateResponsesNonStreamResponse(gctx, nil); err != nil {
+		t.Fatalf("translateResponsesNonStreamResponse failed: %v", err)
+	}
+	if gctx.InputTokens != 100 || gctx.OutputTokens != 5 || gctx.CachedTokens != 40 {
+		t.Fatalf("got (%d, %d, %d), want (100, 5, 40)", gctx.InputTokens, gctx.OutputTokens, gctx.CachedTokens)
+	}
+}

@@ -208,6 +208,23 @@ func (s *MessagesToResponsesStream) FeedJSON(data string) (events []ResponsesStr
 				s.usageOutput = ot
 				meta.OutputTokens = ot
 			}
+			it := intFrom(usage["input_tokens"])
+			cr := intFrom(usage["cache_read_input_tokens"])
+			cc := intFrom(usage["cache_creation_input_tokens"])
+			if it > 0 {
+				s.usageInput = it
+			}
+			if cr > 0 {
+				s.usageCached = cr
+				meta.CachedTokens = cr
+			}
+			if cc > 0 {
+				s.usageCacheCreation = cc
+				meta.CacheCreationTokens = cc
+			}
+			if it > 0 || cr > 0 || cc > 0 {
+				meta.InputTokens = s.usageInput + s.usageCached + s.usageCacheCreation
+			}
 		}
 		if delta, ok := ev["delta"].(map[string]interface{}); ok {
 			if sr, ok := delta["stop_reason"].(string); ok {

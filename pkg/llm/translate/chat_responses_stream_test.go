@@ -262,6 +262,10 @@ func TestChatToResponsesStream_LifecycleAndUsageGuard(t *testing.T) {
 					if usage["input_tokens"] != float64(7) || usage["output_tokens"] != float64(3) || response["id"] != "resp_mock" || response["model"] != "fallback" || response["output"] != nil {
 						t.Fatalf("empty/usage output = %v", response)
 					}
+					details, ok := usage["input_tokens_details"].(map[string]interface{})
+					if !ok || details["cached_tokens"] != float64(2) {
+						t.Fatalf("input_tokens_details = %v, want cached_tokens=2", usage["input_tokens_details"])
+					}
 				}
 				if meta.CachedTokens != 2 || meta.CacheCreationTokens != 4 {
 					t.Fatalf("cache zero guard = %+v", meta)

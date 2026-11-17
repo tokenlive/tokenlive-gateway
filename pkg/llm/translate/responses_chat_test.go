@@ -1245,3 +1245,28 @@ func TestChatCompletionToResponses_ApplyPatchCustomToolCall(t *testing.T) {
 	}
 }
 
+func TestChatCompletionToResponses_WithCachedTokens(t *testing.T) {
+	chat := []byte(`{
+		"id": "chatcmpl-cached",
+		"model": "gpt-4",
+		"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+		"usage": {"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105, "prompt_tokens_details": {"cached_tokens": 40}}
+	}`)
+	res, err := ChatCompletionToResponses(chat, "gpt-4", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.InputTokens != 100 || res.Usage.OutputTokens != 5 || res.Usage.CachedTokens != 40 {
+		t.Fatalf("usage = %+v, want (100, 5, 40)", res.Usage)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(res.Body, &resp); err != nil {
+		t.Fatal(err)
+	}
+	usage := resp["usage"].(map[string]interface{})
+	details := usage["input_tokens_details"].(map[string]interface{})
+	if details["cached_tokens"].(float64) != 40 {
+		t.Fatalf("cached_tokens = %v, want 40", details["cached_tokens"])
+	}
+}
+
