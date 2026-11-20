@@ -3,6 +3,8 @@ package translate
 import (
 	"encoding/json"
 	"sort"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 // MessagesStreamEvent 是一帧序列化后的 Messages SSE 事件，由 caller 写入 SSE framing。
@@ -107,20 +109,7 @@ func (s *ChatToMessagesStream) FeedJSON(data string) (events []MessagesStreamEve
 	}
 
 	// 与原 SSE parser 一样，usage 先于内容解析和 message_start 更新；零值不清已有值。
-	usage := chatStreamUsage(data)
-	meta.InputTokens = usage.InputTokens
-	meta.OutputTokens = usage.OutputTokens
-	meta.CachedTokens = usage.CachedTokens
-	if meta.InputTokens > 0 {
-		s.usage.InputTokens = meta.InputTokens
-	}
-	if meta.OutputTokens > 0 {
-		s.usage.OutputTokens = meta.OutputTokens
-	}
-	if meta.CachedTokens > 0 {
-		s.usage.CachedTokens = meta.CachedTokens
-	}
-
+	meta.TokenUsage = s.usage.Observe(usage.OpenAI(data))
 	var chunk struct {
 		ID      string `json:"id"`
 		Model   string `json:"model"`
@@ -222,9 +211,7 @@ func (s *ChatToMessagesStream) FeedJSON(data string) (events []MessagesStreamEve
 		}
 	}
 	diag := s.diagnostics()
-	diag.InputTokens = meta.InputTokens
-	diag.OutputTokens = meta.OutputTokens
-	diag.CachedTokens = meta.CachedTokens
+	diag.TokenUsage = meta.TokenUsage
 	diag.TransmittedChars = meta.TransmittedChars
 	diag.Flush = meta.Flush
 	return events, diag
@@ -255,10 +242,7 @@ func (s *ChatToMessagesStream) Finish(latestUsage TokenUsage) (events []Messages
 			meta.ErrorMessage = "empty upstream stream: no content or completion signal received"
 		}
 	}
-	meta.InputTokens = latestUsage.InputTokens
-	meta.OutputTokens = latestUsage.OutputTokens
-	meta.CachedTokens = latestUsage.CachedTokens
-	meta.CacheCreationTokens = latestUsage.CacheCreationTokens
+	meta.TokenUsage = latestUsage
 	return events, meta
 }
 

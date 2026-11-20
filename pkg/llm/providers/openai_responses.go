@@ -10,11 +10,11 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/translate"
-
-	"go.uber.org/zap"
 )
 
 type openaiResponsesInvoker struct{}
@@ -91,7 +91,7 @@ func translateResponsesNonStreamResponse(gctx *core.GatewayContext, toolMapper *
 		return err
 	}
 	gctx.Response = result
-	llm.ApplyUsage(gctx, res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.CachedTokens, res.Usage.CacheCreationTokens)
+	gctx.MergeUsage(res.Usage)
 	return nil
 }
 
@@ -112,10 +112,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 
 	parser := llm.NewSSEParser()
 	buf := make([]byte, 4096)
-	stream := translate.NewChatToResponsesStream(gctx.Model, toolMapper, translate.TokenUsage{
-		InputTokens: gctx.InputTokens, OutputTokens: gctx.OutputTokens,
-		CachedTokens: gctx.CachedTokens, CacheCreationTokens: gctx.CacheCreationTokens,
-	})
+	stream := translate.NewChatToResponsesStream(gctx.Model, toolMapper, gctx.Usage())
 
 	// Set once an upstream chat-completion frame carries a non-null finish_reason.
 	// Some aggregated backends (e.g. JoyCode gen- pool) emit a spurious SSE error
@@ -280,10 +277,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 	}
 
 	// 输出 interceptor 可能改变 gctx usage；末尾必须以 caller-latest 有效值封装 completion。
-	translated, meta := stream.Finish(translate.TokenUsage{
-		InputTokens: gctx.InputTokens, OutputTokens: gctx.OutputTokens,
-		CachedTokens: gctx.CachedTokens, CacheCreationTokens: gctx.CacheCreationTokens,
-	})
+	translated, meta := stream.Finish(gctx.Usage())
 	applyChatResponsesMeta(gctx, meta)
 	for _, event := range translated {
 		if err := writeSSEEvent(gctx.ResponseWriter, event.Event, event.Data); err != nil {
@@ -308,7 +302,7 @@ func handleResponsesStream(gctx *core.GatewayContext, resp *http.Response, toolM
 
 // caller 写回 usage/tags，FSM 不依赖 GatewayContext。
 func applyChatResponsesMeta(gctx *core.GatewayContext, meta translate.StreamChunkMeta) {
-	llm.ApplyUsage(gctx, meta.InputTokens, meta.OutputTokens, meta.CachedTokens, meta.CacheCreationTokens)
+	gctx.MergeUsage(meta.TokenUsage)
 	if meta.ResponseID != "" || meta.ResponseModel != "" {
 		if gctx.Tags == nil {
 			gctx.Tags = make(map[string]string)

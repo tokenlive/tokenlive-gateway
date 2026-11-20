@@ -12,6 +12,7 @@ import (
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/upstream"
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 func init() {
@@ -138,13 +139,12 @@ func (p *GeminiProvider) handleGenerateContentNonStream(gctx *core.GatewayContex
 	gctx.TriggerFirstByte()
 	gctx.UpstreamBody = body
 
-	in, out, cached, cacheCreated := llm.GeminiTokenExtractor(string(body))
-	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
+	gctx.ObserveUsage(usage.Gemini(string(body)))
 	return nil
 }
 
 func (p *GeminiProvider) handleGenerateContentStream(gctx *core.GatewayContext, resp *http.Response) error {
-	return llm.PassthroughStream(gctx, resp, llm.GeminiTokenExtractor)
+	return llm.PassthroughStream(gctx, resp, usage.Gemini)
 }
 
 var _ core.Provider = (*GeminiProvider)(nil)

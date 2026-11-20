@@ -492,8 +492,8 @@ func TestMessagesResponseToResponses_Blocks(t *testing.T) {
 	if res.Usage.InputTokens != 18 || res.Usage.OutputTokens != 20 {
 		t.Errorf("result usage = %+v", res.Usage)
 	}
-	if res.CachedTokens != 5 || res.CacheCreationTokens != 3 {
-		t.Errorf("cache tokens = %d/%d", res.CachedTokens, res.CacheCreationTokens)
+	if res.Usage.CachedTokens != 5 || res.Usage.CacheCreationTokens != 3 {
+		t.Errorf("cache tokens = %d/%d", res.Usage.CachedTokens, res.Usage.CacheCreationTokens)
 	}
 }
 

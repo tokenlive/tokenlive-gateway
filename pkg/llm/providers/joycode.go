@@ -16,10 +16,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/translate"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/upstream"
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 func init() {
@@ -203,16 +205,16 @@ func (p *JoyCodeProvider) invokeAnthropicResponses(gctx *core.GatewayContext, mo
 	}
 	gctx.RawBody = injectJoyCodePayload(adaptThinkingBehavior(translated.Body))
 
-		resp, err := p.callAnthropic(gctx, gctx.RawBody, upstream.Handoff)
-		if err != nil {
-			return enrichAnthropicError(err, gctx.UpstreamBody)
-		}
-		if gctx.IsStream {
-			// JoyCode anthropic_completions may wrap inner SSE as data: event: / data: data:.
-			// Unwrap is transport-only; standard Anthropic SSE is passed through unchanged.
-			resp.Body = newJoycodeResponsesUnwrapReader(resp.Body)
-			return handleAnthropicResponsesStream(gctx, resp)
-		}
+	resp, err := p.callAnthropic(gctx, gctx.RawBody, upstream.Handoff)
+	if err != nil {
+		return enrichAnthropicError(err, gctx.UpstreamBody)
+	}
+	if gctx.IsStream {
+		// JoyCode anthropic_completions may wrap inner SSE as data: event: / data: data:.
+		// Unwrap is transport-only; standard Anthropic SSE is passed through unchanged.
+		resp.Body = newJoycodeResponsesUnwrapReader(resp.Body)
+		return handleAnthropicResponsesStream(gctx, resp)
+	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -229,7 +231,7 @@ func (p *JoyCodeProvider) invokeAnthropicResponses(gctx *core.GatewayContext, mo
 		return fmt.Errorf("parse translated response: %w", err)
 	}
 	gctx.Response = response
-	llm.ApplyUsage(gctx, result.Usage.InputTokens, result.Usage.OutputTokens, result.CachedTokens, result.CacheCreationTokens)
+	gctx.MergeUsage(result.Usage)
 	return nil
 }
 
@@ -280,8 +282,7 @@ func (p *JoyCodeProvider) invokeNativeResponses(gctx *core.GatewayContext) error
 	if err := json.Unmarshal(gctx.UpstreamBody, &response); err == nil {
 		gctx.Response = response
 	}
-	in, out, cached, cacheCreated := llm.ResponsesTokenExtractor(string(gctx.UpstreamBody))
-	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
+	gctx.ObserveUsage(usage.Responses(string(gctx.UpstreamBody)))
 	return nil
 }
 
@@ -503,8 +504,7 @@ func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) 
 	}
 
 	// Token stats
-	in, out, cached, cacheCreated := llm.OpenAITokenExtractor(string(gctx.UpstreamBody))
-	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
+	gctx.ObserveUsage(usage.OpenAI(string(gctx.UpstreamBody)))
 	return nil
 }
 
@@ -549,7 +549,7 @@ func (p *JoyCodeProvider) invokeAnthropic(gctx *core.GatewayContext, model strin
 
 	gctx.UpstreamBody = res.Body
 	gctx.TriggerFirstByte()
-	llm.ApplyUsage(gctx, res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.CachedTokens, res.Usage.CacheCreationTokens)
+	gctx.MergeUsage(res.Usage)
 	return nil
 }
 
@@ -586,14 +586,13 @@ func (p *JoyCodeProvider) doAnthropicMessagesDirect(gctx *core.GatewayContext, m
 	gctx.TriggerFirstByte()
 
 	// Token stats
-	in, out, cached, cacheCreated := llm.AnthropicTokenExtractor(string(body))
-	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
+	gctx.ObserveUsage(usage.Anthropic(string(body)))
 	return nil
 }
 
 // handleMessagesStream transparently passes through Anthropic SSE format streams
 func (p *JoyCodeProvider) handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error {
-	return llm.PassthroughStream(gctx, resp, llm.AnthropicTokenExtractor)
+	return llm.PassthroughStream(gctx, resp, usage.Anthropic)
 }
 
 // ==========================================
@@ -629,7 +628,6 @@ func (p *JoyCodeProvider) handleAnthropicStreamToOpenAI(gctx *core.GatewayContex
 	parser := llm.NewSSEParser()
 	stream := translate.NewMessagesToChatStream(gctx.Model)
 	buf := make([]byte, 4096)
-	var rawInputTokens, cachedTokens, cacheCreationTokens int
 
 	for {
 		n, err := resp.Body.Read(buf)
@@ -647,22 +645,7 @@ func (p *JoyCodeProvider) handleAnthropicStreamToOpenAI(gctx *core.GatewayContex
 				}
 
 				chunks, meta := stream.FeedJSON(ev.Data)
-				if meta.CachedTokens > 0 {
-					cachedTokens = meta.CachedTokens
-				}
-				if meta.CacheCreationTokens > 0 {
-					cacheCreationTokens = meta.CacheCreationTokens
-				}
-				if meta.InputTokens > 0 {
-					rawInputTokens = meta.InputTokens
-				}
-				totalInput := 0
-				if meta.InputTokens > 0 || meta.CachedTokens > 0 || meta.CacheCreationTokens > 0 {
-					// Normalize to total input (input + cache read + cache creation),
-					// aligning with AnthropicTokenExtractor / OpenAI prompt_tokens semantics.
-					totalInput = rawInputTokens + cachedTokens + cacheCreationTokens
-				}
-				llm.ApplyUsage(gctx, totalInput, meta.OutputTokens, meta.CachedTokens, meta.CacheCreationTokens)
+				gctx.MergeUsage(meta.TokenUsage)
 				if meta.TransmittedChars > 0 {
 					gctx.TransmittedChars += meta.TransmittedChars
 				}

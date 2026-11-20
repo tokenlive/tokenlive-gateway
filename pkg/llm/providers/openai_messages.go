@@ -8,10 +8,11 @@ import (
 	"net/http"
 	"strconv"
 
+	"go.uber.org/zap"
+
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/translate"
-	"go.uber.org/zap"
 )
 
 type openaiMessagesInvoker struct{}
@@ -84,7 +85,7 @@ func translateNonStreamResponse(gctx *core.GatewayContext) error {
 		return err
 	}
 	gctx.Response = result
-	llm.ApplyUsage(gctx, res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.CachedTokens, res.Usage.CacheCreationTokens)
+	gctx.MergeUsage(res.Usage)
 	return nil
 }
 
@@ -164,10 +165,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	if respModel == "" {
 		respModel = gctx.Model
 	}
-	stream := translate.NewChatToMessagesStream(respModel, translate.TokenUsage{
-		InputTokens: gctx.InputTokens, OutputTokens: gctx.OutputTokens,
-		CachedTokens: gctx.CachedTokens, CacheCreationTokens: gctx.CacheCreationTokens,
-	})
+	stream := translate.NewChatToMessagesStream(respModel, gctx.Usage())
 	parser := llm.NewSSEParser()
 	buf := make([]byte, 4096)
 	firstRead := true
@@ -190,7 +188,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 					data = "[DONE]"
 				}
 				events, meta := stream.FeedJSON(data)
-				llm.ApplyUsage(gctx, meta.InputTokens, meta.OutputTokens, meta.CachedTokens, meta.CacheCreationTokens)
+				gctx.MergeUsage(meta.TokenUsage)
 				if err := writeEvents(events, true); err != nil {
 					return err
 				}
@@ -209,10 +207,7 @@ func handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error 
 	}
 
 	// 完成信号不提前终止读取：EOF 时使用 caller 最新有效 usage 生成 terminal。
-	events, meta := stream.Finish(translate.TokenUsage{
-		InputTokens: gctx.InputTokens, OutputTokens: gctx.OutputTokens,
-		CachedTokens: gctx.CachedTokens, CacheCreationTokens: gctx.CacheCreationTokens,
-	})
+	events, meta := stream.Finish(gctx.Usage())
 	if meta.ErrorMessage != "" {
 		if len(events) > 0 {
 			// partial EOF 的 block close 写错误保持忽略，并保留末尾 flush。

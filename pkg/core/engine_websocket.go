@@ -11,6 +11,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 var (
@@ -423,13 +425,6 @@ func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, 
 		Response   struct {
 			ID    string `json:"id"`
 			Model string `json:"model"`
-			Usage struct {
-				InputTokens        int `json:"input_tokens"`
-				OutputTokens       int `json:"output_tokens"`
-				InputTokensDetails *struct {
-					CachedTokens int `json:"cached_tokens"`
-				} `json:"input_tokens_details"`
-			} `json:"usage"`
 		} `json:"response"`
 		Delta string `json:"delta"`
 		Part  struct {
@@ -490,11 +485,7 @@ func (e *Engine) handleUpstreamEvent(payload []byte, tracker *WSSessionTracker, 
 			if turn := tracker.RemoveTurn(responseID); turn != nil {
 				turn.IsSettled = true
 				if turn.Gctx != nil {
-					turn.Gctx.InputTokens = ev.Response.Usage.InputTokens
-					turn.Gctx.OutputTokens = ev.Response.Usage.OutputTokens
-					if ev.Response.Usage.InputTokensDetails != nil {
-						turn.Gctx.CachedTokens = ev.Response.Usage.InputTokensDetails.CachedTokens
-					}
+					turn.Gctx.ObserveUsage(usage.Responses(string(payload)))
 
 					e.logger.Info("triggering outbound filters on response.done", zap.String("response_id", responseID), zap.Int("input", turn.Gctx.InputTokens), zap.Int("output", turn.Gctx.OutputTokens))
 					for _, f := range pipe.OutboundFilters {

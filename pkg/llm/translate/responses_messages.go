@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 // ResponsesToMessagesResult is the Responses→Messages request translation result.
@@ -16,10 +18,8 @@ type ResponsesToMessagesResult struct {
 
 // MessagesToResponsesResult is the non-stream Messages→Responses translation result.
 type MessagesToResponsesResult struct {
-	Body                []byte
-	Usage               TokenUsage
-	CachedTokens        int
-	CacheCreationTokens int
+	Body  []byte
+	Usage TokenUsage
 }
 
 // ResponsesRequestToMessages translates an OpenAI Responses request to Anthropic Messages.
@@ -514,12 +514,9 @@ func MessagesResponseToResponses(anthropicBody []byte, model string) (MessagesTo
 		incompleteDetails = map[string]interface{}{"reason": "max_output_tokens"}
 	}
 
-	inputTokens := intFrom(aRespUsage(aResp, "input_tokens"))
-	outputTokens := intFrom(aRespUsage(aResp, "output_tokens"))
-	cachedTokens := intFrom(aRespUsage(aResp, "cache_read_input_tokens"))
-	cacheCreationTokens := intFrom(aRespUsage(aResp, "cache_creation_input_tokens"))
-	// Normalize to OpenAI semantics: input_tokens includes cached + cache-creation.
-	totalInput := inputTokens + cachedTokens + cacheCreationTokens
+	var tokens TokenUsage
+	tokens.Observe(usage.Anthropic(string(anthropicBody)))
+	totalInput, outputTokens, cachedTokens := tokens.InputTokens, tokens.OutputTokens, tokens.CachedTokens
 
 	now := time.Now().Unix()
 	responsesResp := map[string]interface{}{
@@ -547,10 +544,8 @@ func MessagesResponseToResponses(anthropicBody []byte, model string) (MessagesTo
 		return MessagesToResponsesResult{}, err
 	}
 	return MessagesToResponsesResult{
-		Body:                body,
-		Usage:               TokenUsage{InputTokens: totalInput, OutputTokens: outputTokens},
-		CachedTokens:        cachedTokens,
-		CacheCreationTokens: cacheCreationTokens,
+		Body:  body,
+		Usage: tokens,
 	}, nil
 }
 
@@ -583,15 +578,6 @@ func MessagesErrorToResponses(body []byte) (converted []byte, ok bool) {
 		return nil, false
 	}
 	return out, true
-}
-
-// aRespUsage reads a numeric usage field from an Anthropic response map.
-func aRespUsage(aResp map[string]interface{}, field string) interface{} {
-	usage, ok := aResp["usage"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	return usage[field]
 }
 
 // normalizeResponsesID rewrites an upstream id to the resp_ prefix.

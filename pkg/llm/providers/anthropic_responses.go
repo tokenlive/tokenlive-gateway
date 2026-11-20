@@ -6,12 +6,12 @@ import (
 	"io"
 	"net/http"
 
+	"go.uber.org/zap"
+
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/translate"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/upstream"
-
-	"go.uber.org/zap"
 )
 
 // anthropicResponsesInvoker serves client /responses requests on an Anthropic Messages
@@ -96,7 +96,7 @@ func (i *anthropicResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Pro
 		return fmt.Errorf("parse translated response: %w", err)
 	}
 	gctx.Response = result
-	llm.ApplyUsage(gctx, res.Usage.InputTokens, res.Usage.OutputTokens, res.CachedTokens, res.CacheCreationTokens)
+	gctx.MergeUsage(res.Usage)
 	return nil
 }
 
@@ -128,7 +128,7 @@ func enrichAnthropicError(err error, upstreamBody []byte) error {
 
 // handleAnthropicResponsesStream converts upstream Anthropic Messages SSE into
 // Responses SSE events, writing them directly to the client. Token stats are
-// written to gctx from the translation side channel (AnthropicTokenExtractor semantics).
+// written to gctx from the normalized translation side channel.
 func handleAnthropicResponsesStream(gctx *core.GatewayContext, resp *http.Response) error {
 	defer resp.Body.Close()
 
@@ -155,7 +155,7 @@ func handleAnthropicResponsesStream(gctx *core.GatewayContext, resp *http.Respon
 				}
 
 				out, meta := stream.FeedJSON(ev.Data)
-				llm.ApplyUsage(gctx, meta.InputTokens, meta.OutputTokens, meta.CachedTokens, meta.CacheCreationTokens)
+				gctx.MergeUsage(meta.TokenUsage)
 				gctx.TransmittedChars += meta.TransmittedChars
 
 				if gctx.Tags == nil {

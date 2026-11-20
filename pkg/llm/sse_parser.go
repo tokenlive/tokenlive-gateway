@@ -1,17 +1,11 @@
 package llm
 
-import (
-	"strings"
-)
+import "strings"
 
 // SSEEvent represents a single parsed SSE event
 type SSEEvent struct {
-	Data                string
-	Done                bool
-	InputTokens         int
-	OutputTokens        int
-	CachedTokens        int
-	CacheCreationTokens int
+	Data string
+	Done bool
 }
 
 // SSEParser incrementally parses SSE frames from a byte stream.
@@ -99,9 +93,6 @@ func (p *SSEParser) parseBlock(block string) (SSEEvent, bool) {
 		ev.Done = true
 		return ev, true
 	}
-
-	// Try to extract usage tokens from JSON
-	ev.InputTokens, ev.OutputTokens, ev.CachedTokens, ev.CacheCreationTokens = OpenAITokenExtractor(data)
 
 	return ev, true
 }

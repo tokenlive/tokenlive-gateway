@@ -38,10 +38,8 @@ func (f *TokenSettlementFilter) Order() int                          { return 10
 func (f *TokenSettlementFilter) Criticality() core.FilterCriticality { return core.Critical }
 
 func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
-	// Resolve rates once for quota and cost settlement
-	inputPrice, outputPrice, cachedPrice, cacheCreationPrice := resolvePrices(gctx)
+	settled := finalizeUsage(gctx)
 	clientDisconnected := errors.Is(gctx.Err, core.ErrClientDisconnected)
-	settleUsage := gctx.Err == nil || clientDisconnected
 	settlementCtx := gctx.Ctx
 	if settlementCtx == nil {
 		settlementCtx = context.Background()
@@ -49,10 +47,9 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 		settlementCtx = context.WithoutCancel(settlementCtx)
 	}
 
-	// Credits: settle successful requests and client-aborted streams with known usage.
-	if gctx.UserID != "" && settleUsage && f.creditsDeductor != nil {
-		costYuan := computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice)
-		creditsToDeduct := int64(costYuan*1_000_000.0 + 0.5) // round to micro-yuan
+	// Credits: settle successful requests and client-aborted streams with finalized usage.
+	if gctx.UserID != "" && settled.billable && f.creditsDeductor != nil {
+		creditsToDeduct := int64(settled.costYuan*1_000_000.0 + 0.5) // round to micro-yuan
 
 		if creditsToDeduct > 0 {
 			newCredits, err := f.creditsDeductor.DeductCredits(settlementCtx, gctx.APIKey, creditsToDeduct)
@@ -77,57 +74,25 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 		}
 	}
 
-	// Stream aborted without usage: estimate tokens from transmitted chars
-	if gctx.IsStream && gctx.OutputTokens == 0 && gctx.TransmittedChars > 0 {
-		ratio := 0.6 // default
-		if gctx.Policy != nil {
-			for _, lp := range gctx.Policy.LimitPolicies {
-				if lp.Estimator != nil && lp.Estimator.Type == "length_ratio" && lp.Estimator.Ratio > 0 {
-					ratio = lp.Estimator.Ratio
-					break
-				}
-			}
-		}
-		gctx.OutputTokens = int(float64(gctx.TransmittedChars) * ratio)
-		if gctx.OutputTokens <= 0 {
-			gctx.OutputTokens = 1
-		}
-		if gctx.Tags == nil {
-			gctx.Tags = make(map[string]string)
-		}
-		gctx.Tags["completion_token_estimated"] = "true"
-
-		// Stream abort often drops usage (last SSE frame); InputTokens may be 0 so cost
-		// would undercount input. Estimate input from RawBody with the same estimator
-		// as pre-charge; cache hits unknown → bill as full-price (conservative).
-		if gctx.InputTokens == 0 && len(gctx.RawBody) > 0 {
-			estimatedInput := int64(0)
-			if gctx.Policy != nil {
-				for _, lp := range gctx.Policy.LimitPolicies {
-					if lp.Type == "token" || lp.Type == "cost" {
-						estimatedInput = limiter.EstimateInputTokens(gctx, lp)
-						break
-					}
-				}
-			}
-			if estimatedInput <= 0 {
-				estimatedInput = limiter.EstimateInputTokens(gctx, nil)
-			}
-			if estimatedInput > 0 {
-				gctx.InputTokens = int(estimatedInput)
-				gctx.Tags["input_token_estimated"] = "true"
-			}
-		}
+	var err error
+	if gctx.TrackLimitReservations {
+		err = f.settleReservations(gctx, settled)
+	} else {
+		err = f.settleLegacyLimits(gctx, settled)
 	}
+	// Read all quota estimates before publishing this response's output sample.
+	f.updateOutputEMA(gctx, settled.tokens.OutputTokens)
+	return err
+}
 
-	// Async EMA update for output-token estimates
-	if gctx.OutputTokens > 0 {
+func (f *TokenSettlementFilter) updateOutputEMA(gctx *core.GatewayContext, outputTokens int) {
+	if outputTokens > 0 {
 		tenantKey := gctx.Tenant
 		if tenantKey == "" {
 			tenantKey = gctx.UserID
 		}
 		model := gctx.Model
-		completion := int64(gctx.OutputTokens)
+		completion := int64(outputTokens)
 		go func() {
 			ctx := context.Background()
 			if tenantKey != "" {
@@ -136,14 +101,9 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 			_, _ = f.stateStore.UpdateEMA(ctx, "model:global:"+model, completion, 0.1)
 		}()
 	}
+}
 
-	if settleUsage {
-		gctx.Cost = computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice)
-	}
-	if gctx.TrackLimitReservations {
-		return f.SettleLimits(gctx)
-	}
-
+func (f *TokenSettlementFilter) settleLegacyLimits(gctx *core.GatewayContext, settled usageSettlement) error {
 	policy := gctx.Policy
 	if policy == nil || len(policy.LimitPolicies) == 0 {
 		return nil
@@ -160,7 +120,7 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 		var diff int64
 
 		if lp.Type == "token" {
-			actual := int64(gctx.InputTokens + gctx.OutputTokens)
+			actual := int64(settled.tokens.InputTokens + settled.tokens.OutputTokens)
 			estimated := limiter.EstimateInputTokens(gctx, lp) + limiter.EstimateOutputTokens(context.Background(), f.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
 			diff = actual - estimated
 		} else if lp.Type == "cost" {
@@ -170,8 +130,8 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 			estimatedInputTokens := limiter.EstimateInputTokens(gctx, lp)
 			estimatedOutputTokens := limiter.EstimateOutputTokens(context.Background(), f.stateStore, gctx.Tenant, gctx.UserID, gctx.Model)
 
-			estCached := int64(gctx.CachedTokens)
-			estCacheCreation := int64(gctx.CacheCreationTokens)
+			estCached := int64(settled.tokens.CachedTokens)
+			estCacheCreation := int64(settled.tokens.CacheCreationTokens)
 			if estCached < 0 {
 				estCached = 0
 			}
@@ -191,13 +151,13 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 			estNonCached := estimatedInputTokens - estCached - estCacheCreation
 
 			// Estimated cost in li (1 CNY = 1000 li), same basis as actualCost
-			estimatedCost := int64((float64(estNonCached)*inputPrice +
-				float64(estCached)*cachedPrice +
-				float64(estCacheCreation)*cacheCreationPrice +
-				float64(estimatedOutputTokens)*outputPrice) / 1000.0)
+			estimatedCost := int64((float64(estNonCached)*settled.prices.input +
+				float64(estCached)*settled.prices.cached +
+				float64(estCacheCreation)*settled.prices.creation +
+				float64(estimatedOutputTokens)*settled.prices.output) / 1000.0)
 
-			// computeActualCost returns CNY; convert to li
-			actualCost := int64(computeActualCost(gctx, inputPrice, cachedPrice, cacheCreationPrice, outputPrice) * 1000.0)
+			// The finalized cost is CNY; convert to li
+			actualCost := int64(settled.costYuan * 1000.0)
 
 			diff = actualCost - estimatedCost
 		}
@@ -235,24 +195,27 @@ func (f *TokenSettlementFilter) OnResponse(gctx *core.GatewayContext) error {
 // SettleLimits reconciles smart-call quotas without charging user credits.
 // Each entry records its exact bucket and estimate at precharge time.
 func (f *TokenSettlementFilter) SettleLimits(gctx *core.GatewayContext) error {
+	return f.settleReservations(gctx, snapshotUsage(gctx))
+}
+
+func (f *TokenSettlementFilter) settleReservations(gctx *core.GatewayContext, settled usageSettlement) error {
 	ctx := gctx.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	} else {
 		ctx = context.WithoutCancel(ctx)
 	}
-	input, output, cached, creation := resolvePrices(gctx)
 	for i := range gctx.LimitReservations {
 		r := &gctx.LimitReservations[i]
 		if r.Settled {
 			continue
 		}
 		var actual int64
-		if gctx.Err == nil || errors.Is(gctx.Err, core.ErrClientDisconnected) {
+		if settled.billable {
 			if r.Type == "token" {
-				actual = int64(gctx.InputTokens + gctx.OutputTokens)
+				actual = int64(settled.tokens.InputTokens + settled.tokens.OutputTokens)
 			} else {
-				actual = int64(computeActualCost(gctx, input, cached, creation, output) * 1000)
+				actual = int64(settled.costYuan * 1000)
 			}
 		}
 		diff := actual - r.Estimated
@@ -273,86 +236,4 @@ func (f *TokenSettlementFilter) SettleLimits(gctx *core.GatewayContext) error {
 		r.Settled = true
 	}
 	return nil
-}
-
-// computeActualCost bills one request with four unit prices (CNY).
-// Cached read/write tokens are subsets of InputTokens; they are subtracted from
-// full-price input to avoid double billing. Does not mutate gctx; clamps cache
-// tokens so nonCached >= 0.
-func computeActualCost(gctx *core.GatewayContext, inputPrice, cachedPrice, cacheCreationPrice, outputPrice float64) float64 {
-	cached, cacheCreation, nonCachedPrompt, output := clampAndSplitTokens(gctx)
-	return (float64(nonCachedPrompt)*inputPrice +
-		float64(cached)*cachedPrice +
-		float64(cacheCreation)*cacheCreationPrice +
-		float64(output)*outputPrice) / 1_000_000.0
-}
-
-// clampAndSplitTokens defensively clamps cache tokens (no gctx mutation) and
-// returns cached, cacheCreation, nonCachedPrompt, output.
-func clampAndSplitTokens(gctx *core.GatewayContext) (cached, cacheCreation, nonCachedPrompt, output int) {
-	cached = gctx.CachedTokens
-	cacheCreation = gctx.CacheCreationTokens
-	if cached < 0 {
-		cached = 0
-	}
-	if cacheCreation < 0 {
-		cacheCreation = 0
-	}
-	// Prefer keeping cache-read tokens (usually cheaper) when sum exceeds input
-	if cached+cacheCreation > gctx.InputTokens {
-		if cached > gctx.InputTokens {
-			cached = gctx.InputTokens
-		}
-		cacheCreation = gctx.InputTokens - cached
-		if cacheCreation < 0 {
-			cacheCreation = 0
-		}
-	}
-	nonCachedPrompt = gctx.InputTokens - cached - cacheCreation
-	output = gctx.OutputTokens
-	return
-}
-
-// resolvePrices returns CNY per million tokens.
-// Priority (later wins): defaults → Policy.Billing (cache prices fall back to
-// inputPrice) → SelectedEndpoint field overrides.
-func resolvePrices(gctx *core.GatewayContext) (inputPrice, outputPrice, cachedPrice, cacheCreationPrice float64) {
-	inputPrice = 2.0 // default CNY / 1M tokens
-	outputPrice = 2.0
-	cachedPrice = 2.0
-	cacheCreationPrice = 2.0
-
-	if gctx.Policy != nil && gctx.Policy.Billing != nil {
-		inputPrice = gctx.Policy.Billing.InputPrice
-		outputPrice = gctx.Policy.Billing.OutputPrice
-		if gctx.Policy.Billing.CachedPrice > 0 {
-			cachedPrice = gctx.Policy.Billing.CachedPrice
-		} else {
-			cachedPrice = inputPrice
-		}
-		if gctx.Policy.Billing.CacheCreationPrice > 0 {
-			cacheCreationPrice = gctx.Policy.Billing.CacheCreationPrice
-		} else {
-			cacheCreationPrice = inputPrice
-		}
-	}
-
-	// Composite answers are billed at the business entry price. The selected
-	// supplier endpoint is retained for observability and child quota settlement.
-	composite := gctx.SmartRouting != nil && (gctx.SmartRouting.Mode == "priority" || gctx.SmartRouting.Mode == "rules")
-	if gctx.SelectedEndpoint != nil && !composite {
-		if gctx.SelectedEndpoint.InputPrice != nil {
-			inputPrice = *gctx.SelectedEndpoint.InputPrice
-		}
-		if gctx.SelectedEndpoint.OutputPrice != nil {
-			outputPrice = *gctx.SelectedEndpoint.OutputPrice
-		}
-		if gctx.SelectedEndpoint.CachedPrice != nil {
-			cachedPrice = *gctx.SelectedEndpoint.CachedPrice
-		}
-		if gctx.SelectedEndpoint.CacheCreationPrice != nil {
-			cacheCreationPrice = *gctx.SelectedEndpoint.CacheCreationPrice
-		}
-	}
-	return
 }

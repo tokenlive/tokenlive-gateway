@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 func TestPassthroughStream_RelaysAndExtractsTokens(t *testing.T) {
@@ -29,7 +30,7 @@ func TestPassthroughStream_RelaysAndExtractsTokens(t *testing.T) {
 		"data: {\"type\":\"message_stop\"}\n\n"
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(sse))}
 
-	if err := PassthroughStream(gctx, resp, AnthropicTokenExtractor); err != nil {
+	if err := PassthroughStream(gctx, resp, usage.Anthropic); err != nil {
 		t.Fatalf("PassthroughStream: %v", err)
 	}
 
@@ -70,7 +71,7 @@ func TestPassthroughStream_PrematureEOF_NoMessageStopTag(t *testing.T) {
 		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(sse))}
 
-	if err := PassthroughStream(gctx, resp, AnthropicTokenExtractor); err != nil {
+	if err := PassthroughStream(gctx, resp, usage.Anthropic); err != nil {
 		t.Fatalf("PassthroughStream: %v", err)
 	}
 	if gctx.Tags["message_stop_sent"] == "true" {
@@ -91,7 +92,7 @@ func TestPassthroughStream_DoesNotCloseBody(t *testing.T) {
 	tracked := &closeTrackingReader{Reader: strings.NewReader("data: {}\n\n")}
 	resp := &http.Response{Body: tracked}
 
-	if err := PassthroughStream(gctx, resp, AnthropicTokenExtractor); err != nil {
+	if err := PassthroughStream(gctx, resp, usage.Anthropic); err != nil {
 		t.Fatalf("PassthroughStream: %v", err)
 	}
 	if tracked.closed {

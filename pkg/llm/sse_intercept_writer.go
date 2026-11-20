@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 // SSEOption configures SSEInterceptWriter.
@@ -13,9 +14,20 @@ type SSEOption func(*SSEInterceptWriter)
 
 // WithTokenExtractor sets a custom token extractor.
 // Defaults to OpenAI format extraction.
-func WithTokenExtractor(te TokenExtractor) SSEOption {
+func WithTokenExtractor(te usage.Decoder) SSEOption {
 	return func(w *SSEInterceptWriter) {
-		w.tokenExtractor = te
+		if te != nil {
+			w.tokenExtractor = te
+		}
+	}
+}
+
+// WithSSEBatchValidator checks each Write batch using its already parsed events,
+// before the writer records TTFT, observes usage, or forwards the raw bytes.
+// A caller requiring whole-frame rejection must submit complete frames per batch.
+func WithSSEBatchValidator(validate func(raw []byte, events []SSEEvent) error) SSEOption {
+	return func(w *SSEInterceptWriter) {
+		w.validateBatch = validate
 	}
 }
 
@@ -27,7 +39,8 @@ type SSEInterceptWriter struct {
 	gctx           *core.GatewayContext
 	parser         *SSEParser
 	firstByte      bool
-	tokenExtractor TokenExtractor // nil = use SSEParser default extraction
+	tokenExtractor usage.Decoder
+	validateBatch  func([]byte, []SSEEvent) error
 }
 
 // NewSSEInterceptWriter creates a writer that intercepts SSE frames.
@@ -36,6 +49,7 @@ func NewSSEInterceptWriter(gctx *core.GatewayContext, opts ...SSEOption) *SSEInt
 		ResponseWriter: gctx.ResponseWriter,
 		gctx:           gctx,
 		parser:         NewSSEParser(),
+		tokenExtractor: usage.OpenAI,
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -46,39 +60,39 @@ func NewSSEInterceptWriter(gctx *core.GatewayContext, opts ...SSEOption) *SSEInt
 
 // Write intercepts the byte stream, records TTFT, and parses SSE frames.
 func (w *SSEInterceptWriter) Write(p []byte) (int, error) {
+	events := w.parser.Feed(p)
+	if w.validateBatch != nil {
+		if err := w.validateBatch(p, events); err != nil {
+			return 0, err
+		}
+	}
+
 	if !w.firstByte {
 		w.firstByte = true
 		w.gctx.TriggerFirstByte()
 	}
 
-events := w.parser.Feed(p)
-		for _, ev := range events {
-			var in, out, cached, cacheCreated int
-			if w.tokenExtractor != nil {
-				in, out, cached, cacheCreated = w.tokenExtractor(ev.Data)
-			} else {
-				in, out, cached, cacheCreated = ev.InputTokens, ev.OutputTokens, ev.CachedTokens, ev.CacheCreationTokens
-			}
-			ApplyUsage(w.gctx, in, out, cached, cacheCreated)
+	for _, ev := range events {
+		w.gctx.ObserveUsage(w.tokenExtractor(ev.Data))
 
-			protocol := ""
-			if w.gctx.SelectedEndpoint != nil {
-				protocol = w.gctx.SelectedEndpoint.ProviderProtocol
-			}
-			w.gctx.TransmittedChars += ExtractContentLength(protocol, ev.Data)
-
-			// Native Anthropic Messages passthrough: mark completion when message_stop is seen
-			// so engine can distinguish normal EOF from premature disconnect.
-			if w.gctx.RequestType == core.RequestTypeMessages && isAnthropicMessageStop(ev.Data) {
-				if w.gctx.Tags == nil {
-					w.gctx.Tags = make(map[string]string)
-				}
-				w.gctx.Tags["message_stop_sent"] = "true"
-			}
+		protocol := ""
+		if w.gctx.SelectedEndpoint != nil {
+			protocol = w.gctx.SelectedEndpoint.ProviderProtocol
 		}
+		w.gctx.TransmittedChars += ExtractContentLength(protocol, ev.Data)
 
-		return w.ResponseWriter.Write(p)
+		// Native Anthropic Messages passthrough: mark completion when message_stop is seen
+		// so engine can distinguish normal EOF from premature disconnect.
+		if w.gctx.RequestType == core.RequestTypeMessages && isAnthropicMessageStop(ev.Data) {
+			if w.gctx.Tags == nil {
+				w.gctx.Tags = make(map[string]string)
+			}
+			w.gctx.Tags["message_stop_sent"] = "true"
+		}
 	}
+
+	return w.ResponseWriter.Write(p)
+}
 
 // isAnthropicMessageStop reports whether SSE data is an Anthropic message_stop event payload.
 func isAnthropicMessageStop(data string) bool {

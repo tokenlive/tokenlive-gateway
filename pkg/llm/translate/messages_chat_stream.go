@@ -4,17 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 // StreamChunkMeta is side-channel info (tokens, etc.) during stream translate.
 type StreamChunkMeta struct {
-	InputTokens         int
-	OutputTokens        int
-	CachedTokens        int
-	CacheCreationTokens int
-	TransmittedChars    int
-	ResponseID          string
-	ResponseModel       string
+	// TokenUsage is a normalized partial update, not a replay of prior frames.
+	// Completion metadata may contain the resolved final snapshot.
+	TokenUsage
+	TransmittedChars int
+	ResponseID       string
+	ResponseModel    string
 	// Completed indicates terminal events were returned, not that the caller wrote them.
 	Completed bool
 	// EmitDone true: caller should write data: [DONE]
@@ -46,6 +47,7 @@ type MessagesToChatStream struct {
 
 	sawToolUse bool
 	finishSent bool
+	usage      TokenUsage
 }
 
 // NewMessagesToChatStream creates the stream translation state machine.
@@ -72,36 +74,8 @@ func (s *MessagesToChatStream) FeedJSON(data string) (chunks [][]byte, meta Stre
 		return nil, meta
 	}
 
-	// usage side channel
-	if usage, ok := ev["usage"].(map[string]interface{}); ok {
-		if it, ok := usage["input_tokens"].(float64); ok {
-			meta.InputTokens = int(it)
-		}
-		if ot, ok := usage["output_tokens"].(float64); ok {
-			meta.OutputTokens = int(ot)
-		}
-		if cr, ok := usage["cache_read_input_tokens"].(float64); ok {
-			meta.CachedTokens = int(cr)
-		}
-		if cc, ok := usage["cache_creation_input_tokens"].(float64); ok {
-			meta.CacheCreationTokens = int(cc)
-		}
-	}
+	meta.TokenUsage = s.usage.Observe(usage.Anthropic(data))
 	if message, ok := ev["message"].(map[string]interface{}); ok {
-		if usage, ok := message["usage"].(map[string]interface{}); ok {
-			if it, ok := usage["input_tokens"].(float64); ok {
-				meta.InputTokens = int(it)
-			}
-			if ot, ok := usage["output_tokens"].(float64); ok && meta.OutputTokens == 0 {
-				meta.OutputTokens = int(ot)
-			}
-			if cr, ok := usage["cache_read_input_tokens"].(float64); ok {
-				meta.CachedTokens = int(cr)
-			}
-			if cc, ok := usage["cache_creation_input_tokens"].(float64); ok {
-				meta.CacheCreationTokens = int(cc)
-			}
-		}
 		if id, ok := message["id"].(string); ok && id != "" {
 			s.id = "chatcmpl-" + stripMsgPrefix(id)
 		}
@@ -228,21 +202,6 @@ func (s *MessagesToChatStream) FeedJSON(data string) (chunks [][]byte, meta Stre
 		return chunks, meta
 
 	case "message_delta":
-		// May include usage
-		if usage, ok := ev["usage"].(map[string]interface{}); ok {
-			if ot, ok := usage["output_tokens"].(float64); ok {
-				meta.OutputTokens = int(ot)
-			}
-			if it, ok := usage["input_tokens"].(float64); ok {
-				meta.InputTokens = int(it)
-			}
-			if cr, ok := usage["cache_read_input_tokens"].(float64); ok {
-				meta.CachedTokens = int(cr)
-			}
-			if cc, ok := usage["cache_creation_input_tokens"].(float64); ok {
-				meta.CacheCreationTokens = int(cc)
-			}
-		}
 		finish := "stop"
 		if delta, ok := ev["delta"].(map[string]interface{}); ok {
 			if sr, ok := delta["stop_reason"].(string); ok {

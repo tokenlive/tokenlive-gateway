@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 // ChatToResponsesStream 是请求级纯翻译 FSM；caller 负责 framing、I/O 和错误预扫描。
@@ -55,11 +57,7 @@ func (s *ChatToResponsesStream) FeedJSON(data string) (events []ResponsesStreamE
 		return nil, meta
 	}
 	// 原 SSEParser 的 usage 解码独立于内容解码，辅助字段格式错不能吞掉有效 delta。
-	usage := chatStreamUsage(data)
-	meta.InputTokens = usage.InputTokens
-	meta.OutputTokens = usage.OutputTokens
-	meta.CachedTokens = usage.CachedTokens
-	s.applyUsage(usage)
+	meta.TokenUsage = s.usage.Observe(usage.OpenAI(data))
 	var finishChunk struct {
 		Choices []struct {
 			FinishReason *string `json:"finish_reason"`
@@ -261,7 +259,7 @@ func (s *ChatToResponsesStream) Finish(latestUsage TokenUsage) (events []Respons
 		return nil, meta
 	}
 	s.finished = true
-	s.applyUsage(latestUsage)
+	s.usage.Merge(latestUsage)
 	s.progressMeta(&meta)
 	if !s.started {
 		return nil, meta
@@ -486,8 +484,7 @@ func (s *ChatToResponsesStream) Finish(latestUsage TokenUsage) (events []Respons
 	appendChatResponsesEvent(&events, "response.completed", evCompleted)
 
 	meta.Completed, meta.EmitDone = true, true
-	meta.InputTokens, meta.OutputTokens = s.usage.InputTokens, s.usage.OutputTokens
-	meta.CachedTokens, meta.CacheCreationTokens = s.usage.CachedTokens, s.usage.CacheCreationTokens
+	meta.TokenUsage = s.usage
 	return events, meta
 }
 
@@ -497,21 +494,6 @@ func (s *ChatToResponsesStream) progressMeta(meta *StreamChunkMeta) {
 	meta.TextChars = s.fullText.Len()
 	meta.ThinkingChars = s.fullReasoning.Len()
 	meta.HasToolUse = len(s.localToolCalls) > 0
-}
-
-func (s *ChatToResponsesStream) applyUsage(usage TokenUsage) {
-	if usage.InputTokens > 0 {
-		s.usage.InputTokens = usage.InputTokens
-	}
-	if usage.OutputTokens > 0 {
-		s.usage.OutputTokens = usage.OutputTokens
-	}
-	if usage.CachedTokens > 0 {
-		s.usage.CachedTokens = usage.CachedTokens
-	}
-	if usage.CacheCreationTokens > 0 {
-		s.usage.CacheCreationTokens = usage.CacheCreationTokens
-	}
 }
 
 func appendChatResponsesEvent(events *[]ResponsesStreamEvent, event string, payload interface{}) {

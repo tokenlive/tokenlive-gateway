@@ -48,18 +48,18 @@ func TestSSEParser_DoneSignal(t *testing.T) {
 	}
 }
 
-func TestSSEParser_ExtractUsageTokens(t *testing.T) {
-	p := NewSSEParser()
-	usageJSON := `{"id":"chatcmpl-1","usage":{"prompt_tokens":10,"completion_tokens":20}}`
-	events := p.Feed([]byte("data: " + usageJSON + "\n\n"))
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].InputTokens != 10 {
-		t.Errorf("expected prompt_tokens=10, got %d", events[0].InputTokens)
-	}
-	if events[0].OutputTokens != 20 {
-		t.Errorf("expected completion_tokens=20, got %d", events[0].OutputTokens)
+func TestSSEParser_PreservesProtocolPayloads(t *testing.T) {
+	for _, data := range []string{
+		`{"usage":{"prompt_tokens":10,"completion_tokens":20}}`,
+		`{"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":40}}}`,
+		`{"usageMetadata":{"promptTokenCount":100}}`,
+		`{"usage":{"prompt_tokens":"invalid"}}`,
+		"not JSON",
+	} {
+		events := NewSSEParser().Feed([]byte("data: " + data + "\n\n"))
+		if len(events) != 1 || events[0].Data != data || events[0].Done {
+			t.Fatalf("framing changed protocol payload %q: %+v", data, events)
+		}
 	}
 }
 

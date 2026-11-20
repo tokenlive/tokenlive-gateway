@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 // MessagesToChatOptions controls Messages→Chat request translation.
@@ -15,12 +17,7 @@ type MessagesToChatOptions struct {
 }
 
 // TokenUsage is token stats from translation (does not touch GatewayContext).
-type TokenUsage struct {
-	InputTokens         int
-	OutputTokens        int
-	CachedTokens        int
-	CacheCreationTokens int
-}
+type TokenUsage = usage.Tokens
 
 // ChatCompletionToMessagesResult is non-stream Chat→Messages result.
 type ChatCompletionToMessagesResult struct {
@@ -526,18 +523,14 @@ func ChatCompletionToMessages(chatBody []byte, model string) (ChatCompletionToMe
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage struct {
-			PromptTokens        int `json:"prompt_tokens"`
-			CompletionTokens    int `json:"completion_tokens"`
-			PromptTokensDetails *struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"prompt_tokens_details"`
-		} `json:"usage"`
 	}
 
 	if err := json.Unmarshal(chatBody, &oaiResp); err != nil {
 		return ChatCompletionToMessagesResult{}, err
 	}
+
+	var tokens TokenUsage
+	tokens.Observe(usage.OpenAI(string(chatBody)))
 
 	var anthropicContent []interface{}
 	if len(oaiResp.Choices) > 0 {
@@ -599,8 +592,8 @@ func ChatCompletionToMessages(chatBody []byte, model string) (ChatCompletionToMe
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
 		"usage": map[string]int{
-			"input_tokens":  oaiResp.Usage.PromptTokens,
-			"output_tokens": oaiResp.Usage.CompletionTokens,
+			"input_tokens":  tokens.InputTokens,
+			"output_tokens": tokens.OutputTokens,
 		},
 	}
 
@@ -609,18 +602,9 @@ func ChatCompletionToMessages(chatBody []byte, model string) (ChatCompletionToMe
 		return ChatCompletionToMessagesResult{}, err
 	}
 
-	cachedTokens := 0
-	if oaiResp.Usage.PromptTokensDetails != nil {
-		cachedTokens = oaiResp.Usage.PromptTokensDetails.CachedTokens
-	}
-
 	return ChatCompletionToMessagesResult{
-		Body: body,
-		Usage: TokenUsage{
-			InputTokens:  oaiResp.Usage.PromptTokens,
-			OutputTokens: oaiResp.Usage.CompletionTokens,
-			CachedTokens: cachedTokens,
-		},
+		Body:  body,
+		Usage: tokens,
 	}, nil
 }
 
@@ -692,19 +676,9 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 		}
 	}
 
-	var inputTokens, outputTokens, cachedTokens, cacheCreationTokens int
-	if usage, exists := aResp["usage"].(map[string]interface{}); exists {
-		it, _ := usage["input_tokens"].(float64)
-		ot, _ := usage["output_tokens"].(float64)
-		cr, _ := usage["cache_read_input_tokens"].(float64)
-		cc, _ := usage["cache_creation_input_tokens"].(float64)
-		cachedTokens = int(cr)
-		cacheCreationTokens = int(cc)
-		outputTokens = int(ot)
-		// Normalize to total input (input + cache read + cache creation), aligning
-		// with OpenAI prompt_tokens semantics (which already include cached tokens).
-		inputTokens = int(it) + cachedTokens + cacheCreationTokens
-	}
+	var tokens TokenUsage
+	tokens.Observe(usage.Anthropic(string(anthropicBody)))
+	inputTokens, outputTokens, cachedTokens := tokens.InputTokens, tokens.OutputTokens, tokens.CachedTokens
 
 	stopReason, _ := aResp["stop_reason"].(string)
 	finishReason := mapStopReasonToFinish(stopReason, len(toolCalls) > 0)
@@ -756,13 +730,8 @@ func MessagesToChatCompletion(anthropicBody []byte, model string) (MessagesToCha
 	}
 
 	return MessagesToChatCompletionResult{
-		Body: body,
-		Usage: TokenUsage{
-			InputTokens:         inputTokens,
-			OutputTokens:        outputTokens,
-			CachedTokens:        cachedTokens,
-			CacheCreationTokens: cacheCreationTokens,
-		},
+		Body:  body,
+		Usage: tokens,
 	}, nil
 }
 

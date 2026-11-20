@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 // builtinToolStandardFields lists allowed fields for OpenAI native responses tools
@@ -373,12 +375,7 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
-			PromptTokens        int `json:"prompt_tokens"`
-			CompletionTokens    int `json:"completion_tokens"`
-			TotalTokens         int `json:"total_tokens"`
-			PromptTokensDetails *struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"prompt_tokens_details"`
+			TotalTokens int `json:"total_tokens"`
 		} `json:"usage"`
 	}
 
@@ -458,18 +455,17 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 		respModel = oaiResp.Model
 	}
 
+	var tokens TokenUsage
+	tokens.Observe(usage.OpenAI(string(chatBody)))
 	totalTokens := oaiResp.Usage.TotalTokens
 	if totalTokens == 0 {
-		totalTokens = oaiResp.Usage.PromptTokens + oaiResp.Usage.CompletionTokens
+		totalTokens = tokens.InputTokens + tokens.OutputTokens
 	}
 
-	cachedTokens := 0
-	if oaiResp.Usage.PromptTokensDetails != nil {
-		cachedTokens = oaiResp.Usage.PromptTokensDetails.CachedTokens
-	}
+	cachedTokens := tokens.CachedTokens
 	usageMap := map[string]interface{}{
-		"input_tokens":  oaiResp.Usage.PromptTokens,
-		"output_tokens": oaiResp.Usage.CompletionTokens,
+		"input_tokens":  tokens.InputTokens,
+		"output_tokens": tokens.OutputTokens,
 		"total_tokens":  totalTokens,
 	}
 	if cachedTokens > 0 {
@@ -495,12 +491,8 @@ func ChatCompletionToResponses(chatBody []byte, model string, mapper *ToolNameMa
 	}
 
 	return ChatCompletionToResponsesResult{
-		Body: translatedBody,
-		Usage: TokenUsage{
-			InputTokens:  oaiResp.Usage.PromptTokens,
-			OutputTokens: oaiResp.Usage.CompletionTokens,
-			CachedTokens: cachedTokens,
-		},
+		Body:  translatedBody,
+		Usage: tokens,
 	}, nil
 }
 

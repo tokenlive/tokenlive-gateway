@@ -7,11 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 func TestOpenAIProvider_ChatCompletion_NonStream(t *testing.T) {
@@ -223,6 +225,74 @@ func TestHandleOpenAIStream_CROnlyErrorFrameIsNotForwarded(t *testing.T) {
 	}
 }
 
+func TestHandleOpenAIStream_RejectsWholeBatchBeforeUsageObservation(t *testing.T) {
+	const accepted = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"input_tokens\":5,\"output_tokens\":2}}\n\n"
+	const rejected = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_rejected\",\"model\":\"upstream\"}}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"must not count\"}}]}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":20}},\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"input_tokens\":100,\"output_tokens\":20}}\n\n" +
+		"data: {\"error\":{\"message\":\"batch failed\",\"type\":\"upstream_error\"}}\n\n"
+	for _, requestType := range []core.RequestType{core.RequestTypeChatCompletion, core.RequestTypeResponses} {
+		for _, priorBatch := range []bool{false, true} {
+			t.Run(string(requestType)+"/prior="+strconv.FormatBool(priorBatch), func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				g := core.AcquireContext(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+				defer core.ReleaseContext(g)
+				g.RequestType, g.IsStream = requestType, true
+				stopped := 0
+				g.RegisterTTFTimer(func() { stopped++ })
+				chunks := [][]byte{[]byte(rejected)}
+				var wantUsage usage.Tokens
+				wantBody, wantChars, wantStopped := "", 0, 0
+				if priorBatch {
+					chunks = append([][]byte{[]byte(accepted)}, chunks...)
+					wantBody, wantChars, wantStopped = accepted, 2, 1
+					wantUsage = usage.Tokens{InputTokens: 5, OutputTokens: 2}
+				}
+				err := handleOpenAIStream(g, &http.Response{Body: &chunkedStreamReadCloser{chunks: chunks}})
+				if err == nil || !strings.Contains(err.Error(), "batch failed") {
+					t.Fatalf("expected batch rejection, got %v", err)
+				}
+				if rec.Body.String() != wantBody || g.Usage() != wantUsage || g.TransmittedChars != wantChars || stopped != wantStopped || (g.TTFT > 0) != priorBatch {
+					t.Fatalf("rejected batch leaked: body=%q usage=%+v chars=%d timers=%d TTFT=%v", rec.Body.String(), g.Usage(), g.TransmittedChars, stopped, g.TTFT)
+				}
+				// Metadata retains its established pre-validation event ordering.
+				if requestType == core.RequestTypeResponses && (g.GetTagValue("response_id") != "resp_rejected" || g.GetTagValue("response_model") != "upstream" || g.GetTagValue("response_completed_sent") != "true") {
+					t.Fatalf("Responses metadata changed: %v", g.Tags)
+				}
+			})
+		}
+	}
+}
+
+func TestHandleOpenAIStream_CommentOnlyBatchIsForwarded(t *testing.T) {
+	const body = ": keepalive\r\nid: opaque\r\n\r\n"
+	rec := httptest.NewRecorder()
+	g := core.AcquireContext(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+	defer core.ReleaseContext(g)
+	if err := handleOpenAIStream(g, &http.Response{Body: io.NopCloser(strings.NewReader(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Body.String() != body || !rec.Flushed || g.TTFT <= 0 || g.Usage() != (usage.Tokens{}) {
+		t.Fatalf("comment-only batch changed: body=%q flushed=%v TTFT=%v usage=%+v", rec.Body.String(), rec.Flushed, g.TTFT, g.Usage())
+	}
+}
+
+func TestHandleOpenAIStream_RawJSONErrorIsNotForwarded(t *testing.T) {
+	for _, suffix := range []string{"", "\n\n"} {
+		rec := httptest.NewRecorder()
+		g := core.AcquireContext(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+		body := `{"error":{"message":"raw failure"}}` + suffix
+		err := handleOpenAIStream(g, &http.Response{Body: io.NopCloser(strings.NewReader(body))})
+		if err == nil || !strings.Contains(err.Error(), "upstream returned JSON error: raw failure") {
+			t.Fatalf("raw error = %v", err)
+		}
+		if rec.Body.Len() != 0 || rec.Header().Get("Content-Type") != "" || g.TTFT != 0 || g.Usage() != (usage.Tokens{}) {
+			t.Fatalf("raw error started response: body=%q headers=%v TTFT=%v usage=%+v", rec.Body.String(), rec.Header(), g.TTFT, g.Usage())
+		}
+		core.ReleaseContext(g)
+	}
+}
+
 func TestHandleOpenAIStream_SplitNormalFramesAreForwardedUnchanged(t *testing.T) {
 	const firstFrame = "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\r\n\r\n"
 	const usageFrame = "data: {\"id\":\"chatcmpl-1\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n"
@@ -345,7 +415,7 @@ func TestHandleOpenAIStream_UpstreamCancellationRemainsFailure(t *testing.T) {
 
 func TestHandleOpenAIStream_TruncatedCompletionAtEOFStaysIncomplete(t *testing.T) {
 	const createdFrame = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\",\"model\":\"gpt-4\"}}\n\n"
-	const truncatedCompletedFrame = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n"
+	const truncatedCompletedFrame = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}}\n"
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -372,6 +442,9 @@ func TestHandleOpenAIStream_TruncatedCompletionAtEOFStaysIncomplete(t *testing.T
 	}
 	if gctx.GetTagValue("response_completed_sent") != "" {
 		t.Fatal("truncated response.completed must not mark the response complete")
+	}
+	if gctx.Usage() != (usage.Tokens{}) {
+		t.Fatalf("truncated tail must not update usage: %+v", gctx.Usage())
 	}
 }
 

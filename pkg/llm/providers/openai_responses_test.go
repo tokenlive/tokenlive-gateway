@@ -1127,30 +1127,42 @@ func TestHandleResponsesStream_RawErrorEmptyAndDoneOnly(t *testing.T) {
 
 func TestHandleResponsesStream_FragmentationAndCallerLatestUsage(t *testing.T) {
 	frame := `data: {"id":"chatcmpl-fragment","model":"upstream","choices":[{"delta":{"content":"你好"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}` + "\r\n\r\n"
-	body := &chatResponsesFragments{parts: []string{frame[:12], frame[12 : len(frame)-3], frame[len(frame)-3:], "data: [DONE]\n\n"}}
-	w := &chatResponsesUsageWriter{ResponseRecorder: httptest.NewRecorder()}
-	gctx := core.AcquireContext(w, httptest.NewRequest("POST", "/v1/responses", nil))
-	defer core.ReleaseContext(gctx)
-	w.gctx = gctx
-	gctx.Model = "fallback"
-	gctx.CacheCreationTokens = 4
-	ttftStopped := 0
-	gctx.RegisterTTFTimer(func() { ttftStopped++ })
-	if err := handleResponsesStream(gctx, &http.Response{Body: body}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if !body.closed || !w.Flushed || ttftStopped != 1 || gctx.TTFT <= 0 {
-		t.Fatalf("close/flush/TTFT = %v / %v / %d / %v", body.closed, w.Flushed, ttftStopped, gctx.TTFT)
-	}
-	if gctx.InputTokens != 11 || gctx.OutputTokens != 5 || gctx.CachedTokens != 2 || gctx.CacheCreationTokens != 4 || gctx.TransmittedChars != 6 {
-		t.Fatalf("latest usage/bytes = %+v", gctx)
-	}
-	if gctx.GetTagValue("response_id") != "resp_fragment" || gctx.GetTagValue("response_model") != "upstream" || gctx.GetTagValue("response_completed_sent") != "true" {
-		t.Fatalf("tags = %v", gctx.Tags)
-	}
-	assertChatResponsesTerminalUsage(t, w.Body.String(), 11, 5)
-	if strings.Count(w.Body.String(), "data: [DONE]\n\n") != 1 {
-		t.Fatal("DONE must follow both terminal events exactly once")
+	for _, tc := range []struct {
+		name, middle string
+		output       int
+	}{
+		{"done-only", "", 5},
+		{"no-usage-tail", "data: {\"choices\":[]}\n\n", 5},
+		{"output-only-tail", "data: {\"choices\":[],\"usage\":{\"completion_tokens\":6}}\n\n", 6},
+		{"zero-usage-tail", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0}}\n\n", 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &chatResponsesFragments{parts: []string{frame[:12], frame[12 : len(frame)-3], frame[len(frame)-3:], tc.middle + "data: [DONE]\n\n"}}
+			w := &chatResponsesUsageWriter{ResponseRecorder: httptest.NewRecorder()}
+			gctx := core.AcquireContext(w, httptest.NewRequest("POST", "/v1/responses", nil))
+			defer core.ReleaseContext(gctx)
+			w.gctx = gctx
+			gctx.Model = "fallback"
+			gctx.CacheCreationTokens = 4
+			ttftStopped := 0
+			gctx.RegisterTTFTimer(func() { ttftStopped++ })
+			if err := handleResponsesStream(gctx, &http.Response{Body: body}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if !body.closed || !w.Flushed || ttftStopped != 1 || gctx.TTFT <= 0 {
+				t.Fatalf("close/flush/TTFT = %v / %v / %d / %v", body.closed, w.Flushed, ttftStopped, gctx.TTFT)
+			}
+			if gctx.InputTokens != 11 || gctx.OutputTokens != tc.output || gctx.CachedTokens != 2 || gctx.CacheCreationTokens != 4 || gctx.TransmittedChars != 6 {
+				t.Fatalf("latest usage/bytes = %+v", gctx)
+			}
+			if gctx.GetTagValue("response_id") != "resp_fragment" || gctx.GetTagValue("response_model") != "upstream" || gctx.GetTagValue("response_completed_sent") != "true" {
+				t.Fatalf("tags = %v", gctx.Tags)
+			}
+			assertChatResponsesTerminalUsage(t, w.Body.String(), 11, tc.output)
+			if strings.Count(w.Body.String(), "data: [DONE]\n\n") != 1 {
+				t.Fatal("DONE must follow both terminal events exactly once")
+			}
+		})
 	}
 }
 

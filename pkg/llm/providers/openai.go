@@ -11,11 +11,12 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm/upstream"
-
-	"go.uber.org/zap"
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 func init() {
@@ -145,7 +146,8 @@ func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string) e
 	return handleOpenAINonStream(gctx, resp)
 }
 
-// handleOpenAIStream handles SSE streaming responses, intercepting the byte stream via SSEInterceptWriter to extract token stats.
+// handleOpenAIStream submits complete raw batches to one SSEInterceptWriter,
+// which frames once, validates the batch, then observes and forwards its bytes.
 func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -157,16 +159,31 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 		}
 	}()
 
-	// Native responses passthrough nests usage under response.usage; chat uses top-level usage.
-	var writerOpts []llm.SSEOption
+	headersSent := false
+	var writer *llm.SSEInterceptWriter
+	writerOpts := []llm.SSEOption{llm.WithSSEBatchValidator(func(raw []byte, events []llm.SSEEvent) error {
+		if err := inspectOpenAIStreamEvents(gctx, events); err != nil {
+			return err
+		}
+		if !headersSent {
+			if err := openAIJSONStreamError(raw); err != nil {
+				return err
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			writer.Header().Set("Cache-Control", "no-cache")
+			writer.Header().Set("Connection", "keep-alive")
+			writer.WriteHeader(http.StatusOK)
+			headersSent = true
+		}
+		return nil
+	})}
+	// Native Responses nests usage under response.usage; Chat uses top-level usage.
 	if gctx.RequestType == core.RequestTypeResponses {
-		writerOpts = append(writerOpts, llm.WithTokenExtractor(llm.ResponsesTokenExtractor))
+		writerOpts = append(writerOpts, llm.WithTokenExtractor(usage.Responses))
 	}
-	writer := llm.NewSSEInterceptWriter(gctx, writerOpts...)
+	writer = llm.NewSSEInterceptWriter(gctx, writerOpts...)
 
 	buf := make([]byte, 4096)
-	headersSent := false
-	parser := llm.NewSSEParser()
 	pending := make([]byte, 0, len(buf))
 	for {
 		n, err := resp.Body.Read(buf)
@@ -182,89 +199,6 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 		rawFrames := pending[:completeLen]
 
 		if len(rawFrames) > 0 {
-			// 1. Sniff SSE error events from all frames
-			events := parser.Feed(rawFrames)
-			for _, ev := range events {
-				if gctx.RequestType == core.RequestTypeResponses && gctx.GetTagValue("response_id") == "" {
-					var respChunk struct {
-						ResponseID string `json:"response_id"`
-						Response   *struct {
-							ID    string `json:"id"`
-							Model string `json:"model"`
-						} `json:"response"`
-						Model string `json:"model"`
-					}
-					cleanData := strings.TrimSpace(ev.Data)
-					if strings.HasPrefix(cleanData, "data:") {
-						cleanData = strings.TrimSpace(strings.TrimPrefix(cleanData, "data:"))
-					}
-					if json.Unmarshal([]byte(cleanData), &respChunk) == nil {
-						respID := respChunk.ResponseID
-						if respID == "" && respChunk.Response != nil {
-							respID = respChunk.Response.ID
-						}
-						if respID != "" {
-							if strings.HasPrefix(respID, "chatcmpl-") {
-								respID = strings.Replace(respID, "chatcmpl-", "resp_", 1)
-							} else if !strings.HasPrefix(respID, "resp_") {
-								respID = "resp_" + respID
-							}
-							if gctx.Tags == nil {
-								gctx.Tags = make(map[string]string)
-							}
-							gctx.Tags["response_id"] = respID
-						}
-
-						modelName := respChunk.Model
-						if modelName == "" && respChunk.Response != nil {
-							modelName = respChunk.Response.Model
-						}
-						if modelName != "" {
-							if gctx.Tags == nil {
-								gctx.Tags = make(map[string]string)
-							}
-							gctx.Tags["response_model"] = modelName
-						}
-					}
-				}
-
-				if gctx.RequestType == core.RequestTypeResponses {
-					cleanData := strings.TrimSpace(ev.Data)
-					if strings.HasPrefix(cleanData, "data:") {
-						cleanData = strings.TrimSpace(strings.TrimPrefix(cleanData, "data:"))
-					}
-					var eventTypeCheck struct {
-						Type string `json:"type"`
-					}
-					if json.Unmarshal([]byte(cleanData), &eventTypeCheck) == nil {
-						if eventTypeCheck.Type == "response.done" || eventTypeCheck.Type == "response.completed" {
-							if gctx.Tags == nil {
-								gctx.Tags = make(map[string]string)
-							}
-							gctx.Tags["response_completed_sent"] = "true"
-						}
-					}
-				}
-
-				if streamErr := openAIStreamEventError(ev.Data); streamErr != nil {
-					return streamErr
-				}
-			}
-
-			if !headersSent {
-				// 2. Sniff first frame raw data for plain JSON error
-				if jsonErr := openAIJSONStreamError(rawFrames); jsonErr != nil {
-					return jsonErr
-				}
-
-				// Normal data — send headers and start writing
-				writer.Header().Set("Content-Type", "text/event-stream")
-				writer.Header().Set("Cache-Control", "no-cache")
-				writer.Header().Set("Connection", "keep-alive")
-				writer.WriteHeader(http.StatusOK)
-				headersSent = true
-			}
-
 			if _, werr := writer.Write(rawFrames); werr != nil {
 				return werr
 			}
@@ -313,6 +247,78 @@ func handleOpenAIStream(gctx *core.GatewayContext, resp *http.Response) error {
 		writer.WriteHeader(http.StatusOK)
 	}
 
+	return nil
+}
+
+// inspectOpenAIStreamEvents validates the entire batch before usage observation.
+// Responses metadata keeps its existing event-order semantics, including on error.
+func inspectOpenAIStreamEvents(gctx *core.GatewayContext, events []llm.SSEEvent) error {
+	for _, ev := range events {
+		if gctx.RequestType == core.RequestTypeResponses && gctx.GetTagValue("response_id") == "" {
+			var respChunk struct {
+				ResponseID string `json:"response_id"`
+				Response   *struct {
+					ID    string `json:"id"`
+					Model string `json:"model"`
+				} `json:"response"`
+				Model string `json:"model"`
+			}
+			cleanData := strings.TrimSpace(ev.Data)
+			if strings.HasPrefix(cleanData, "data:") {
+				cleanData = strings.TrimSpace(strings.TrimPrefix(cleanData, "data:"))
+			}
+			if json.Unmarshal([]byte(cleanData), &respChunk) == nil {
+				respID := respChunk.ResponseID
+				if respID == "" && respChunk.Response != nil {
+					respID = respChunk.Response.ID
+				}
+				if respID != "" {
+					if strings.HasPrefix(respID, "chatcmpl-") {
+						respID = strings.Replace(respID, "chatcmpl-", "resp_", 1)
+					} else if !strings.HasPrefix(respID, "resp_") {
+						respID = "resp_" + respID
+					}
+					if gctx.Tags == nil {
+						gctx.Tags = make(map[string]string)
+					}
+					gctx.Tags["response_id"] = respID
+				}
+
+				modelName := respChunk.Model
+				if modelName == "" && respChunk.Response != nil {
+					modelName = respChunk.Response.Model
+				}
+				if modelName != "" {
+					if gctx.Tags == nil {
+						gctx.Tags = make(map[string]string)
+					}
+					gctx.Tags["response_model"] = modelName
+				}
+			}
+		}
+
+		if gctx.RequestType == core.RequestTypeResponses {
+			cleanData := strings.TrimSpace(ev.Data)
+			if strings.HasPrefix(cleanData, "data:") {
+				cleanData = strings.TrimSpace(strings.TrimPrefix(cleanData, "data:"))
+			}
+			var eventTypeCheck struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal([]byte(cleanData), &eventTypeCheck) == nil {
+				if eventTypeCheck.Type == "response.done" || eventTypeCheck.Type == "response.completed" {
+					if gctx.Tags == nil {
+						gctx.Tags = make(map[string]string)
+					}
+					gctx.Tags["response_completed_sent"] = "true"
+				}
+			}
+		}
+
+		if streamErr := openAIStreamEventError(ev.Data); streamErr != nil {
+			return streamErr
+		}
+	}
 	return nil
 }
 
@@ -430,12 +436,11 @@ func handleOpenAINonStream(gctx *core.GatewayContext, resp *http.Response) error
 	}
 	gctx.Response = result
 
-	extractor := llm.OpenAITokenExtractor
+	extractor := usage.OpenAI
 	if gctx.RequestType == core.RequestTypeResponses {
-		extractor = llm.ResponsesTokenExtractor
+		extractor = usage.Responses
 	}
-	in, out, cached, cacheCreated := extractor(string(body))
-	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
+	gctx.ObserveUsage(extractor(string(body)))
 	return nil
 }
 

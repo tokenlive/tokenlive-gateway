@@ -9,6 +9,7 @@ import (
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
 	"github.com/tokenlive/tokenlive-gateway/pkg/llm"
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 func init() {
@@ -96,14 +97,13 @@ func (p *AnthropicProvider) handleMessagesNonStream(gctx *core.GatewayContext, r
 	gctx.TriggerFirstByte()
 	gctx.UpstreamBody = body
 
-	in, out, cached, cacheCreated := llm.AnthropicTokenExtractor(string(body))
-	llm.ApplyUsage(gctx, in, out, cached, cacheCreated)
+	gctx.ObserveUsage(usage.Anthropic(string(body)))
 	return nil
 }
 
-// handleMessagesStream transparently passes through SSE streams; InterceptWriter uses AnthropicTokenExtractor for token extraction.
+// handleMessagesStream transparently passes through SSE streams; InterceptWriter uses the shared Anthropic usage decoder.
 func (p *AnthropicProvider) handleMessagesStream(gctx *core.GatewayContext, resp *http.Response) error {
-	return llm.PassthroughStream(gctx, resp, llm.AnthropicTokenExtractor)
+	return llm.PassthroughStream(gctx, resp, usage.Anthropic)
 }
 
 // Compile-time interface assertion

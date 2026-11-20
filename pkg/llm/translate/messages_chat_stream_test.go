@@ -194,9 +194,9 @@ func TestMessagesToChatStream_CacheTokens(t *testing.T) {
 	if cacheCreated != 50 {
 		t.Errorf("cacheCreated = %d, want 50", cacheCreated)
 	}
-	// meta.InputTokens holds the raw (uncached) value; normalization happens at the caller.
-	if in != 10 {
-		t.Errorf("input = %d, want 10 (raw)", in)
+	// meta.InputTokens is normalized total input, including both cache portions.
+	if in != 160 {
+		t.Errorf("input = %d, want 160 (total)", in)
 	}
 	if out != 7 {
 		t.Errorf("output = %d, want 7", out)

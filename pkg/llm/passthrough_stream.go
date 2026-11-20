@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/tokenlive/tokenlive-gateway/pkg/core"
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 // PassthroughStream relays an upstream SSE response to the client verbatim while extracting
@@ -17,7 +18,7 @@ import (
 // It does NOT close resp.Body — the caller owns the body's lifecycle (typically a
 // `defer resp.Body.Close()` that also covers the non-streaming path). Used by providers whose
 // upstream protocol matches the client protocol (Anthropic, Gemini).
-func PassthroughStream(gctx *core.GatewayContext, resp *http.Response, extractor TokenExtractor) error {
+func PassthroughStream(gctx *core.GatewayContext, resp *http.Response, extractor usage.Decoder) error {
 	writer := NewSSEInterceptWriter(gctx, WithTokenExtractor(extractor))
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")

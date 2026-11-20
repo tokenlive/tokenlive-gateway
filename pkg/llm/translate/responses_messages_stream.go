@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/tokenlive/tokenlive-gateway/pkg/usage"
 )
 
 // ResponsesStreamEvent is one serialized Responses SSE frame.
@@ -37,14 +39,11 @@ type MessagesToResponsesStream struct {
 	createdAt int64
 	started   bool
 
-	items              map[int]*responsesStreamItem // anthropic block index -> item
-	nextOutput         int
-	completed          []map[string]interface{} // finished output items, in order
-	stopReason         string
-	usageInput         int
-	usageOutput        int
-	usageCached        int
-	usageCacheCreation int
+	items      map[int]*responsesStreamItem // anthropic block index -> item
+	nextOutput int
+	completed  []map[string]interface{} // finished output items, in order
+	stopReason string
+	usage      TokenUsage
 }
 
 // NewMessagesToResponsesStream creates the stream translation state machine.
@@ -74,6 +73,7 @@ func (s *MessagesToResponsesStream) FeedJSON(data string) (events []ResponsesStr
 		return nil, meta
 	}
 
+	meta.TokenUsage = s.usage.Observe(usage.Anthropic(data))
 	eventType, _ := ev["type"].(string)
 	switch eventType {
 	case "message_start":
@@ -84,18 +84,6 @@ func (s *MessagesToResponsesStream) FeedJSON(data string) (events []ResponsesStr
 			}
 			if m, ok := message["model"].(string); ok && m != "" && s.model == "" {
 				s.model = m
-			}
-			if usage, ok := message["usage"].(map[string]interface{}); ok {
-				s.usageInput = intFrom(usage["input_tokens"])
-				s.usageCached = intFrom(usage["cache_read_input_tokens"])
-				s.usageCacheCreation = intFrom(usage["cache_creation_input_tokens"])
-				meta.InputTokens = s.usageInput + s.usageCached + s.usageCacheCreation
-				meta.CachedTokens = s.usageCached
-				meta.CacheCreationTokens = s.usageCacheCreation
-				if ot := intFrom(usage["output_tokens"]); ot > 0 {
-					s.usageOutput = ot
-					meta.OutputTokens = ot
-				}
 			}
 		}
 		return s.emitStarted(), meta
@@ -203,29 +191,6 @@ func (s *MessagesToResponsesStream) FeedJSON(data string) (events []ResponsesStr
 		return s.closeItem(item), meta
 
 	case "message_delta":
-		if usage, ok := ev["usage"].(map[string]interface{}); ok {
-			if ot := intFrom(usage["output_tokens"]); ot > 0 {
-				s.usageOutput = ot
-				meta.OutputTokens = ot
-			}
-			it := intFrom(usage["input_tokens"])
-			cr := intFrom(usage["cache_read_input_tokens"])
-			cc := intFrom(usage["cache_creation_input_tokens"])
-			if it > 0 {
-				s.usageInput = it
-			}
-			if cr > 0 {
-				s.usageCached = cr
-				meta.CachedTokens = cr
-			}
-			if cc > 0 {
-				s.usageCacheCreation = cc
-				meta.CacheCreationTokens = cc
-			}
-			if it > 0 || cr > 0 || cc > 0 {
-				meta.InputTokens = s.usageInput + s.usageCached + s.usageCacheCreation
-			}
-		}
 		if delta, ok := ev["delta"].(map[string]interface{}); ok {
 			if sr, ok := delta["stop_reason"].(string); ok {
 				s.stopReason = sr
@@ -468,7 +433,7 @@ func (s *MessagesToResponsesStream) finalResponse(status string) map[string]inte
 	if output == nil {
 		output = []map[string]interface{}{}
 	}
-	totalInput := s.usageInput + s.usageCached + s.usageCacheCreation
+	totalInput := s.usage.InputTokens
 	resp := map[string]interface{}{
 		"id":         s.respID,
 		"object":     "response",
@@ -478,10 +443,10 @@ func (s *MessagesToResponsesStream) finalResponse(status string) map[string]inte
 		"output":     output,
 		"usage": map[string]interface{}{
 			"input_tokens":  totalInput,
-			"output_tokens": s.usageOutput,
-			"total_tokens":  totalInput + s.usageOutput,
+			"output_tokens": s.usage.OutputTokens,
+			"total_tokens":  totalInput + s.usage.OutputTokens,
 			"input_tokens_details": map[string]interface{}{
-				"cached_tokens": s.usageCached,
+				"cached_tokens": s.usage.CachedTokens,
 			},
 		},
 	}
