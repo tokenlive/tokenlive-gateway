@@ -13,6 +13,7 @@ func addDefaultPipelines(pipelines map[string]*core.PipelineConfig, hasAuth bool
 		{"image_generation", core.RequestTypeImageGeneration},
 		{"messages", core.RequestTypeMessages},
 		{"responses", core.RequestTypeResponses},
+		{"gemini_generate_content", core.RequestTypeGeminiGenerateContent},
 	}
 	for _, d := range defaults {
 		if _, exists := pipelines[d.name]; !exists {
@@ -29,13 +30,16 @@ func newDefaultPipeline(name string, kind core.RequestType, hasAuth bool) *core.
 	p := &core.PipelineConfig{
 		Name: name, RequestTypes: []core.RequestType{kind},
 		Invoker: core.InvokerConfig{Type: "cluster"}, InboundFilters: inbound,
-		OutboundFilters:          []string{"token_settlement", "metrics", "status_collector", "access_log", "event_publisher"},
-		CriticalOutboundFilters:  []string{"token_settlement"},
+		OutboundFilters:         []string{"token_settlement", "metrics", "status_collector", "access_log", "event_publisher"},
+		CriticalOutboundFilters: []string{"token_settlement"},
 	}
 	// 图像生成不报告 tokens，不执行 token 结算。
 	if kind == core.RequestTypeImageGeneration {
 		p.OutboundFilters = []string{"metrics", "status_collector", "access_log", "event_publisher"}
 		p.CriticalOutboundFilters = nil
+	}
+	if kind == core.RequestTypeGeminiGenerateContent {
+		p.Invoker.Routers = []string{"capability", "tenant_endpoint", "tag", "circuit_breaker", "priority"}
 	}
 	return p
 }

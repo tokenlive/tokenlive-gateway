@@ -174,6 +174,10 @@ func (s stubModelOwner) AllKnownModels() map[string]bool {
 	return s.knownModels
 }
 
+func (s stubModelOwner) GetEndpoints(context.Context, string) []config.ResolvedEndpoint {
+	return nil
+}
+
 type stubAliasQuerier struct {
 	aliases map[string][]string
 }

@@ -19,8 +19,10 @@ func NewHTTPServer(
 	if deps.Config.GetString("env") == "prod" {
 		gin.SetMode(gin.ReleaseMode)
 	}
+	engine := gin.New()
+	engine.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipQueryString: true}), gin.Recovery())
 	s := http.NewServer(
-		gin.Default(),
+		engine,
 		deps.Logger,
 		http.WithServerHost(deps.Config.GetString("http.host")),
 		http.WithServerPort(deps.Config.GetInt("http.port")),

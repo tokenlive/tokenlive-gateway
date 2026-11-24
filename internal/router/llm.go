@@ -64,6 +64,9 @@ func InitLLMRouter(deps RouterDeps, r *gin.RouterGroup) {
 
 		// 模型列表
 		llmGroup.GET("/models", deps.LLMHandler.ListModels)
+
+		// Gemini 原生生成协议
+		llmGroup.POST("/models/*modelMethod", deps.LLMHandler.GeminiGenerateContent)
 	}
 }
 
@@ -98,5 +101,6 @@ func InitGeminiRouter(deps RouterDeps, r *gin.RouterGroup) {
 		}))
 	}
 
+	geminiGroup.GET("/models", deps.LLMHandler.ListModels)
 	geminiGroup.POST("/models/*modelMethod", deps.LLMHandler.GeminiGenerateContent)
 }

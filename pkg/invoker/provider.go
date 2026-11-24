@@ -52,8 +52,10 @@ func (pi *ProviderInvoker) Invoke(gctx *core.GatewayContext) error {
 		effectiveModel := pi.endpoint.EffectiveModel()
 		if effectiveModel != "" && (effectiveModel != originalModel || (gctx.OriginalModel != "" && effectiveModel != gctx.OriginalModel)) {
 			gctx.Model = effectiveModel
-			originalRawBody = gctx.RawBody
-			gctx.RawBody = replaceModelInBody(gctx.RawBody, effectiveModel)
+			if gctx.RequestType != core.RequestTypeGeminiGenerateContent {
+				originalRawBody = gctx.RawBody
+				gctx.RawBody = replaceModelInBody(gctx.RawBody, effectiveModel)
+			}
 		}
 	}
 	defer func() {

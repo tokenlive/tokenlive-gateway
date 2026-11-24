@@ -22,6 +22,7 @@ type modelOwner interface {
 	OwnerOf(ctx context.Context, model string) string
 	ModelCapacityOf(ctx context.Context, model string) (int64, int64)
 	AllKnownModels() map[string]bool
+	GetEndpoints(ctx context.Context, model string) []config.ResolvedEndpoint
 }
 
 // aliasQuerier 抽象别名查询，用于测试注入。
@@ -97,10 +98,15 @@ func (h *LLMHandler) Responses(c *gin.Context) {
 
 // GeminiGenerateContent 处理 Gemini 原生 generateContent / streamGenerateContent 协议请求。
 func (h *LLMHandler) GeminiGenerateContent(c *gin.Context) {
+	modelMethod := c.Param("modelMethod")
+	if !strings.HasSuffix(modelMethod, ":generateContent") && !strings.HasSuffix(modelMethod, ":streamGenerateContent") {
+		c.String(http.StatusNotFound, "404 page not found")
+		return
+	}
 	h.engine.HandleRequest(c.Writer, c.Request)
 }
 
-// ListModels 返回当前 API Key 授权的模型列表（区分 ToB 与 ToC 逻辑，不再调用 Engine）。
+// ListModels 按客户端协议返回当前 API Key 授权的模型列表。
 func (h *LLMHandler) ListModels(c *gin.Context) {
 	tenant := c.GetString("tenant")
 	userID := c.GetString("user_id")
@@ -119,22 +125,20 @@ func (h *LLMHandler) ListModels(c *gin.Context) {
 	if tenant != "" {
 		// ToB 租户场景：返回租户白名单授权模型
 		ids, _ = h.modelService.ListTenantModels(c.Request.Context(), tenant)
-	} else {
-		// ToC 个人场景：返回网关中所有已开通的可用模型
-		knownMap := h.configManager.AllKnownModels()
-		ids = make([]string, 0, len(knownMap))
-		for mName := range knownMap {
-			ids = append(ids, mName)
-		}
 	}
 
-	// 如果返回了通配符 "*"，说明不限模型，提取系统所有已知模型
-	if len(ids) == 1 && ids[0] == "*" {
+	// ToC 或不限模型的租户可以查看网关中所有已知模型。
+	if tenant == "" || (len(ids) == 1 && ids[0] == "*") {
 		known := h.configManager.AllKnownModels()
 		ids = make([]string, 0, len(known))
 		for k := range known {
 			ids = append(ids, k)
 		}
+	}
+
+	if isGeminiModelList(c) {
+		h.listGeminiModels(c, ids)
+		return
 	}
 
 	ctx := c.Request.Context()
@@ -158,19 +162,15 @@ func (h *LLMHandler) ListModels(c *gin.Context) {
 		})
 
 		// 查询并添加别名作为独立模型（继承主模型容量）
-		if h.aliasService != nil {
-			if aliases, err := h.aliasService.GetAliases(ctx, id); err == nil {
-				for _, alias := range aliases {
-					data = append(data, gin.H{
-						"id":                alias,
-						"object":            "model",
-						"created":           0,
-						"owned_by":          owner,
-						"context_length":    contextLength,
-						"max_output_tokens": maxOutputTokens,
-					})
-				}
-			}
+		for _, alias := range h.modelAliases(ctx, id) {
+			data = append(data, gin.H{
+				"id":                alias,
+				"object":            "model",
+				"created":           0,
+				"owned_by":          owner,
+				"context_length":    contextLength,
+				"max_output_tokens": maxOutputTokens,
+			})
 		}
 	}
 
@@ -178,4 +178,15 @@ func (h *LLMHandler) ListModels(c *gin.Context) {
 		"object": "list",
 		"data":   data,
 	})
+}
+
+func (h *LLMHandler) modelAliases(ctx context.Context, id string) []string {
+	if h.aliasService == nil {
+		return nil
+	}
+	aliases, err := h.aliasService.GetAliases(ctx, id)
+	if err != nil {
+		return nil
+	}
+	return aliases
 }

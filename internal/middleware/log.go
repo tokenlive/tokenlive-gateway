@@ -53,10 +53,12 @@ func RequestLogMiddleware(logger *log.Logger) gin.HandlerFunc {
 		logger.WithValue(ctx, zap.String("trace", trace))
 
 		// 准备一次性日志字段，不使用 logger.WithValue 固化，防止后续调用链重复打印
+		requestURL := *ctx.Request.URL
+		requestURL.RawQuery = maskQuery(requestURL.RawQuery)
 		fields := []zap.Field{
 			zap.String("request_id", requestID),
 			zap.String("request_method", ctx.Request.Method),
-			zap.String("request_url", ctx.Request.URL.String()),
+			zap.String("request_url", requestURL.String()),
 			zap.Any("request_headers", maskHeader(ctx.Request.Header)), // 使用 maskHeader 过滤敏感字段
 		}
 

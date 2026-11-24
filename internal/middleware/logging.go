@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -39,7 +40,7 @@ func NewLoggingMiddleware(config *LoggingConfig) gin.HandlerFunc {
 
 		start := time.Now()
 		path := c.Request.URL.Path
-		query := c.Request.URL.RawQuery
+		query := maskQuery(c.Request.URL.RawQuery)
 
 		// 读取请求体（如果启用）
 		var requestBody string
@@ -102,6 +103,16 @@ func NewLoggingMiddleware(config *LoggingConfig) gin.HandlerFunc {
 			config.Logger.Info("Request completed", fields...)
 		}
 	}
+}
+
+func maskQuery(rawQuery string) string {
+	query, _ := url.ParseQuery(rawQuery)
+	if !query.Has("key") && !query.Has("api_key") {
+		return rawQuery
+	}
+	query.Del("key")
+	query.Del("api_key")
+	return query.Encode()
 }
 
 // maskHeader 过滤并对敏感 Header 字段脱敏

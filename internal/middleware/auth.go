@@ -108,6 +108,15 @@ func extractAPIKey(c *gin.Context) string {
 		return apiKey
 	}
 
+	// Gemini 原生客户端使用 x-goog-api-key 或 key 查询参数。
+	switch c.FullPath() {
+	case "/v1/models", "/v1/models/*modelMethod", "/v1beta/models", "/v1beta/models/*modelMethod":
+		if apiKey := c.GetHeader("x-goog-api-key"); apiKey != "" {
+			return apiKey
+		}
+		return c.Query("key")
+	}
+
 	return ""
 }
 

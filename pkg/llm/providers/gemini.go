@@ -3,6 +3,7 @@ package providers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,7 +117,7 @@ func (p *GeminiProvider) doGenerateContent(gctx *core.GatewayContext) error {
 	resp, err := upstream.Call(gctx, upstream.Request{
 		Client: p.client,
 		URL:    p.generateContentURL(model, gctx.IsStream),
-		Body:   gctx.RawBody,
+		Body:   geminiRequestBody(gctx.RawBody),
 		Header: h,
 		Stream: upstream.Consume,
 	})
@@ -129,6 +130,23 @@ func (p *GeminiProvider) doGenerateContent(gctx *core.GatewayContext) error {
 		return p.handleGenerateContentStream(gctx, resp)
 	}
 	return p.handleGenerateContentNonStream(gctx, resp)
+}
+
+// geminiRequestBody keeps model selection in the upstream URL.
+func geminiRequestBody(body []byte) []byte {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return body
+	}
+	if _, hasModel := fields["model"]; !hasModel {
+		return body
+	}
+	delete(fields, "model")
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return encoded
 }
 
 func (p *GeminiProvider) handleGenerateContentNonStream(gctx *core.GatewayContext, resp *http.Response) error {
