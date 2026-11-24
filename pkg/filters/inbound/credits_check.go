@@ -26,7 +26,7 @@ func NewCreditsCheckFilter(checker CreditsChecker) *CreditsCheckFilter {
 }
 
 func (f *CreditsCheckFilter) Name() string { return "credits_check" }
-func (f *CreditsCheckFilter) Order() int   { return 15 } // after AuthFilter(10), before LimitFilter(20)
+func (f *CreditsCheckFilter) Order() int   { return 15 } // after ValidateFilter(13), before RateLimitFilter(20)
 
 func (f *CreditsCheckFilter) OnRequest(gctx *core.GatewayContext) error {
 	// billing policy is required for all users

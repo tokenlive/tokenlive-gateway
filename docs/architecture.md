@@ -318,7 +318,7 @@ classDiagram
 | **Discovery** | 按 model 提供可用 Endpoint 列表的来源。可静态配置、可对接 K8s / Consul / Nacos。 |
 | **Router** | Endpoint 列表的硬约束过滤器。list-in，list-out。三种：APIRouter / TagRouter / CircuitBreakerRouter。 |
 | **LoadBalancer** | 从过滤后的候选列表中选一个，软选择。八种策略：RoundRobin / WeightedRoundRobin / Random / LeastConnections / LeastLatency / Cost / Sticky / Composite。 |
-| **InboundFilter** | 请求进入 ClusterInvoker 前执行，每请求一次。Auth / RateLimit / Validate。 |
+| **InboundFilter** | 请求进入 ClusterInvoker 前执行，每请求一次。Auth / Validate / CreditsCheck / RateLimit。 |
 | **OutboundFilter** | 响应离开后执行，每请求一次。TokenSettlement / Sticky / Metrics / AccessLog。带 Criticality 标记（BestEffort / Critical）。 |
 | **Pipeline** | 一组 InboundFilter / OutboundFilter + Invoker 配置的有序组合，按 RequestType（能力）构建。启动时从 YAML eager 构造（2-3 个），支持 `extends` 浅合并。模型级策略差异由 PolicyMatcher 运行时注入，不 bake 进 Pipeline。 |
 | **PolicyMatcher** | 运行时策略匹配器。按 model+user 维度从 Redis（主数据源，四级优先）查找并字段级合并策略，写入 `gctx.Policy`。Filter 和 Invoker 从 gctx 读取策略参数。 |
@@ -341,7 +341,7 @@ sequenceDiagram
 
     E->>E: matchPipeline + PolicyMatcher.Match
     E->>IB: 执行（仅 1 次）
-    Note over IB: Auth(授权) → RateLimit → Validate<br>Auth 读 gctx.Policy 检查权限<br>RateLimit 读 gctx.Policy 阈值<br>失败立即返回客户端，不进 Invoker
+    Note over IB: Auth(授权) → Validate → CreditsCheck → RateLimit<br>Auth 读 gctx.Policy 检查权限<br>Validate 先检查模型和请求体<br>CreditsCheck 检查计费策略和余额<br>RateLimit 读 gctx.Policy 阈值<br>失败立即返回客户端，不进 Invoker
 
     IB->>FB: 传递 gctx
 
@@ -391,7 +391,7 @@ flowchart TD
     AcquireCtx --> Pipeline[matchPipeline<br>按 RequestType 选 pipeline<br>未匹配走 default]
     Pipeline --> PolicyMatch[PolicyMatcher.Match...<br>按 model+user 查 Redis 四级优先<br>字段级合并写入 gctx.Policy]
     PolicyMatch -->|未命中| PolicyErr[拒绝请求<br>要求 YAML 配置 *+* 兜底]
-    PolicyMatch -->|命中| Inbound[执行 InboundFilter 链<br>Auth（授权） → RateLimit → Validate]
+    PolicyMatch -->|命中| Inbound[执行 InboundFilter 链<br>Auth（授权） → Validate → CreditsCheck → RateLimit]
     Inbound -->|失败| ErrResp1[写错误响应<br>Release Context]
     Inbound -->|成功| Fallback[FallbackInvoker.Invoke]
 
@@ -933,9 +933,13 @@ type OutboundFilter interface {
 | Order | Name | 职责 | 失败行为 |
 |-------|------|------|---------|
 | 10 | AuthFilter | 模型授权校验，检查 UserID 是否拥有当前请求模型的访问权限 | 403 |
+| 12 | TaggingFilter | 应用标签策略，将标签写入 gctx.Tags | 透传（不阻断） |
+| 13 | ValidateFilter | 校验请求体及模型可用性，先于计费检查和限流预扣 | 400 |
 | 15 | SessionReaderFilter | 从请求头读取 SessionID，填充 gctx.SessionID | 透传（不阻断） |
+| 15 | CreditsCheckFilter | 检查计费策略和个人 API Key 余额 | 403 / 429 |
 | 20 | RateLimitFilter | PolicyMatcher 维度匹配 + 投机预扣 | 429 |
-| 30 | ValidateFilter | 校验请求体、model 存在性、RequestType 支持 | 400 |
+
+通过授权检查后，未知或不可用的模型先返回模型校验错误；只有通过模型校验的请求缺少计费策略时，才返回价格未配置。无效请求不会进入限流预扣或上游调用。
 
 **内置 OutboundFilter（执行顺序）：**
 
@@ -1546,7 +1550,7 @@ Gin Middleware: auth（通过 Redis+本地二级缓存验证 API Key → 提取 
     → AcquireContext（解析 model/stream/type）
     → matchPipeline（按 RequestType 选 Pipeline）
     → PolicyMatcher.Match(gctx)（从内存 O(1) 极速匹配策略 → 字段级合并注入 gctx.Policy）
-    → InboundFilters: auth(授权) → rate_limit(读策略预扣) → validate
+    → InboundFilters: auth(授权) → validate(模型和请求体校验) → credits_check(计费策略和余额校验) → rate_limit(读策略预扣)
     → ClusterInvoker（并发安全地读 gctx.Policy 动态选 retry/LB/...）
     → OutboundFilters: settlement(读取实际执行 model 动态扣费结算) 
     → logging
@@ -2600,7 +2604,7 @@ func (p *OpenAIProvider) RequestTypes() []RequestType {
 | # | 决策点 | 结论 |
 |---|--------|------|
 | 148 | Filter 接口 | InboundFilter / OutboundFilter，OutboundFilter 带 Criticality |
-| 149 | Inbound 顺序 | Auth(10) → RateLimit(20) → Validate(30) |
+| 149 | Inbound 顺序 | Auth(10) → Tagging(12) → Validate(13) → CreditsCheck(15) → RateLimit(20) |
 | 150 | Outbound 顺序 | TokenSettlement(10) → Sticky(20) → Metrics(30) → AccessLog(40) |
 | 151 | CircuitBreakerUpdate 移除 | 熔断更新完全由 ClusterInvoker 内部完成 |
 

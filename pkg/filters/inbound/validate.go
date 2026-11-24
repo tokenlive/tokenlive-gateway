@@ -24,7 +24,7 @@ func NewValidateFilter(validator ModelValidator) *ValidateFilter {
 }
 
 func (f *ValidateFilter) Name() string { return "validate" }
-func (f *ValidateFilter) Order() int   { return 30 }
+func (f *ValidateFilter) Order() int   { return 13 } // after AuthFilter(10), before CreditsCheckFilter(15)
 
 func (f *ValidateFilter) OnRequest(gctx *core.GatewayContext) error {
 	if gctx.Model == "" {

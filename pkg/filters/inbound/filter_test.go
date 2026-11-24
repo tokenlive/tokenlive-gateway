@@ -187,8 +187,8 @@ func TestValidateFilter_NameAndOrder(t *testing.T) {
 	if f.Name() != "validate" {
 		t.Errorf("expected name 'validate', got '%s'", f.Name())
 	}
-	if f.Order() != 30 {
-		t.Errorf("expected order 30, got %d", f.Order())
+	if f.Order() != 13 {
+		t.Errorf("expected order 13, got %d", f.Order())
 	}
 }
 
