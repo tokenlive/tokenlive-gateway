@@ -97,8 +97,16 @@ func (p *OpenAIProvider) Invoke(gctx *core.GatewayContext) error {
 // doRequest handles POST requests uniformly (chat completion, embedding, etc.).
 // Transport details are handled by upstream.Call; this function only prepares auth headers / protocol-specific body
 // and selects Consume or Handoff.
-func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string) error {
-	body := gctx.RawBody
+func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string, body []byte) error {
+	isChat := strings.HasSuffix(endpoint, "/chat/completions")
+	hasDialect := isChat && hasChatDialects(gctx.SelectedEndpoint)
+	if hasDialect {
+		var err error
+		body, err = adaptChatDialect(gctx.SelectedEndpoint.DialectImplementations, body)
+		if err != nil {
+			return err
+		}
+	}
 	if gctx.IsStream {
 		// To prevent third-party OpenAI-compatible endpoints (e.g. Volcano Engine) from erroring with InvalidParameter,
 		// only inject stream_options when explicitly targeting official OpenAI or local testing.
@@ -118,7 +126,7 @@ func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string) e
 	streamMode := upstream.Consume
 	if gctx.IsStream {
 		if gctx.RequestType == core.RequestTypeMessages ||
-			(gctx.RequestType == core.RequestTypeResponses && strings.HasSuffix(endpoint, "/chat/completions")) {
+			(gctx.RequestType == core.RequestTypeResponses && isChat) {
 			streamMode = upstream.Handoff
 		}
 	}
@@ -129,6 +137,8 @@ func (p *OpenAIProvider) doRequest(gctx *core.GatewayContext, endpoint string) e
 		Body:   body,
 		Header: h,
 		Stream: streamMode,
+
+		OmitRequestBodyFromLogs: hasDialect,
 	})
 	if err != nil {
 		return err

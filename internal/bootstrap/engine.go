@@ -720,6 +720,8 @@ func (a *dynamicEndpointAdapter) GetEndpoints(ctx context.Context, model string)
 			ContextLength:      ep.ContextLength,
 			MaxOutputTokens:    ep.MaxOutputTokens,
 			Abilities:          append([]string(nil), ep.Abilities...),
+
+			DialectImplementations: append([]string(nil), ep.DialectImplementations...),
 		}
 	}
 	return res

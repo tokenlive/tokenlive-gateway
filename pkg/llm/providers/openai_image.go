@@ -13,5 +13,5 @@ func (i *openaiImageGenerationInvoker) Invoke(gctx *core.GatewayContext, p core.
 	if !ok {
 		return fmt.Errorf("expected *OpenAIProvider, got %T", p)
 	}
-	return op.doRequest(gctx, op.baseURL+"/images/generations")
+	return op.doRequest(gctx, op.baseURL+"/images/generations", gctx.RawBody)
 }

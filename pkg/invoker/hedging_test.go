@@ -375,3 +375,25 @@ func TestHedgingInvoker_Fallback(t *testing.T) {
 		t.Errorf("expected fallback response, got %s", string(gctx.UpstreamBody))
 	}
 }
+
+func TestHedgingWaitsForDialectValidation(t *testing.T) {
+	rejection := core.ChatDialectError("store=true is not supported for this model")
+	secondaryCalls := make(chan bool, 1)
+	primary := &mockHedgingProvider{name: "primary", delay: 25 * time.Millisecond, err: rejection}
+	secondary := &mockHedgingProvider{name: "secondary", responseStr: "unexpected", invokeCalled: secondaryCalls}
+	discovery := &mockDiscovery{endpoints: []*core.Endpoint{
+		{ID: "first", ProviderImpl: primary, DialectImplementations: []string{"chat_store_unsupported"}},
+		{ID: "second", ProviderImpl: secondary},
+	}}
+	hedge := NewHedgingInvoker(discovery, nil, map[string]core.LoadBalancer{"round_robin": &mockHedgingLoadBalancer{}},
+		core.NewCircuitBreakerManager(), newMockStateStore(), zap.NewNop(), nil)
+	g := core.AcquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil))
+	defer core.ReleaseContext(g)
+	g.Policy = &policy.Policy{InvocationPolicy: &policy.InvocationPolicy{RetryPolicy: &policy.RetryPolicy{BaseMs: 1}}}
+	if err := hedge.Invoke(g); !errors.Is(err, rejection) {
+		t.Fatalf("hedging error = %v, want %v", err, rejection)
+	}
+	if len(secondaryCalls) != 0 {
+		t.Fatal("secondary endpoint started before dialect validation finished")
+	}
+}

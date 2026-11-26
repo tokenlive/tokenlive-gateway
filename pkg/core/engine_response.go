@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -14,8 +15,11 @@ func (e *Engine) writeError(w http.ResponseWriter, code int, err error, gctx *Ga
 		code = http.StatusInternalServerError
 	}
 
-	// Dynamic circuit breaker degrade response config
-	if gctx != nil && gctx.Policy != nil && len(gctx.Policy.CircuitBreakPolicies) > 0 {
+	var dialectRejection ChatDialectError
+	if errors.As(err, &dialectRejection) {
+		code = dialectRejection.Code()
+	} else if gctx != nil && gctx.Policy != nil && len(gctx.Policy.CircuitBreakPolicies) > 0 {
+		// Dynamic circuit breaker degrade response config.
 		degrade := gctx.Policy.CircuitBreakPolicies[0].DegradeConfig
 		if degrade != nil && degrade.ResponseBody != "" {
 			w.Header().Set("Content-Type", "application/json")

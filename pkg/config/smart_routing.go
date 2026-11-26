@@ -66,6 +66,7 @@ func cloneGatewayConfig(cfg *GatewayConfig) *GatewayConfig {
 		for i := range model.Endpoints {
 			model.Endpoints[i].Headers = cloneStringMap(model.Endpoints[i].Headers)
 			model.Endpoints[i].Metadata = cloneStringMap(model.Endpoints[i].Metadata)
+			model.Endpoints[i].DialectImplementations = append([]string(nil), model.Endpoints[i].DialectImplementations...)
 		}
 		result.Models[name] = model
 	}

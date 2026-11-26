@@ -14,5 +14,5 @@ func (i *openaiEmbeddingInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 		return fmt.Errorf("expected *OpenAIProvider, got %T", p)
 	}
 	endpoint := op.baseURL + "/embeddings"
-	return op.doRequest(gctx, endpoint)
+	return op.doRequest(gctx, endpoint, gctx.RawBody)
 }

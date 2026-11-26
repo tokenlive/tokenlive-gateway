@@ -14,5 +14,5 @@ func (i *openaiChatInvoker) Invoke(gctx *core.GatewayContext, p core.Provider) e
 		return fmt.Errorf("expected *OpenAIProvider, got %T", p)
 	}
 	endpoint := op.baseURL + "/chat/completions"
-	return op.doRequest(gctx, endpoint)
+	return op.doRequest(gctx, endpoint, gctx.RawBody)
 }

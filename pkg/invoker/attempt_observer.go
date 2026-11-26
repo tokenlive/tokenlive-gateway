@@ -60,6 +60,10 @@ func (a *observedAttempt) sequentialOutcome(err error) {
 func (a *observedAttempt) hedgedOutcome(err error) {
 	a.once.Do(func() {
 		defer a.lease.Release()
+		var dialectRejection core.ChatDialectError
+		if errors.As(err, &dialectRejection) {
+			return
+		}
 		if err != nil {
 			// 包括 loser cancel/断连/不可重试，是否计数仍由 Manager.MatchError 决定。
 			a.lease.RecordFailure(a.gctx, err)

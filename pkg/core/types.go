@@ -40,6 +40,8 @@ type Endpoint struct {
 	MaxOutputTokens  int64             // Max output tokens limit
 	Abilities        []string
 
+	DialectImplementations []string
+
 	// Per-endpoint rates; nil inherits Model Policy.Billing
 	InputPrice         *float64
 	OutputPrice        *float64

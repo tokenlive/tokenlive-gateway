@@ -38,6 +38,8 @@ type Request struct {
 	Header http.Header
 	// Stream only applies when gctx.IsStream.
 	Stream StreamDisposition
+
+	OmitRequestBodyFromLogs bool
 }
 
 type httpStatusError struct {
@@ -131,6 +133,9 @@ func Call(gctx *core.GatewayContext, req Request) (*http.Response, error) {
 		)
 	}
 
+	if gctx.OnUpstreamStart != nil {
+		gctx.OnUpstreamStart()
+	}
 	resp, err := req.Client.Do(httpReq)
 	if err != nil {
 		timer.Stop()
@@ -156,12 +161,15 @@ func Call(gctx *core.GatewayContext, req Request) (*http.Response, error) {
 		if gctx.Sensitive {
 			return nil, fmt.Errorf("upstream error: status %d", resp.StatusCode)
 		}
-		gctx.Logger(zap.L()).Warn("upstream error details",
+		fields := []zap.Field{
 			zap.String("endpoint_id", endpointID),
 			zap.Int("status", resp.StatusCode),
-			zap.String("req_body", string(req.Body)),
 			zap.String("resp_body", string(respBody)),
-		)
+		}
+		if !req.OmitRequestBodyFromLogs {
+			fields = append(fields, zap.String("req_body", string(req.Body)))
+		}
+		gctx.Logger(zap.L()).Warn("upstream error details", fields...)
 		return nil, fmt.Errorf("upstream error: status %d, body: %s", resp.StatusCode, string(respBody))
 	}
 

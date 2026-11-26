@@ -150,7 +150,10 @@ func Resolve(cfg *GatewayConfig) map[string][]ResolvedEndpoint {
 				abilities = m.Abilities
 			}
 			re := ResolvedEndpoint{
-				Abilities:        append([]string(nil), abilities...),
+				Abilities: append([]string(nil), abilities...),
+
+				DialectImplementations: append([]string(nil), ep.DialectImplementations...),
+
 				ID:               ep.ID,
 				Code:             ep.Code,
 				ProviderName:     ep.Provider,

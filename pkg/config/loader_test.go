@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -43,6 +45,55 @@ func TestLoad(t *testing.T) {
 	assert.Len(t, cfg.Models["gpt-4"].Endpoints, 2)
 	assert.Len(t, cfg.Providers, 2)
 	assert.Equal(t, "openai", cfg.Providers["openai-official"].Protocol)
+}
+
+func TestEndpointDialectSnapshot(t *testing.T) {
+	const definition = `{
+		"models":{"m":{"request_types":["chat_completion"],"endpoints":[
+			{"provider":"p","url":"https://example.com","dialect_implementations":["chat_developer_to_system","chat_store_unsupported"]},
+			{"provider":"p","url":"https://example.com"}]}},
+		"providers":{"p":{"protocol":"openai"}}
+	}`
+	want := []string{"chat_developer_to_system", "chat_store_unsupported"}
+	var cfg GatewayConfig
+	require.NoError(t, json.Unmarshal([]byte(definition), &cfg))
+	httpProvider := NewHTTPGatewayProvider("", "", false)
+	httpProvider.UpdateConfig(&cfg)
+	cfg.Models["m"].Endpoints[0].DialectImplementations[0] = "modified source"
+	cached, err := httpProvider.GetConfig(t.Context(), "m")
+	require.NoError(t, err)
+	resolved := Resolve(cached)["m"]
+	cached.Models["m"].Endpoints[0].DialectImplementations[0] = "modified response"
+	assert.Equal(t, want, resolved[0].DialectImplementations)
+	cachedAgain, err := httpProvider.GetConfig(t.Context(), "m")
+	require.NoError(t, err)
+	assert.Equal(t, want, cachedAgain.Models["m"].Endpoints[0].DialectImplementations)
+
+	wire, err := json.Marshal(resolved)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(wire), `"dialect_implementations"`))
+	var snapshots []ResolvedEndpoint
+	require.NoError(t, json.Unmarshal(wire, &snapshots))
+	assert.Equal(t, want, snapshots[0].DialectImplementations)
+	assert.Empty(t, snapshots[1].DialectImplementations)
+
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(strings.NewReader(`
+models:
+  m:
+    request_types: [chat_completion]
+    endpoints:
+      - provider: p
+        url: https://example.com
+        dialect_implementations: [chat_developer_to_system, chat_store_unsupported]
+providers:
+  p:
+    protocol: openai
+`)))
+	yamlCfg, err := Load(v)
+	require.NoError(t, err)
+	assert.Equal(t, want, Resolve(yamlCfg)["m"][0].DialectImplementations)
 }
 
 func TestValidate_OK(t *testing.T) {

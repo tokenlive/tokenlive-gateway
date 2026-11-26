@@ -177,8 +177,7 @@ func (i *joycodeResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provi
 		if err != nil {
 			return fmt.Errorf("translate responses to chat completion: %w", err)
 		}
-		gctx.RawBody = newBody
-		if err := jp.doOpenAIRequest(gctx, "chat_completions"); err != nil {
+		if err := jp.doOpenAIRequest(gctx, "chat_completions", newBody); err != nil {
 			return err
 		}
 
@@ -268,7 +267,7 @@ func endpointDeclaresRequestType(ep *core.Endpoint, requestType core.RequestType
 }
 
 func (p *JoyCodeProvider) invokeNativeResponses(gctx *core.GatewayContext) error {
-	if err := p.doOpenAIRequest(gctx, "responses_completions"); err != nil {
+	if err := p.doOpenAIRequest(gctx, "responses_completions", gctx.RawBody); err != nil {
 		return err
 	}
 	if gctx.IsStream {
@@ -423,9 +422,7 @@ func (i *joycodeMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 	if err != nil {
 		return err
 	}
-	gctx.RawBody = newBody
-
-	if err := jp.doOpenAIRequest(gctx, "chat_completions"); err != nil {
+	if err := jp.doOpenAIRequest(gctx, "chat_completions", newBody); err != nil {
 		return err
 	}
 
@@ -443,7 +440,15 @@ func (i *joycodeMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 // ==========================================
 
 // doOpenAIRequest sends a request to the standard OpenAI /v2 endpoint and stores response on gctx
-func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, functionID string) error {
+func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, functionID string, body []byte) error {
+	hasDialect := functionID == "chat_completions" && hasChatDialects(gctx.SelectedEndpoint)
+	if hasDialect {
+		var err error
+		body, err = adaptChatDialect(gctx.SelectedEndpoint.DialectImplementations, body)
+		if err != nil {
+			return err
+		}
+	}
 	var endpoint string
 	if strings.HasPrefix(p.baseURL, "https://") {
 		var err error
@@ -459,13 +464,15 @@ func (p *JoyCodeProvider) doOpenAIRequest(gctx *core.GatewayContext, functionID 
 		}
 	}
 
-	reqBody := injectJoyCodePayload(gctx.RawBody)
+	reqBody := injectJoyCodePayload(body)
 	resp, err := upstream.Call(gctx, upstream.Request{
 		Client: p.client,
 		URL:    endpoint,
 		Body:   reqBody,
 		Header: joyCodeAuthHeaders(gctx, p.getEffectiveAPIKey(gctx), false),
 		Stream: upstream.Consume,
+
+		OmitRequestBodyFromLogs: hasDialect,
 	})
 	if err != nil {
 		return err
@@ -493,7 +500,7 @@ func (p *JoyCodeProvider) getEffectiveAPIKey(gctx *core.GatewayContext) string {
 
 // invokeOpenAI sends a request to the standard OpenAI /v2 endpoint and handles the response
 func (p *JoyCodeProvider) invokeOpenAI(gctx *core.GatewayContext, model string) error {
-	if err := p.doOpenAIRequest(gctx, "chat_completions"); err != nil {
+	if err := p.doOpenAIRequest(gctx, "chat_completions", gctx.RawBody); err != nil {
 		return err
 	}
 

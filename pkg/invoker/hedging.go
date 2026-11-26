@@ -2,6 +2,7 @@ package invoker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -136,7 +137,26 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 	for key, value := range gctx.Tags {
 		requestBase.Tags[key] = value
 	}
-	go hi.invokeSub(&requestBase, epA, ctxA, cancelA, session)
+	var onUpstreamStart func()
+	var started chan struct{}
+	if len(epA.DialectImplementations) != 0 {
+		started = make(chan struct{})
+		onUpstreamStart = sync.OnceFunc(func() { close(started) })
+	}
+	go hi.invokeSub(&requestBase, epA, ctxA, cancelA, session, onUpstreamStart)
+
+	// Let the first adapter finish local validation before starting the hedge timer.
+	if started != nil {
+		select {
+		case <-started:
+		case <-session.completed[epA.ID]:
+			if err := session.terminalError(gctx); err != nil {
+				return err
+			}
+		case <-sessionCtx.Done():
+			return sessionCtx.Err()
+		}
+	}
 
 	// Wait for delay; skip B if A already won
 	timer := time.NewTimer(delay)
@@ -147,18 +167,18 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 	case <-timer.C:
 		// A did not win in time; start B in parallel
 		gctx.Logger(hi.logger).Info("delayed hedging triggered, starting sub-call B", zap.String("epB", epB.ID))
-		go hi.invokeSub(&requestBase, epB, ctxB, cancelB, session)
+		go hi.invokeSub(&requestBase, epB, ctxB, cancelB, session, nil)
 	case winnerID := <-session.winnerChan:
 		// A won fast; skip B
 		gctx.Logger(hi.logger).Info("fast win occurred on A, skipping call B", zap.String("winner", winnerID))
 	case errA := <-session.failuresChan:
 		failuresCount++
-		if err := session.smartTerminalError(gctx); err != nil {
+		if err := session.terminalError(gctx); err != nil {
 			return err
 		}
 		// A failed early; start B immediately
 		gctx.Logger(hi.logger).Warn("sub-call A failed early, starting sub-call B immediately", zap.Error(errA))
-		go hi.invokeSub(&requestBase, epB, ctxB, cancelB, session)
+		go hi.invokeSub(&requestBase, epB, ctxB, cancelB, session, nil)
 	case <-sessionCtx.Done():
 		return sessionCtx.Err()
 	}
@@ -168,7 +188,7 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 	var finalErr error
 
 	for {
-		if err := session.smartTerminalError(gctx); err != nil {
+		if err := session.terminalError(gctx); err != nil {
 			return err
 		}
 		session.mu.Lock()
@@ -184,7 +204,7 @@ func (hi *HedgingInvoker) Invoke(gctx *core.GatewayContext) error {
 		case <-session.winnerChan:
 			// Winner signaled; re-check
 		case ferr := <-session.failuresChan:
-			if err := session.smartTerminalError(gctx); err != nil {
+			if err := session.terminalError(gctx); err != nil {
 				return err
 			}
 			session.mu.Lock()
@@ -301,6 +321,7 @@ func (hi *HedgingInvoker) invokeSub(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	session *hedgingSession,
+	onUpstreamStart func(),
 ) {
 	defer func() {
 		if done := session.completed[ep.ID]; done != nil {
@@ -335,6 +356,7 @@ func (hi *HedgingInvoker) invokeSub(
 		Policy:            gctx.Policy,
 		Tags:              make(map[string]string),
 		StartTime:         gctx.StartTime,
+		OnUpstreamStart:   onUpstreamStart,
 	}
 	for k, v := range gctx.Tags {
 		childGctx.Tags[k] = v
@@ -373,10 +395,11 @@ func (hi *HedgingInvoker) invokeSub(
 	if err != nil {
 		session.mu.Lock()
 		session.lastFailure = childGctx
-		if childGctx.Sensitive && session.terminalFailure == nil &&
-			(isExplicitlyNonRetryable(err) || childGctx.UpstreamResponse != nil &&
-				childGctx.UpstreamResponse.StatusCode >= 400 && childGctx.UpstreamResponse.StatusCode < 500 &&
-				childGctx.UpstreamResponse.StatusCode != http.StatusTooManyRequests) {
+		var dialectRejection core.ChatDialectError
+		smartRejection := childGctx.Sensitive && (isExplicitlyNonRetryable(err) || childGctx.UpstreamResponse != nil &&
+			childGctx.UpstreamResponse.StatusCode >= 400 && childGctx.UpstreamResponse.StatusCode < 500 &&
+			childGctx.UpstreamResponse.StatusCode != http.StatusTooManyRequests)
+		if session.terminalFailure == nil && (errors.As(err, &dialectRejection) || smartRejection) {
 			session.terminalFailure = childGctx
 		}
 		session.mu.Unlock()
@@ -423,7 +446,7 @@ type hedgingSession struct {
 	completed       map[string]chan struct{}
 }
 
-func (s *hedgingSession) smartTerminalError(g *core.GatewayContext) error {
+func (s *hedgingSession) terminalError(g *core.GatewayContext) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	failed := s.terminalFailure
@@ -431,6 +454,10 @@ func (s *hedgingSession) smartTerminalError(g *core.GatewayContext) error {
 		return nil
 	}
 	g.UpstreamResponse, g.UpstreamError, g.UpstreamBody = failed.UpstreamResponse, failed.UpstreamError, failed.UpstreamBody
+	var dialectRejection core.ChatDialectError
+	if errors.As(failed.UpstreamError, &dialectRejection) {
+		return dialectRejection
+	}
 	code := http.StatusBadRequest
 	if failed.UpstreamResponse != nil {
 		code = failed.UpstreamResponse.StatusCode

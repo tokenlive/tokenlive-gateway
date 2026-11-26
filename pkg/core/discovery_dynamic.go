@@ -27,6 +27,8 @@ type DynamicEndpoint struct {
 	OutputPrice        *float64
 	CachedPrice        *float64
 	CacheCreationPrice *float64
+
+	DialectImplementations []string
 }
 
 // DynamicEndpointProvider is the interface for dynamic endpoint providers.
@@ -97,6 +99,8 @@ func (d *DynamicDiscovery) List(ctx context.Context, model string) ([]*Endpoint,
 			Abilities:          append([]string(nil), de.Abilities...),
 			Healthy:            true,
 			RequestTypes:       apis,
+
+			DialectImplementations: append([]string(nil), de.DialectImplementations...),
 		}
 		result = append(result, ep)
 	}

@@ -48,7 +48,7 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 			gctx.Logger(zap.L()).Debug("stripped tool_search description for native responses")
 		}
 		endpoint := op.baseURL + "/responses"
-		return op.doRequest(gctx, endpoint)
+		return op.doRequest(gctx, endpoint, gctx.RawBody)
 	}
 
 	// Branch B: protocol downgrade and translation (Responses -> Chat/Completions)
@@ -56,11 +56,9 @@ func (i *openaiResponsesInvoker) Invoke(gctx *core.GatewayContext, p core.Provid
 	if err != nil {
 		return err
 	}
-	gctx.RawBody = newBody
-
 	// Redirect to upstream /chat/completions
 	endpoint := op.baseURL + "/chat/completions"
-	if err := op.doRequest(gctx, endpoint); err != nil {
+	if err := op.doRequest(gctx, endpoint, newBody); err != nil {
 		return err
 	}
 

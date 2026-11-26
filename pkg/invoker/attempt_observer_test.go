@@ -205,7 +205,7 @@ func runObservedHedgeSub(hi *HedgingInvoker, g *core.GatewayContext, ep *core.En
 	ctx, cancel := context.WithCancel(ctx)
 	session := &hedgingSession{mainWriter: httptest.NewRecorder(), winnerChan: make(chan string, 2),
 		failuresChan: make(chan error, 2), completed: map[string]chan struct{}{ep.ID: make(chan struct{})}}
-	hi.invokeSub(g, ep, ctx, cancel, session)
+	hi.invokeSub(g, ep, ctx, cancel, session, nil)
 	cancel()
 	return session
 }

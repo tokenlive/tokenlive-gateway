@@ -44,11 +44,9 @@ func (i *openaiMessagesInvoker) Invoke(gctx *core.GatewayContext, p core.Provide
 	if err != nil {
 		return err
 	}
-	gctx.RawBody = newBody
-
 	// 2. Override request URL — redirect to upstream provider's /chat/completions endpoint and execute
 	endpoint := op.baseURL + "/chat/completions"
-	if err := op.doRequest(gctx, endpoint); err != nil {
+	if err := op.doRequest(gctx, endpoint, newBody); err != nil {
 		return err
 	}
 

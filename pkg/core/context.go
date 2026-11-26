@@ -63,6 +63,9 @@ type GatewayContext struct {
 	TTFT             time.Duration
 	FatalErr         error // Fatal error; when set, skips retry and fallback, terminates immediately
 
+	// OnUpstreamStart runs just before transport sends the outbound request.
+	OnUpstreamStart func()
+
 	// ===== Cumulative fields =====
 	AttemptCount  int
 	FallbackChain []string

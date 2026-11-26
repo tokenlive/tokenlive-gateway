@@ -28,6 +28,8 @@ type ProviderConfig struct {
 
 // EndpointConfig is under a model and references a provider.
 type EndpointConfig struct {
+	DialectImplementations []string `mapstructure:"dialect_implementations" yaml:"dialect_implementations,omitempty" json:"dialect_implementations,omitempty"`
+
 	ID              string            `mapstructure:"id" yaml:"id" json:"id,omitempty"`                         // Optional unique endpoint ID
 	Code            string            `mapstructure:"code" yaml:"code" json:"code,omitempty"`                   // Optional business code
 	Provider        string            `mapstructure:"provider" yaml:"provider" json:"provider"`                 // Provider name (required)
@@ -82,6 +84,8 @@ type ResolvedEndpoint struct {
 	OutputPrice        *float64          `json:"output_price,omitempty"`
 	CachedPrice        *float64          `json:"cached_price,omitempty"`
 	CacheCreationPrice *float64          `json:"cache_creation_price,omitempty"`
+
+	DialectImplementations []string `mapstructure:"dialect_implementations" yaml:"dialect_implementations,omitempty" json:"dialect_implementations,omitempty"`
 }
 
 // UnmarshalJSON accepts Admin/Redis endpoint ID/code field aliases.
