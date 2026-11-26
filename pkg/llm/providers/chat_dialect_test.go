@@ -65,10 +65,14 @@ func TestChatDialectProviderRequests(t *testing.T) {
 					requestType: core.RequestTypeChatCompletion, dialects: active, errorMessage: "system and developer",
 				},
 				{
-					name: "native responses", body: `{"model":"m","input":"hi","store":true}`,
-					path: responsesPath, requestType: core.RequestTypeResponses, dialects: active,
+					name: "native responses", body: `{"model":"m","input":"hi","store":true,"reasoning":{"effort":"high"}}`,
+					path: responsesPath, requestType: core.RequestTypeResponses,
+					dialects: []string{developer, store, "chat_gemini_strip_thinking_extensions"},
 					declared: []core.RequestType{core.RequestTypeResponses, core.RequestTypeChatCompletion},
-					expect:   func(t *testing.T, body string) { require.Contains(t, body, `"store":true`) },
+					expect: func(t *testing.T, body string) {
+						require.Contains(t, body, `"store":true`)
+						require.Contains(t, body, `"reasoning":{"effort":"high"}`)
+					},
 				},
 				{
 					name: "translated responses", body: `{"model":"m","instructions":"instruction","input":"hi","store":true}`,
@@ -142,4 +146,73 @@ func TestChatDialectsLeaveGeminiRequestUntouched(t *testing.T) {
 	require.NoError(t, p.Invoke(gctx))
 	require.Len(t, received, 1)
 	require.Equal(t, body, <-received)
+}
+
+func TestGeminiOpenAIThinkingDialect(t *testing.T) {
+	const implementation = "chat_gemini_strip_thinking_extensions"
+	const body = `{"model":"gemini-test","messages":[{"role":"user","content":"hi"}],"enable_thinking":true,"reasoning":{"effort":"high"},"thinking":{"type":"enabled"},"reasoning_effort":"low","extra_body":{"google":{"thinking_config":{"include_thoughts":true}}}}`
+	for _, tc := range []struct {
+		name            string
+		implementations []string
+		wantStatus      int
+	}{
+		{name: "without adaptation", wantStatus: http.StatusBadRequest},
+		{name: "with adaptation", implementations: []string{implementation}, wantStatus: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1beta/openai/chat/completions" {
+					http.NotFound(w, r)
+					return
+				}
+				var payload map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					http.Error(w, "invalid request", http.StatusBadRequest)
+					return
+				}
+				var violations []string
+				for _, field := range []string{"enable_thinking", "reasoning", "thinking"} {
+					if _, exists := payload[field]; exists {
+						violations = append(violations, "Invalid JSON payload received. Unknown name \""+field+"\": Cannot find field.")
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if len(violations) > 0 {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode([]map[string]any{
+						{"error": map[string]any{"code": 400, "message": strings.Join(violations, "\n"), "status": "INVALID_ARGUMENT"}},
+					})
+					return
+				}
+				if string(payload["reasoning_effort"]) != `"low"` ||
+					string(payload["extra_body"]) != `{"google":{"thinking_config":{"include_thoughts":true}}}` {
+					http.Error(w, "supported reasoning settings were changed", http.StatusUnprocessableEntity)
+					return
+				}
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+			}))
+			defer server.Close()
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			gctx := core.AcquireContext(httptest.NewRecorder(), req)
+			defer core.ReleaseContext(gctx)
+			gctx.RawBody = []byte(body)
+			gctx.Model, gctx.RequestType = "gemini-test", core.RequestTypeChatCompletion
+			gctx.SelectedEndpoint = &core.Endpoint{DialectImplementations: tc.implementations}
+
+			provider := NewOpenAIProvider("test", server.URL+"/v1beta/openai", "test-key", nil)
+			err := provider.Invoke(gctx)
+			require.Equal(t, body, string(gctx.RawBody))
+			if tc.wantStatus == http.StatusOK {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, "Unknown name")
+				require.Contains(t, string(gctx.UpstreamBody), "enable_thinking")
+				require.Contains(t, string(gctx.UpstreamBody), "reasoning")
+				require.Contains(t, string(gctx.UpstreamBody), "thinking")
+			}
+			require.NotNil(t, gctx.UpstreamResponse)
+			require.Equal(t, tc.wantStatus, gctx.UpstreamResponse.StatusCode)
+		})
+	}
 }

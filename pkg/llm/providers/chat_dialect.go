@@ -36,6 +36,13 @@ func adaptChatDialect(implementations []string, body []byte) ([]byte, error) {
 				delete(payload, "store")
 				changed = true
 			}
+		case "chat_gemini_strip_thinking_extensions":
+			for _, field := range []string{"enable_thinking", "reasoning", "thinking"} {
+				if _, exists := payload[field]; exists {
+					delete(payload, field)
+					changed = true
+				}
+			}
 		}
 	}
 	if !changed {
